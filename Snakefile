@@ -52,7 +52,7 @@ rule exomlir_compile_exomlir:
         "build/exomlir/{level}/{proc}.mlir",
     shell:
         """
-        uv run exo-mlir -o build/exomlir/{wildcards.level}/ benchmarks/{wildcards.level}/{wildcards.proc}.py --target llvm --prefix exomlir
+        .venv/bin/python -m exomlir.main -o build/exomlir/{wildcards.level}/ benchmarks/{wildcards.level}/{wildcards.proc}.py --target llvm --prefix exomlir
         """
 
 rule exomlir_compile_mliropt:
