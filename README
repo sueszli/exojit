@@ -1,33 +1,8 @@
 An experimental MLIR backend for the Exo programming language.
 
-## Dependencies
-
-```bash
-brew install llvm pkg-config google-benchmark ninja ccache
-
-uv venv
-uv sync
-source .venv/bin/activate
-```
-
-## Usage
-
-Run the compiler:
+Usage:
 
 ```bash
 exo-mlir <source.py> [--target {exo,builtin,scf,lowered,llvm}] [-o output.mlir]
 # e.g. exo-mlir benchmarks/level1/axpy.py --target llvm -o out/axpy.mlir
-```
-
-## Benchmarks
-
-```bash
-snakemake
-```
-
-## Tests
-
-```bash
-pytest tests/
-lit tests/filecheck/
 ```

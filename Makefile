@@ -1,3 +1,7 @@
+.PHONY: install
+install:
+	brew install llvm pkg-config google-benchmark ninja ccache
+
 .PHONY: venv
 venv:
 	uv venv .venv --python 3.11
