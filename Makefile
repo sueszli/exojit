@@ -4,14 +4,7 @@ install:
 
 .PHONY: venv
 venv:
-	uv venv .venv --python 3.11
-	uv pip install -r requirements.txt
-	@echo "activate venv with: \033[1;33msource .venv/bin/activate\033[0m"
-
-.PHONY: lock
-lock:
-	uv pip freeze > requirements.in
-	uv pip compile requirements.in -o requirements.txt
+	uv sync
 
 .PHONY: precommit
 precommit:
