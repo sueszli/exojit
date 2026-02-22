@@ -5,6 +5,7 @@ from __future__ import annotations
 from exo import *
 
 
+# CHECK: builtin.module
 @proc
 def conv1d(
     IC: size,
