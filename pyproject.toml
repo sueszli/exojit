@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
-exomlir = "exomlir.main:main"
+exomlir = "exomlir.__main__:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
