@@ -3,9 +3,9 @@ import xml.etree.ElementTree as etree
 from typing import Any
 
 from pymdownx.blocks import BlocksExtension  # pyright: ignore[reportMissingTypeStubs]
+from pymdownx.blocks.block import Block  # pyright: ignore[reportMissingTypeStubs]
 from pymdownx.blocks.block import type_string  # pyright: ignore[reportUnknownVariableType]
 from pymdownx.blocks.block import type_string_in  # pyright: ignore[reportUnknownVariableType]
-from pymdownx.blocks.block import Block  # pyright: ignore[reportMissingTypeStubs]
 
 
 class BaseMarimoBlock(Block):
