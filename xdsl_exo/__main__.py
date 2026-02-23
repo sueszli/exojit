@@ -3,10 +3,10 @@ import sys
 from argparse import ArgumentParser
 from pathlib import Path
 
-from xdsl_exo import compile_path
-from xdsl_exo.compiler import CompilerOptions
+from xdsl_exo import CompilerOptions, compile_path
 
-if __name__ == "__main__":
+
+def main():
     parser = ArgumentParser(prog=Path(sys.argv[0]).name, description="Compile an Exo library to MLIR.")
     parser.add_argument("source", type=str, help="Source file to compile")
     parser.add_argument("-o", "--output", help="Output file. Defaults to stdout.")
@@ -24,3 +24,7 @@ if __name__ == "__main__":
         os.makedirs(dest.parent, exist_ok=True)
 
     compile_path(Path(args.source), dest, opts)
+
+
+if __name__ == "__main__":
+    main()

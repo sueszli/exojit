@@ -1,7 +1,8 @@
-from .compiler import compile_many, compile_one, compile_path
+from ._compiler import CompilerOptions, compile_many, compile_one, compile_path
 
 __all__ = [
-    "compile_one",
+    "CompilerOptions",
     "compile_many",
+    "compile_one",
     "compile_path",
 ]
