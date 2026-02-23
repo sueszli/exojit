@@ -1,6 +1,6 @@
 import contextlib
-import logging
 import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -32,8 +32,6 @@ from xdsl_exo.rewrites.convert_scalar_ref import ConvertScalarRefPass
 from xdsl_exo.rewrites.inline_memory_space import InlineMemorySpacePass
 from xdsl_exo.rewrites.reconcile_index_casts import ReconcileIndexCastsPass
 
-logger = logging.getLogger("exo-mlir")
-
 
 class CompilerOptions:
     """
@@ -43,6 +41,7 @@ class CompilerOptions:
     def __init__(self):
         self.target = "llvm"
         self.prefix = None
+        self.verbose = False
 
 
 def context() -> Context:
@@ -117,21 +116,23 @@ def compile_path(
     Compile all procedures in a Python source file to a single MLIR module, and write it to a file.
     """
     if not src.exists():
-        logger.error(f"{src} does not exist.")
+        print(f"ERROR: {src} does not exist.", file=sys.stderr)
         return
 
     if not src.is_file() or not src.suffix == ".py":
-        logger.error(f"{src} is not a Python source file.")
+        print(f"ERROR: {src} is not a Python source file.", file=sys.stderr)
         return
 
-    logger.info(f"Compile[{src}] Destination: {dest}")
+    if opts.verbose:
+        print(f"INFO: Compile[{src}] Destination: {dest}", file=sys.stderr)
 
     # load user code and get procedures from exo
     # procedures tend to do a lot of printing, so we suppress stdout temporarily
     with contextlib.redirect_stdout(None):
         library = get_procs_from_module(load_user_code(src))  # type: list[Procedure]
 
-    logger.info(f"Compile[{src}] Loaded {len(library)} procedure(s) from source")
+    if opts.verbose:
+        print(f"INFO: Compile[{src}] Loaded {len(library)} procedure(s) from source", file=sys.stderr)
 
     # invoke exo analysis
     assert isinstance(library, list)
