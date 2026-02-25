@@ -16,7 +16,7 @@ from xdsl.ir import Attribute, Block, BlockArgument, OpResult, Region, SSAValue
 from xdsl.rewriter import InsertPoint
 from xdsl.utils.scoped_dict import ScopedDict
 from xdsl_exo.dialects.exo import AllocOp, AssignOp, ExternOp, FreeOp, InstrOp, IntervalOp, ReadOp, ReduceOp, WindowOp
-from xdsl_exo.dialects.index import CastsOp
+from xdsl_exo.dialects.extra import CastsOp
 
 MemRefTypeI8: TypeAlias = MemRefType[I8]
 MemRefTypeI16: TypeAlias = MemRefType[I16]

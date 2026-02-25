@@ -3,7 +3,7 @@ import sys
 from argparse import ArgumentParser
 from pathlib import Path
 
-from xdsl_exo import CompilerOptions, compile_path
+from xdsl_exo.compiler import CompilerOptions, compile_path
 
 
 def main():

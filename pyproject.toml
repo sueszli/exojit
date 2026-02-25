@@ -28,6 +28,7 @@ xdsl-exo = "xdsl_exo.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
+namespaces = true
 
 [tool.uv.sources]
 xdsl = { path = "xdsl" }

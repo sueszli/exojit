@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from exo import proc
 
-from xdsl_exo import compile_one
+from xdsl_exo.compiler import compile_one
 
 
 def test_conv1d():
