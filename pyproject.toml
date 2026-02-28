@@ -30,6 +30,9 @@ xdsl-exo = "xdsl_exo.compiler:main"
 where = ["."]
 namespaces = true
 
+[tool.pytest.ini_options]
+filterwarnings = ["ignore::pytest.PytestCollectionWarning"]
+
 [tool.ruff.lint]
 ignore = ["F403", "F405", "F821"]
 
