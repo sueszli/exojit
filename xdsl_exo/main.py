@@ -54,10 +54,10 @@ class IRGenerator:
         self.type_table = None
         self.seen_procs = set()
 
-    def _type(self, t, mem_space: StringAttr | None = None) -> Attribute:
-        match t:
+    def _type(self, exo_type, mem_space: StringAttr | None = None) -> Attribute:
+        match exo_type:
             case SSAValue():
-                return t.type
+                return exo_type.type
             case T.F16():
                 return f16
             case T.F32() | T.Num():
@@ -76,9 +76,9 @@ class IRGenerator:
                 return i1
             case T.Tensor():
                 assert mem_space is not None
-                inner = self._type(t.type)
+                inner = self._type(exo_type.type)
                 assert inner in {f16, f32, f64, i8, i16, i32}
-                shape = self._shape(t)
+                shape = self._shape(exo_type)
                 return MemRefType(inner, shape, NoneAttr(), mem_space)
             case _:
                 assert False
@@ -356,10 +356,8 @@ class IRGenerator:
 
         input_types = []
         for arg in procedure.args:
-            if hasattr(arg, "mem"):
-                input_types.append(self._type(arg.type, StringAttr(arg.mem.name())))
-            else:
-                input_types.append(self._type(arg.type))
+            mem = StringAttr(arg.mem.name()) if hasattr(arg, "mem") else None
+            input_types.append(self._type(arg.type, mem))
         func_type = FunctionType.from_lists(input_types, [])
 
         parent_builder = self.builder
