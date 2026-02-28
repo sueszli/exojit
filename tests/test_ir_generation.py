@@ -10,8 +10,8 @@ from xdsl.dialects.builtin import i32
 from xdsl.dialects.test import TestOp
 from xdsl.utils.scoped_dict import ScopedDict
 from xdsl.utils.test_value import create_ssa_value
-from xdsl_exo.compiler import IRGenerator, compile_procs
 from xdsl_exo.dialects.exo import AssignOp, ReduceOp
+from xdsl_exo.main import IRGenerator, compile_procs
 
 SRC_INFO = SrcInfo("test_mlir.py", 0)
 

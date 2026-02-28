@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from exo import DRAM, proc
 
-from xdsl_exo.compiler import compile_procs
+from xdsl_exo.main import compile_procs
 
 
 def test_fixed_matmul():
