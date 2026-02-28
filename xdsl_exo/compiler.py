@@ -161,13 +161,10 @@ def transform(ctx: Context, module: ModuleOp, target: str = "llvm", prefix: str 
 
 
 def compile_procs(
-    library: Sequence[Procedure],
+    library: Sequence[Procedure],  # list of exo funcs decorated with @proc
     target: str = "llvm",
     prefix: str | None = None,
 ) -> ModuleOp:
-    """
-    Compile a list of procedures into a single MLIR module..
-    """
     input_procedures = list(
         sorted(
             find_all_subprocs([proc._loopir_proc for proc in library if not proc.is_instr()]),
