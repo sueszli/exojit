@@ -1,6 +1,8 @@
-drop everything but the llvm dialect
+todo:
 
-streamline / minimize code: https://github.com/sueszli/aziz-lang/blob/main/aziz-lang-tiny/main.py
+- streamline / minimize code: https://github.com/sueszli/aziz-lang/blob/main/aziz-lang-tiny/main.py
+- drop everything but the llvm dialect
+- monkey patch latest xdsl instead of using old snapshot?
 
 
 ## goal
