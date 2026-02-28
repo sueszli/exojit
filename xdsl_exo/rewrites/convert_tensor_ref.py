@@ -262,7 +262,7 @@ class EraseUnusedIntervalOp(RewritePattern):
     def match_and_rewrite(self, op: exo.IntervalOp, rewriter: PatternRewriter):
         # erase unused interval ops
         if len(op.result.uses) == 0:
-            rewriter.erase_matched_op(op)
+            rewriter.erase_op(op)
 
 
 class ConvertTensorRefPass(ModulePass):

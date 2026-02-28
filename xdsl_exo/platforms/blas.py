@@ -38,7 +38,7 @@ class ConvertFreeOp(RewritePattern):
         if op.mem.data != "VEC_AVX2":
             return
 
-        rewriter.erase_matched_op()
+        rewriter.erase_op(op)
 
 
 class InlineBLASAllocPass(ModulePass):

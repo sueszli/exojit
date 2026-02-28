@@ -9,7 +9,7 @@ class ReconcileIndexCasts(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: arith.IndexCastOp, rewriter: PatternRewriter):
         if len(op.result.uses) == 0:
-            rewriter.erase_matched_op()
+            rewriter.erase_op(op)
             return
 
         # replace x -> y -> x cast with x

@@ -289,7 +289,7 @@ class EraseIntervalOp(RewritePattern):
         if len(op.result.uses) != 0:
             return
 
-        rewriter.erase_matched_op()
+        rewriter.erase_op(op)
 
 
 class ConvertMemRefToLLVM(ModulePass):
