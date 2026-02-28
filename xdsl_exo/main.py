@@ -34,7 +34,6 @@ from xdsl_exo.dialects.index import Index
 from xdsl_exo.dialects.llvm import LLVMIntrinsics
 from xdsl_exo.platforms.avx2 import InlineAVX2Pass
 from xdsl_exo.platforms.blas import InlineBLASAllocPass, InlineBLASPass
-from xdsl_exo.rewrites.add_prefix import AddPrefixPass
 from xdsl_exo.rewrites.convert_memref_to_llvm import ConvertMemRefToLLVM
 from xdsl_exo.rewrites.convert_scalar_ref import ConvertScalarRefPass
 from xdsl_exo.rewrites.inline_memory_space import InlineMemorySpacePass
@@ -429,11 +428,14 @@ def context() -> Context:
     return ctx
 
 
-def transform(analyzed_procs: list, target: str = "llvm", prefix: str | None = None) -> ModuleOp:
+def transform(analyzed_procs: list, target: str = "llvm") -> ModuleOp:
     ctx = context()
-    module = IRGenerator().generate(analyzed_procs)  # exo LoopIR -> xdsl MLIR
 
-    # lower exo dialect to standard mlir
+    # exo LoopIR -> raw exo IR
+    module = IRGenerator().generate(analyzed_procs)
+
+    # partial lowering: convert memory spaces, scalar refs, and index casts to standard mlir
+    # (exo memory ops like exo.read, exo.assign, exo.reduce are preserved)
     InlineMemorySpacePass().apply(ctx, module)
     ConvertScalarRefPass().apply(ctx, module)
     ReconcileIndexCastsPass().apply(ctx, module)
@@ -447,12 +449,7 @@ def transform(analyzed_procs: list, target: str = "llvm", prefix: str | None = N
     if target == "exo":
         return module
 
-    # optional function renaming
-    if prefix is not None:
-        AddPrefixPass(prefix).apply(ctx, module)
-        module.verify()
-
-    # lower to llvm
+    # full lowering to llvm dialect
     InlineBLASAllocPass().apply(ctx, module)
     ConvertMemRefToLLVM().apply(ctx, module)
     InlineAVX2Pass().apply(ctx, module)
@@ -472,7 +469,6 @@ def transform(analyzed_procs: list, target: str = "llvm", prefix: str | None = N
 def compile_procs(
     library: Sequence[Procedure],  # list of exo funcs decorated with @proc
     target: str = "llvm",
-    prefix: str | None = None,
 ) -> ModuleOp:
     compilable = [proc._loopir_proc for proc in library if not proc.is_instr()]
     all_procs = sorted(find_all_subprocs(compilable), key=lambda x: x.name)
@@ -486,15 +482,14 @@ def compile_procs(
         return MemoryAnalysis().run(proc)
 
     analyzed_procs = [exo_analyze(proc) for proc in unique_procs]
-    return transform(analyzed_procs, target, prefix)
+    return transform(analyzed_procs, target)
 
 
 def main():
     parser = ArgumentParser(description="Compile an Exo library to MLIR.")
     parser.add_argument("source", type=str, help="Source file to compile")
     parser.add_argument("-o", "--output", help="Output file. Defaults to stdout.")
-    parser.add_argument("--target", default="llvm", choices=["llvm", "exo", "builtin", "lowered", "scf"])
-    parser.add_argument("--prefix", help="Prefix to prepend to all procedure names.")
+    parser.add_argument("--target", default="llvm", choices=["llvm", "exo"])
     args = parser.parse_args()
 
     src = Path(args.source)
@@ -504,7 +499,7 @@ def main():
     assert isinstance(library, list)
     assert all(isinstance(proc, Procedure) for proc in library)
 
-    module = compile_procs(library, args.target, args.prefix)
+    module = compile_procs(library, args.target)
 
     dst = None
     if args.output and args.output != "-":
