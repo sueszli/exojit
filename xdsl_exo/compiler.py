@@ -59,8 +59,6 @@ class IRGenerator:
     #
 
     def _get_type(self, t, mem_space=StringAttr("DRAM")) -> Attribute:
-        memref_element_types = {f16, f32, f64, i8, i16, i32}
-
         match t:
             case SSAValue():
                 return t.type
@@ -82,7 +80,7 @@ class IRGenerator:
                 return i1
             case T.Tensor():
                 inner = self._get_type(t.type)
-                assert inner in memref_element_types, f"unknown tensor inner type '{inner}'"
+                assert inner in {f16, f32, f64, i8, i16, i32}, f"unknown tensor inner type '{inner}'"
                 shape = self._get_static_shape(t)
                 return MemRefType(inner, shape, NoneAttr(), mem_space)
             case _:
