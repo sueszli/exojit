@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from functools import cache
 from pathlib import Path
 
-from exo.API import Procedure, Sym
+from exo.API import Procedure
 from exo.backend.LoopIR_compiler import find_all_subprocs
 from exo.backend.mem_analysis import MemoryAnalysis
 from exo.backend.parallel_analysis import ParallelAnalysis
@@ -23,8 +23,7 @@ from xdsl.dialects.builtin import BoolAttr, Builtin, FloatAttr, FunctionType, In
 from xdsl.dialects.func import CallOp, FuncOp, ReturnOp
 from xdsl.dialects.memref import CastOp as MemrefCastOp
 from xdsl.dialects.scf import ForOp, IfOp, YieldOp
-from xdsl.dialects.test import TestOp
-from xdsl.ir import Attribute, Block, BlockArgument, OpResult, Region, SSAValue
+from xdsl.ir import Attribute, Block, OpResult, Region, SSAValue
 from xdsl.rewriter import InsertPoint
 from xdsl.transforms.canonicalize import CanonicalizePass
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
@@ -55,51 +54,8 @@ class IRGenerator:
         self.module = ModuleOp([])
         self.builder = Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0]))
 
-    def _with_empty_scope(self):
-        self.symbol_table = ScopedDict()
-        self.type_table = ScopedDict()
-        return self
-
-    def _with_test_op(self, sym: Sym, type):
-        assert self.symbol_table is not None
-        op = TestOp(result_types=[self._get_type(type)])
-        self.builder.insert(op)
-        self.symbol_table[sym.__repr__()] = op.res[0]
-        if self.type_table is not None:
-            self.type_table[sym.__repr__()] = type
-        return self
-
     #
-    # symbol table
-    #
-
-    def _declare_arg(self, sym: Sym, arg: BlockArgument) -> BlockArgument:
-        assert self.symbol_table is not None
-        self._declare_value(sym, arg)
-        return arg
-
-    def _declare_value(self, sym: Sym, value: SSAValue) -> SSAValue:
-        assert self.symbol_table is not None
-        self.symbol_table[sym.__repr__()] = value
-        return value
-
-    def _get_sym(self, sym: Sym) -> SSAValue:
-        assert self.symbol_table is not None
-        assert sym.__repr__() in self.symbol_table, f"unknown symbol {sym.__repr__()}"
-        return self.symbol_table[sym.__repr__()]
-
-    def _declare_sym_exo_type(self, sym: Sym, type):
-        assert self.type_table is not None
-        self.type_table[sym.__repr__()] = type
-        return type
-
-    def _get_sym_exo_type(self, sym: Sym):
-        assert self.type_table is not None
-        assert sym.__repr__() in self.type_table, f"unknown symbol {sym.__repr__()}"
-        return self.type_table[sym.__repr__()]
-
-    #
-    # type helpers
+    # helpers
     #
 
     def _get_type(self, t, mem_space=StringAttr("DRAM")) -> Attribute:
@@ -143,7 +99,7 @@ class IRGenerator:
                     return IntAttr(expr.val)
                 case LoopIR.Read():
                     if self.symbol_table is not None:
-                        dynamic_shapes.append(self._get_sym(expr.name))
+                        dynamic_shapes.append(self.symbol_table[expr.name.__repr__()])
                     return IntAttr(-1)
                 case LoopIR.BinOp():
                     if self.symbol_table is not None:
@@ -176,7 +132,7 @@ class IRGenerator:
                 case LoopIR.Const():
                     return expr.val
                 case LoopIR.Read():
-                    return self._get_sym(expr.name)
+                    return self.symbol_table[expr.name.__repr__()]
                 case LoopIR.BinOp():
                     return self._binop_expr(expr)
                 case _:
@@ -231,11 +187,11 @@ class IRGenerator:
         return const.result
 
     def _read_expr(self, read):
-        idx = self._expr_list(read.idx)
+        idx = [self._expr(e) for e in read.idx]
 
-        operand = self._get_sym(read.name)
+        operand = self.symbol_table[read.name.__repr__()]
 
-        exo_type = self._get_sym_exo_type(read.name)
+        exo_type = self.type_table[read.name.__repr__()]
         if isinstance(exo_type, T.Tensor):
             sizes = self._get_dynamic_shape(exo_type)
         else:
@@ -332,13 +288,13 @@ class IRGenerator:
     def _window_expr(self, window):
         idx = [self._w_access(w_access) for w_access in window.idx]
 
-        input = self._get_sym(window.name)
+        input = self.symbol_table[window.name.__repr__()]
         dest_type = self._get_type(window.type.as_tensor, input.type.memory_space)
 
-        input_sizes = self._get_dynamic_shape(self._get_sym_exo_type(window.name))
+        input_sizes = self._get_dynamic_shape(self.type_table[window.name.__repr__()])
         output_sizes = self._get_dynamic_shape(window.type.as_tensor)
 
-        self.builder.insert(op := WindowOp(self._get_sym(window.name), idx, input_sizes, output_sizes, dest_type))
+        self.builder.insert(op := WindowOp(self.symbol_table[window.name.__repr__()], idx, input_sizes, output_sizes, dest_type))
 
         return op.result
 
@@ -356,12 +312,9 @@ class IRGenerator:
 
     def _extern_expr(self, extern):
         output_type = self._get_type(extern.f.typecheck(extern.args))
-        args = self._expr_list(extern.args)
+        args = [self._expr(e) for e in extern.args]
         self.builder.insert(op := ExternOp(extern.f.name(), args, output_type))
         return op.result
-
-    def _expr_list(self, exprs) -> list[OpResult | SSAValue]:
-        return [self._expr(expr) for expr in exprs]
 
     def _expr(self, expr) -> OpResult | SSAValue:
         match expr:
@@ -385,11 +338,11 @@ class IRGenerator:
     #
 
     def _assign_stmt(self, assign):
-        idx = self._expr_list(assign.idx)
+        idx = [self._expr(e) for e in assign.idx]
         value = self._expr(assign.rhs)
-        memref = self._get_sym(assign.name)
+        memref = self.symbol_table[assign.name.__repr__()]
 
-        exo_type = self._get_sym_exo_type(assign.name)
+        exo_type = self.type_table[assign.name.__repr__()]
         if isinstance(exo_type, T.Tensor):
             sizes = self._get_dynamic_shape(exo_type)
         else:
@@ -398,11 +351,11 @@ class IRGenerator:
         self.builder.insert(AssignOp(value, memref, idx, sizes))
 
     def _reduce_stmt(self, reduce):
-        memref = self._get_sym(reduce.name)
-        idx = self._expr_list(reduce.idx)
+        memref = self.symbol_table[reduce.name.__repr__()]
+        idx = [self._expr(e) for e in reduce.idx]
         value = self._expr(reduce.rhs)
 
-        exo_type = self._get_sym_exo_type(reduce.name)
+        exo_type = self.type_table[reduce.name.__repr__()]
         if isinstance(exo_type, T.Tensor):
             sizes = self._get_dynamic_shape(exo_type)
         else:
@@ -418,13 +371,15 @@ class IRGenerator:
         # construct true_block
         true_block = Block()
         self.builder = Builder(insertion_point=InsertPoint.at_end(true_block))
-        self._stmt_list(if_stmt.body)
+        for s in if_stmt.body:
+            self._stmt(s)
         self.builder.insert(YieldOp())
 
         # construct false_block
         false_block = Block()
         self.builder = Builder(insertion_point=InsertPoint.at_end(false_block))
-        self._stmt_list(if_stmt.orelse)
+        for s in if_stmt.orelse:
+            self._stmt(s)
         self.builder.insert(YieldOp())
 
         # cleanup and construct
@@ -449,11 +404,12 @@ class IRGenerator:
         self.symbol_table = ScopedDict(parent_scope)
 
         # add loop variable to symbol table
-        self._declare_arg(for_stmt.iter, loop_block.args[0])
-        self._declare_sym_exo_type(for_stmt.iter, T.Index)
+        self.symbol_table[for_stmt.iter.__repr__()] = loop_block.args[0]
+        self.type_table[for_stmt.iter.__repr__()] = T.Index
 
         # generate loop body
-        self._stmt_list(for_stmt.body)
+        for s in for_stmt.body:
+            self._stmt(s)
         self.builder.insert(YieldOp())
 
         # cleanup and construct
@@ -465,12 +421,12 @@ class IRGenerator:
     def _alloc_stmt(self, alloc):
         type = self._get_type(alloc.type, StringAttr(alloc.mem.name()))
         self.builder.insert(op := AllocOp(alloc.mem.name(), type))
-        self._declare_value(alloc.name, op.results[0])
-        self._declare_sym_exo_type(alloc.name, alloc.type)
+        self.symbol_table[alloc.name.__repr__()] = op.results[0]
+        self.type_table[alloc.name.__repr__()] = alloc.type
         return op.result
 
     def _free_stmt(self, free):
-        self.builder.insert(FreeOp(self._get_sym(free.name), free.mem.name()))
+        self.builder.insert(FreeOp(self.symbol_table[free.name.__repr__()], free.mem.name()))
 
     def _call_stmt(self, call):
         args = [self._expr(arg) for arg in call.args]
@@ -485,10 +441,6 @@ class IRGenerator:
             assert False, f"call to '{call.f.name}' has {len(call.args)} arguments, expected {len(call.f.args)}"
 
         self.builder.insert(CallOp(call.f.name, args, []))
-
-    def _stmt_list(self, stmts):
-        for stmt in stmts:
-            self._stmt(stmt)
 
     def _stmt(self, stmt):
         match stmt:
@@ -544,11 +496,12 @@ class IRGenerator:
 
         # add arguments to symbol table
         for proc_arg, block_arg in zip(procedure.args, block.args):
-            self._declare_arg(proc_arg.name, block_arg)
-            self._declare_sym_exo_type(proc_arg.name, proc_arg.type)
+            self.symbol_table[proc_arg.name.__repr__()] = block_arg
+            self.type_table[proc_arg.name.__repr__()] = proc_arg.type
 
         # generate function body
-        self._stmt_list(procedure.body)
+        for s in procedure.body:
+            self._stmt(s)
         self.builder.insert(ReturnOp())
 
         # cleanup
@@ -558,6 +511,10 @@ class IRGenerator:
 
         # insert procedure into module
         module_builder.insert(FuncOp(procedure.name, func_type, Region(block)))
+
+    #
+    # entry point
+    #
 
     def generate(self, procs) -> ModuleOp:
         for proc in procs:

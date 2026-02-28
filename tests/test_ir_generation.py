@@ -7,11 +7,30 @@ from exo.core.memory import DRAM
 from exo.core.prelude import SrcInfo, Sym
 
 from xdsl.dialects.builtin import i32
+from xdsl.dialects.test import TestOp
 from xdsl.utils.scoped_dict import ScopedDict
 from xdsl.utils.test_value import create_ssa_value
 from xdsl_exo.compiler import IRGenerator, compile_procs
 
 SRC_INFO = SrcInfo("test_mlir.py", 0)
+
+
+def with_empty_scope(gen: IRGenerator) -> IRGenerator:
+    gen.symbol_table = ScopedDict()
+    gen.type_table = ScopedDict()
+    return gen
+
+
+def with_test_op(gen: IRGenerator, sym: Sym, type) -> IRGenerator:
+    assert gen.symbol_table is not None
+    op = TestOp(result_types=[gen._get_type(type)])
+    gen.builder.insert(op)
+    gen.symbol_table[sym.__repr__()] = op.res[0]
+    if gen.type_table is not None:
+        gen.type_table[sym.__repr__()] = type
+    return gen
+
+
 TENSOR_TYPE = T.Tensor(
     [
         LoopIR.Const(32, T.index, SRC_INFO),
@@ -50,19 +69,17 @@ def test_emit_procedure_preserves_args():
 
 
 def test_get_sym():
-    gen = IRGenerator()._with_empty_scope()
+    gen = with_empty_scope(IRGenerator())
     sym = Sym("test")
 
-    with pytest.raises(AssertionError, match="unknown symbol test"):
-        gen._get_sym(sym)
+    with pytest.raises(KeyError):
+        gen.symbol_table[sym.__repr__()]
 
     # Test symbol found
     test_value = create_ssa_value(i32)
-    same_value = gen._declare_value(sym, test_value)
+    gen.symbol_table[sym.__repr__()] = test_value
 
-    assert test_value is same_value
-
-    res_value = gen._get_sym(sym)
+    res_value = gen.symbol_table[sym.__repr__()]
 
     assert res_value is test_value
 
@@ -78,7 +95,7 @@ def test_emit_assign_op():
         SRC_INFO,
     )
 
-    gen = IRGenerator()._with_empty_scope()._with_test_op(sym_x, TENSOR_TYPE)
+    gen = with_test_op(with_empty_scope(IRGenerator()), sym_x, TENSOR_TYPE)
     gen._assign_stmt(ir)
 
     print(gen.module)
@@ -96,7 +113,7 @@ def test_emit_reduce_op():
         SRC_INFO,
     )
 
-    gen = IRGenerator()._with_empty_scope()._with_test_op(sym_x, TENSOR_TYPE)
+    gen = with_test_op(with_empty_scope(IRGenerator()), sym_x, TENSOR_TYPE)
     gen._reduce_stmt(ir)
 
     print(gen.module)
@@ -134,7 +151,7 @@ def test_emit_for_op():
         SRC_INFO,
     )
 
-    gen = IRGenerator()._with_empty_scope()
+    gen = with_empty_scope(IRGenerator())
     gen._for_stmt(ir)
 
     print(gen.module)
@@ -149,7 +166,7 @@ def test_emit_alloc_op():
         SRC_INFO,
     )
 
-    gen = IRGenerator()._with_empty_scope()
+    gen = with_empty_scope(IRGenerator())
     gen._alloc_stmt(ir)
 
     print(gen.module)
@@ -165,7 +182,7 @@ def test_emit_free_op():
         SRC_INFO,
     )
 
-    gen = IRGenerator()._with_empty_scope()._with_test_op(sym_x, TENSOR_TYPE)
+    gen = with_test_op(with_empty_scope(IRGenerator()), sym_x, TENSOR_TYPE)
     gen._free_stmt(ir)
 
     print(gen.module)
@@ -176,14 +193,7 @@ def test_read_op():
     sym_x = Sym("x")
     ir = LoopIR.Read(sym_x, [LoopIR.Const(0, T.index, SRC_INFO)], T.f32, SRC_INFO)
 
-    gen = (
-        IRGenerator()
-        ._with_empty_scope()
-        ._with_test_op(
-            sym_x,
-            TENSOR_TYPE,
-        )
-    )
+    gen = with_test_op(with_empty_scope(IRGenerator()), sym_x, TENSOR_TYPE)
     gen._read_expr(ir)
 
     print(gen.module)
