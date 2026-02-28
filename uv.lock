@@ -1766,53 +1766,13 @@ wheels = [
 
 [[package]]
 name = "xdsl"
-source = { directory = "xdsl" }
+version = "0.1.dev3734+g5e799fc50"
+source = { git = "https://github.com/kaylendog/xdsl?rev=5e799fc5062d392338f9aa9c40e9e1277286cd97#5e799fc5062d392338f9aa9c40e9e1277286cd97" }
 dependencies = [
     { name = "immutabledict" },
     { name = "ordered-set" },
     { name = "typing-extensions" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "asv", marker = "extra == 'bench'", specifier = ">=0.6.4" },
-    { name = "coverage", marker = "extra == 'dev'", specifier = "<8.0.0" },
-    { name = "filecheck", marker = "extra == 'dev'", specifier = "==1.0.2" },
-    { name = "flameprof", marker = "extra == 'bench'", specifier = ">=0.4" },
-    { name = "immutabledict", specifier = "<4.2.2" },
-    { name = "ipykernel", marker = "extra == 'dev'" },
-    { name = "jax", marker = "extra == 'jax'", specifier = "==0.6.0" },
-    { name = "lit", marker = "extra == 'dev'", specifier = "<19.0.0" },
-    { name = "lzstring2", marker = "extra == 'docs'", git = "https://github.com/superlopuh/lz-string.git" },
-    { name = "marimo", marker = "extra == 'dev'", specifier = "==0.13.8" },
-    { name = "mkdocs", marker = "extra == 'docs'", specifier = ">=1.6.1" },
-    { name = "mkdocs-gen-files", marker = "extra == 'docs'", specifier = ">=0.5.0" },
-    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5.49" },
-    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.27.0" },
-    { name = "nbconvert", marker = "extra == 'dev'", specifier = ">=7.7.2,<8.0.0" },
-    { name = "nbval", marker = "extra == 'dev'", specifier = "<0.12" },
-    { name = "numpy", marker = "extra == 'jax'", specifier = "==2.2.5" },
-    { name = "ordered-set", specifier = "==4.1.0" },
-    { name = "orjson", marker = "extra == 'bench'", specifier = ">=3.10.15" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0.0,<5.0.0" },
-    { name = "pyclip", marker = "extra == 'gui'", specifier = "==0.7" },
-    { name = "pyinstrument", marker = "extra == 'bench'", specifier = ">=5.0.1" },
-    { name = "pymdown-extensions", marker = "extra == 'docs'", specifier = ">=10.7" },
-    { name = "pyright", marker = "extra == 'dev'", specifier = "==1.1.400" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = "<8.4" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "==0.26.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'" },
-    { name = "riscemu", marker = "extra == 'riscv'", specifier = "==2.2.7" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.11.9" },
-    { name = "snakeviz", marker = "extra == 'bench'", specifier = ">=2.2.2" },
-    { name = "sympy", marker = "extra == 'dev'", specifier = "==1.14.0" },
-    { name = "textual", marker = "extra == 'gui'", specifier = "==3.2.0" },
-    { name = "textual-dev", marker = "extra == 'dev'", specifier = "==1.7.0" },
-    { name = "toml", marker = "extra == 'dev'", specifier = "<0.11" },
-    { name = "typing-extensions", specifier = ">=4.7,<5" },
-    { name = "viztracer", marker = "extra == 'bench'", specifier = ">=1.0.1" },
-]
-provides-extras = ["dev", "docs", "gui", "jax", "riscv", "bench"]
 
 [[package]]
 name = "xdsl-exo"
@@ -1850,7 +1810,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.15.3" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "snakemake", specifier = ">=9.3.4" },
-    { name = "xdsl", directory = "xdsl" },
+    { name = "xdsl", git = "https://github.com/kaylendog/xdsl?rev=5e799fc5062d392338f9aa9c40e9e1277286cd97" },
 ]
 
 [[package]]

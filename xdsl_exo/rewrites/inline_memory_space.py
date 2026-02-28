@@ -5,6 +5,7 @@ from xdsl.dialects import memref
 from xdsl.dialects.builtin import MemRefType, ModuleOp, NoneAttr, StringAttr
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, op_type_rewrite_pattern
+
 from xdsl_exo.dialects import exo
 
 

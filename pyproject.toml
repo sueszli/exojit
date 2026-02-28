@@ -37,4 +37,4 @@ filterwarnings = ["ignore::pytest.PytestCollectionWarning"]
 ignore = ["F403", "F405", "F821"]
 
 [tool.uv.sources]
-xdsl = { path = "xdsl" }
+xdsl = { git = "https://github.com/kaylendog/xdsl", rev = "5e799fc5062d392338f9aa9c40e9e1277286cd97" }

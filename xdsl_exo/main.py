@@ -14,7 +14,6 @@ from exo.backend.prec_analysis import PrecisionAnalysis
 from exo.backend.win_analysis import WindowAnalysis
 from exo.core.LoopIR import LoopIR, T
 from exo.main import get_procs_from_module, load_user_code
-
 from xdsl.builder import Builder
 from xdsl.context import Context
 from xdsl.dialects import arith, func, memref, scf
@@ -29,6 +28,7 @@ from xdsl.transforms.common_subexpression_elimination import CommonSubexpression
 from xdsl.transforms.convert_scf_to_cf import ConvertScfToCf
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.scoped_dict import ScopedDict
+
 from xdsl_exo.dialects.exo import AllocOp, AssignOp, Exo, ExternOp, FreeOp, InstrOp, IntervalOp, ReadOp, ReduceOp, WindowOp
 from xdsl_exo.dialects.extra import Index, LLVMIntrinsics
 from xdsl_exo.platforms.avx2 import InlineAVX2Pass
