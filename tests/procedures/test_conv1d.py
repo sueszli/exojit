@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from exo import proc
 
-from xdsl_exo.compiler import compile_one
+from xdsl_exo.compiler import compile_procs
 
 
 def test_conv1d():
@@ -30,4 +30,4 @@ def test_conv1d():
                             y = 0
                         out[i, j] += kernels[i, c, r] * y
 
-    compile_one(conv1d)
+    compile_procs([conv1d])

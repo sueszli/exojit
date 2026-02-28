@@ -9,7 +9,7 @@ from exo.core.prelude import SrcInfo, Sym
 from xdsl.dialects.builtin import i32
 from xdsl.utils.scoped_dict import ScopedDict
 from xdsl.utils.test_value import create_ssa_value
-from xdsl_exo.compiler import compile_one
+from xdsl_exo.compiler import compile_procs
 from xdsl_exo.generator import IRGenerator, IRGeneratorError
 
 SRC_INFO = SrcInfo("test_mlir.py", 0)
@@ -27,7 +27,7 @@ def test_emit_procedure():
     def noop():
         pass
 
-    module = compile_one(noop)
+    module = compile_procs([noop])
     print(module)
 
 
@@ -36,7 +36,7 @@ def test_emit_procedure_with_args():
     def unary_noop(x: f32[16]):
         pass
 
-    module = compile_one(unary_noop)
+    module = compile_procs([unary_noop])
     print(module)
 
 
@@ -46,7 +46,7 @@ def test_emit_procedure_preserves_args():
         assert idx >= 0 and idx < 16
         x[idx] = 0.0
 
-    module = compile_one(unary_preserves_args)
+    module = compile_procs([unary_preserves_args])
     print(module)
 
 

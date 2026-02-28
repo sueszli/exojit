@@ -160,7 +160,7 @@ def transform(ctx: Context, module: ModuleOp, target: str = "llvm", prefix: str 
     return module
 
 
-def compile_many(
+def compile_procs(
     library: Sequence[Procedure],
     target: str = "llvm",
     prefix: str | None = None,
@@ -189,31 +189,6 @@ def compile_many(
     return transform(context(), IRGenerator().generate(analyzed_procedures), target, prefix)
 
 
-def compile_one(proc: Procedure, target: str = "llvm", prefix: str | None = None) -> ModuleOp:
-    """
-    Compile a single procedure. This is an alias for `compile_many([proc])`.
-    """
-    if proc.is_instr():
-        raise TypeError("Cannot compile an instr procedure.")
-    return compile_many([proc], target, prefix)
-
-
-def compile_path_to_mlir(src: Path, dst: Path | None = None, target: str = "llvm", prefix: str | None = None):
-    assert src.is_file() and src.suffix == ".py"
-
-    library = get_procs_from_module(load_user_code(src))
-    assert isinstance(library, list)
-    assert all(isinstance(proc, Procedure) for proc in library)
-
-    module = compile_many(library, target, prefix)
-
-    if not dst:
-        print(module)
-        return
-    os.makedirs(dst.parent, exist_ok=True)
-    dst.write_text(str(module))
-
-
 def main():
     parser = ArgumentParser(description="Compile an Exo library to MLIR.")
     parser.add_argument("source", type=str, help="Source file to compile")
@@ -222,9 +197,21 @@ def main():
     parser.add_argument("--prefix", help="Prefix to prepend to all procedure names.")
     args = parser.parse_args()
 
+    src = Path(args.source)
+    assert src.is_file() and src.suffix == ".py"
+
+    library = get_procs_from_module(load_user_code(src))
+    assert isinstance(library, list)
+    assert all(isinstance(proc, Procedure) for proc in library)
+
+    module = compile_procs(library, args.target, args.prefix)
+
     dst = None
     if args.output and args.output != "-":
         dst = Path(args.output)
-        os.makedirs(dst.parent, exist_ok=True)
 
-    compile_path_to_mlir(Path(args.source), dst=dst, target=args.target, prefix=args.prefix)
+    if not dst:
+        print(module)
+        return
+    os.makedirs(dst.parent, exist_ok=True)
+    dst.write_text(str(module))

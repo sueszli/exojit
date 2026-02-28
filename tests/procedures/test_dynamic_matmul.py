@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from exo import DRAM, proc
 
-from xdsl_exo.compiler import compile_one
+from xdsl_exo.compiler import compile_procs
 
 
 def test_dynamic_matmul():
@@ -20,4 +20,4 @@ def test_dynamic_matmul():
                 for k in seq(0, K):
                     C[i, j] += A[i, k] * B[k, j]
 
-    compile_one(dynamic_matmul)
+    compile_procs([dynamic_matmul])
