@@ -1,4 +1,3 @@
-import contextlib
 import os
 from argparse import ArgumentParser
 from collections.abc import Sequence
@@ -199,18 +198,10 @@ def compile_one(proc: Procedure, target: str = "llvm", prefix: str | None = None
     return compile_many([proc], target, prefix)
 
 
-def compile_path_to_mlir(
-    src: Path,
-    dst: Path | None = None,
-    target: str = "llvm",
-    prefix: str | None = None,
-):
-    assert src.is_file() and src.suffix == ".py", f"{src} is not a valid Python source file."
+def compile_path_to_mlir(src: Path, dst: Path | None = None, target: str = "llvm", prefix: str | None = None):
+    assert src.is_file() and src.suffix == ".py"
 
-    # load user code and get procedures from exo
-    # procedures tend to do a lot of printing, so we suppress stdout temporarily
-    with contextlib.redirect_stdout(None):
-        library = get_procs_from_module(load_user_code(src))
+    library = get_procs_from_module(load_user_code(src))
     assert isinstance(library, list)
     assert all(isinstance(proc, Procedure) for proc in library)
 
