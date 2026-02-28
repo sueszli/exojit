@@ -86,28 +86,6 @@ class IRGenerator:
             case _:
                 assert False, f"unknown type '{t}'"
 
-    def _get_shape(self, type) -> tuple[list[IntegerAttr], list[SSAValue]]:
-        assert isinstance(type, T.Tensor)
-
-        dynamic_shapes = []
-
-        def attr_from_expr(expr):
-            match expr:
-                case LoopIR.Const():
-                    return IntAttr(expr.val)
-                case LoopIR.Read():
-                    if self.symbol_table is not None:
-                        dynamic_shapes.append(self.symbol_table[expr.name.__repr__()])
-                    return IntAttr(-1)
-                case LoopIR.BinOp():
-                    if self.symbol_table is not None:
-                        dynamic_shapes.append(self._binop_expr(expr))
-                    return IntAttr(-1)
-                case _:
-                    assert False, f"invalid shape argument {expr}"
-
-        return ([attr_from_expr(expr) for expr in type.shape()], dynamic_shapes)
-
     def _get_static_shape(self, type) -> list[int]:
         assert isinstance(type, T.Tensor)
 
@@ -137,6 +115,12 @@ class IRGenerator:
                     assert False, f"invalid shape argument {expr}"
 
         return [attr_from_expr(expr) for expr in type.shape()]
+
+    def _sizes_for(self, name) -> list:
+        exo_type = self.type_table[name.__repr__()]
+        if isinstance(exo_type, T.Tensor):
+            return self._get_dynamic_shape(exo_type)
+        return []
 
     def _cast_to_index(self, value: SSAValue) -> SSAValue:
         if isinstance(value.type, IndexType):
@@ -186,14 +170,8 @@ class IRGenerator:
 
     def _read_expr(self, read):
         idx = [self._expr(e) for e in read.idx]
-
         operand = self.symbol_table[read.name.__repr__()]
-
-        exo_type = self.type_table[read.name.__repr__()]
-        if isinstance(exo_type, T.Tensor):
-            sizes = self._get_dynamic_shape(exo_type)
-        else:
-            sizes = []
+        sizes = self._sizes_for(read.name)
 
         self.builder.insert(op := ReadOp(operand, idx, sizes, result_type=self._get_type(read.type)))
 
@@ -321,31 +299,12 @@ class IRGenerator:
     # statement generation
     #
 
-    def _assign_stmt(self, assign):
-        idx = [self._expr(e) for e in assign.idx]
-        value = self._expr(assign.rhs)
-        memref = self.symbol_table[assign.name.__repr__()]
-
-        exo_type = self.type_table[assign.name.__repr__()]
-        if isinstance(exo_type, T.Tensor):
-            sizes = self._get_dynamic_shape(exo_type)
-        else:
-            sizes = []
-
-        self.builder.insert(AssignOp(value, memref, idx, sizes))
-
-    def _reduce_stmt(self, reduce):
-        memref = self.symbol_table[reduce.name.__repr__()]
-        idx = [self._expr(e) for e in reduce.idx]
-        value = self._expr(reduce.rhs)
-
-        exo_type = self.type_table[reduce.name.__repr__()]
-        if isinstance(exo_type, T.Tensor):
-            sizes = self._get_dynamic_shape(exo_type)
-        else:
-            sizes = []
-
-        self.builder.insert(ReduceOp(value, memref, idx, sizes))
+    def _store_stmt(self, stmt, op_cls):
+        idx = [self._expr(e) for e in stmt.idx]
+        value = self._expr(stmt.rhs)
+        memref = self.symbol_table[stmt.name.__repr__()]
+        sizes = self._sizes_for(stmt.name)
+        self.builder.insert(op_cls(value, memref, idx, sizes))
 
     def _if_stmt(self, if_stmt):
         cond = self._expr(if_stmt.cond)
@@ -429,9 +388,9 @@ class IRGenerator:
     def _stmt(self, stmt):
         match stmt:
             case LoopIR.Assign():
-                self._assign_stmt(stmt)
+                self._store_stmt(stmt, AssignOp)
             case LoopIR.Reduce():
-                self._reduce_stmt(stmt)
+                self._store_stmt(stmt, ReduceOp)
             case LoopIR.WriteConfig():
                 raise NotImplementedError("WriteConfig is not supported")
             case LoopIR.Pass():
