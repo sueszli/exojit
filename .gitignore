@@ -1,5 +1,5 @@
 .lit_test_times.txt
-tests/filecheck/Output/
+tests/**/Output/
 
 
 # Created by https://www.toptal.com/developers/gitignore/api/r,vim,emacs,latex,linux,macos,python,windows,jetbrains+all,visualstudiocode,c++
