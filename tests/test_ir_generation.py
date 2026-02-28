@@ -50,19 +50,19 @@ def test_emit_procedure_preserves_args():
 
 
 def test_get_sym():
-    gen = IRGenerator().with_empty_scope()
+    gen = IRGenerator()._with_empty_scope()
     sym = Sym("test")
 
     with pytest.raises(AssertionError, match="unknown symbol test"):
-        gen.get_sym(sym)
+        gen._get_sym(sym)
 
     # Test symbol found
     test_value = create_ssa_value(i32)
-    same_value = gen.declare_value(sym, test_value)
+    same_value = gen._declare_value(sym, test_value)
 
     assert test_value is same_value
 
-    res_value = gen.get_sym(sym)
+    res_value = gen._get_sym(sym)
 
     assert res_value is test_value
 
@@ -78,8 +78,8 @@ def test_emit_assign_op():
         SRC_INFO,
     )
 
-    gen = IRGenerator().with_empty_scope()._with_test_op(sym_x, TENSOR_TYPE)
-    gen.generate_assign_stmt(ir)
+    gen = IRGenerator()._with_empty_scope()._with_test_op(sym_x, TENSOR_TYPE)
+    gen._assign_stmt(ir)
 
     print(gen.module)
     gen.module.verify()
@@ -96,8 +96,8 @@ def test_emit_reduce_op():
         SRC_INFO,
     )
 
-    gen = IRGenerator().with_empty_scope()._with_test_op(sym_x, TENSOR_TYPE)
-    gen.generate_reduce_stmt(ir)
+    gen = IRGenerator()._with_empty_scope()._with_test_op(sym_x, TENSOR_TYPE)
+    gen._reduce_stmt(ir)
 
     print(gen.module)
     gen.module.verify()
@@ -116,7 +116,7 @@ def test_emit_if_op():
     ir = LoopIR.If(LoopIR.Const(True, T.bool, SRC_INFO), [], [], SRC_INFO)
 
     gen = IRGenerator()
-    gen.generate_if_stmt(ir)
+    gen._if_stmt(ir)
 
     print(gen.module)
     gen.module.verify()
@@ -134,8 +134,8 @@ def test_emit_for_op():
         SRC_INFO,
     )
 
-    gen = IRGenerator().with_empty_scope()
-    gen.generate_for_stmt(ir)
+    gen = IRGenerator()._with_empty_scope()
+    gen._for_stmt(ir)
 
     print(gen.module)
     gen.module.verify()
@@ -149,8 +149,8 @@ def test_emit_alloc_op():
         SRC_INFO,
     )
 
-    gen = IRGenerator().with_empty_scope()
-    gen.generate_alloc_stmt(ir)
+    gen = IRGenerator()._with_empty_scope()
+    gen._alloc_stmt(ir)
 
     print(gen.module)
     gen.module.verify()
@@ -165,8 +165,8 @@ def test_emit_free_op():
         SRC_INFO,
     )
 
-    gen = IRGenerator().with_empty_scope()._with_test_op(sym_x, TENSOR_TYPE)
-    gen.generate_free_stmt(ir)
+    gen = IRGenerator()._with_empty_scope()._with_test_op(sym_x, TENSOR_TYPE)
+    gen._free_stmt(ir)
 
     print(gen.module)
     gen.module.verify()
@@ -178,13 +178,13 @@ def test_read_op():
 
     gen = (
         IRGenerator()
-        .with_empty_scope()
+        ._with_empty_scope()
         ._with_test_op(
             sym_x,
             TENSOR_TYPE,
         )
     )
-    gen.generate_read_expr(ir)
+    gen._read_expr(ir)
 
     print(gen.module)
     gen.module.verify()
@@ -194,7 +194,7 @@ def test_const_op_int():
     ir = LoopIR.Const(0, T.int, SRC_INFO)
 
     gen = IRGenerator()
-    gen.generate_const_expr(ir)
+    gen._const_expr(ir)
 
     print(gen.module)
     gen.module.verify()
@@ -205,7 +205,7 @@ def test_const_op_float():
 
     gen = IRGenerator()
     gen.symbol_table = ScopedDict()
-    gen.generate_const_expr(ir)
+    gen._const_expr(ir)
 
     print(gen.module)
     gen.module.verify()
@@ -216,7 +216,7 @@ def test_const_op_bool():
 
     gen = IRGenerator()
     gen.symbol_table = ScopedDict()
-    gen.generate_const_expr(ir)
+    gen._const_expr(ir)
 
     print(gen.module)
     gen.module.verify()
@@ -226,7 +226,7 @@ def test_emit_usub_op():
     ir = LoopIR.USub(LoopIR.Const(0, T.int, SRC_INFO), T.int, SRC_INFO)
 
     gen = IRGenerator()
-    gen.generate_usub_expr(ir)
+    gen._usub_expr(ir)
 
     print(gen.module)
     gen.module.verify()
@@ -242,7 +242,7 @@ def test_emit_bin_op():
     )
 
     gen = IRGenerator()
-    gen.generate_binop_expr(ir)
+    gen._binop_expr(ir)
 
     print(gen.module)
     gen.module.verify()
