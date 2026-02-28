@@ -1,5 +1,6 @@
 import contextlib
 import os
+from argparse import ArgumentParser
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -89,16 +90,6 @@ class AddPrefixPass(ModulePass):
         ).rewrite_module(m)
 
 
-class CompilerOptions:
-    """
-    Compiler options for exo-mlir.
-    """
-
-    def __init__(self):
-        self.target = "llvm"
-        self.prefix = None
-
-
 def context() -> Context:
     ctx = Context()
     ctx.load_dialect(arith.Arith)
@@ -125,18 +116,19 @@ def analyze(p):
     return MemoryAnalysis().run(p)
 
 
-def compile_one(proc: Procedure, opts: CompilerOptions = CompilerOptions()) -> ModuleOp:
+def compile_one(proc: Procedure, target: str = "llvm", prefix: str | None = None) -> ModuleOp:
     """
     Compile a single procedure. This is an alias for `compile_many([proc])`.
     """
     if proc.is_instr():
         raise TypeError("Cannot compile an instr procedure.")
-    return compile_many([proc], opts)
+    return compile_many([proc], target, prefix)
 
 
 def compile_many(
     library: Sequence[Procedure],
-    opts: CompilerOptions = CompilerOptions(),
+    target: str = "llvm",
+    prefix: str | None = None,
 ) -> ModuleOp:
     """
     Compile a list of procedures into a single MLIR module..
@@ -159,13 +151,14 @@ def compile_many(
     analyzed_procedures = [analyze(proc) for proc in input_procedures]
 
     # generate MLIR
-    return transform(context(), IRGenerator().generate(analyzed_procedures), opts)
+    return transform(context(), IRGenerator().generate(analyzed_procedures), target, prefix)
 
 
 def compile_path(
     src: Path,
     dst: Path | None = None,
-    opts: CompilerOptions = CompilerOptions(),
+    target: str = "llvm",
+    prefix: str | None = None,
 ):
     """
     Compile all procedures in a Python source file to a single MLIR module, and write it to a file.
@@ -187,7 +180,7 @@ def compile_path(
     assert isinstance(library, list)
     assert all(isinstance(proc, Procedure) for proc in library)
 
-    module = compile_many(library, opts)
+    module = compile_many(library, target, prefix)
 
     # print to stdout if no dst
     if not dst:
@@ -199,7 +192,7 @@ def compile_path(
     dst.write_text(str(module))
 
 
-def transform(ctx: Context, module: ModuleOp, opts: CompilerOptions = CompilerOptions()) -> ModuleOp:
+def transform(ctx: Context, module: ModuleOp, target: str = "llvm", prefix: str | None = None) -> ModuleOp:
     """
     Apply transformations to an MLIR module.
     """
@@ -218,11 +211,11 @@ def transform(ctx: Context, module: ModuleOp, opts: CompilerOptions = CompilerOp
 
     module.verify()
 
-    if opts.target == "exo":
+    if target == "exo":
         return module
 
-    if opts.prefix is not None:
-        AddPrefixPass(opts.prefix).apply(ctx, module)
+    if prefix is not None:
+        AddPrefixPass(prefix).apply(ctx, module)
         module.verify()
 
     InlineBLASAllocPass().apply(ctx, module)
@@ -242,3 +235,19 @@ def transform(ctx: Context, module: ModuleOp, opts: CompilerOptions = CompilerOp
     module.verify()
 
     return module
+
+
+def main():
+    parser = ArgumentParser(description="Compile an Exo library to MLIR.")
+    parser.add_argument("source", type=str, help="Source file to compile")
+    parser.add_argument("-o", "--output", help="Output file. Defaults to stdout.")
+    parser.add_argument("--target", default="llvm", choices=["llvm", "exo", "builtin", "lowered", "scf"])
+    parser.add_argument("--prefix", help="Prefix to prepend to all procedure names.")
+    args = parser.parse_args()
+
+    dst = None
+    if args.output and args.output != "-":
+        dst = Path(args.output)
+        os.makedirs(dst.parent, exist_ok=True)
+
+    compile_path(Path(args.source), dst=dst, target=args.target, prefix=args.prefix)

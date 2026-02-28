@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
-xdsl-exo = "xdsl_exo.main:main"
+xdsl-exo = "xdsl_exo.compiler:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
