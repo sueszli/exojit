@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from argparse import ArgumentParser
 from collections.abc import Sequence
+from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
 
@@ -53,6 +54,22 @@ class IRGenerator:
         self.symbol_table = None
         self.type_table = None
         self.seen_procs = set()
+
+    @contextmanager
+    def _tmp_state(self, *, inherit=True):
+        # saves builder, symbol_table, and type_table, restoring them on exit
+        parent_builder = self.builder
+        parent_symbol_table = self.symbol_table
+        parent_type_table = self.type_table
+        if not inherit:
+            self.symbol_table = ScopedDict[str, SSAValue]()
+            self.type_table = ScopedDict[str, Attribute]()
+        try:
+            yield
+        finally:
+            self.builder = parent_builder
+            self.symbol_table = parent_symbol_table
+            self.type_table = parent_type_table
 
     def _type(self, exo_type, mem_space: StringAttr | None = None) -> Attribute:
         match exo_type:
@@ -247,24 +264,21 @@ class IRGenerator:
     def _if_stmt(self, if_stmt):
         cond = self._expr(if_stmt.cond)
 
-        parent_builder = self.builder
+        with self._tmp_state():
+            # construct true_block
+            true_block = Block()
+            self.builder = Builder(insertion_point=InsertPoint.at_end(true_block))
+            for s in if_stmt.body:
+                self._stmt(s)
+            self.builder.insert(YieldOp())
 
-        # construct true_block
-        true_block = Block()
-        self.builder = Builder(insertion_point=InsertPoint.at_end(true_block))
-        for s in if_stmt.body:
-            self._stmt(s)
-        self.builder.insert(YieldOp())
+            # construct false_block
+            false_block = Block()
+            self.builder = Builder(insertion_point=InsertPoint.at_end(false_block))
+            for s in if_stmt.orelse:
+                self._stmt(s)
+            self.builder.insert(YieldOp())
 
-        # construct false_block
-        false_block = Block()
-        self.builder = Builder(insertion_point=InsertPoint.at_end(false_block))
-        for s in if_stmt.orelse:
-            self._stmt(s)
-        self.builder.insert(YieldOp())
-
-        # cleanup and construct
-        self.builder = parent_builder
         self.builder.insert(IfOp(cond, [], Region(true_block), Region(false_block)))
 
     def _for_stmt(self, for_stmt):
@@ -273,29 +287,23 @@ class IRGenerator:
         step = ConstantOp(IntegerAttr(1, i64))
         self.builder.insert(step)
 
-        parent_builder = self.builder
-        parent_scope = self.symbol_table
+        with self._tmp_state():
+            # construct loop block
+            loop_block = Block(
+                # TODO: this should be inferred from lo and hi
+                arg_types=[i64],
+            )
+            self.builder = Builder(insertion_point=InsertPoint.at_end(loop_block))
+            self.symbol_table = ScopedDict(self.symbol_table)
 
-        # construct loop block
-        loop_block = Block(
-            # TODO: this should be inferred from lo and hi
-            arg_types=[i64],
-        )
-        self.builder = Builder(insertion_point=InsertPoint.at_end(loop_block))
-        self.symbol_table = ScopedDict(parent_scope)
+            # add loop variable to symbol table
+            self.symbol_table[repr(for_stmt.iter)] = loop_block.args[0]
+            self.type_table[repr(for_stmt.iter)] = T.Index
 
-        # add loop variable to symbol table
-        self.symbol_table[repr(for_stmt.iter)] = loop_block.args[0]
-        self.type_table[repr(for_stmt.iter)] = T.Index
-
-        # generate loop body
-        for s in for_stmt.body:
-            self._stmt(s)
-        self.builder.insert(YieldOp())
-
-        # cleanup and construct
-        self.symbol_table = parent_scope
-        self.builder = parent_builder
+            # generate loop body
+            for s in for_stmt.body:
+                self._stmt(s)
+            self.builder.insert(YieldOp())
 
         self.builder.insert(ForOp(lo, hi, step.result, [], Region(loop_block)))
 
@@ -360,30 +368,20 @@ class IRGenerator:
             input_types.append(self._type(arg.type, mem))
         func_type = FunctionType.from_lists(input_types, [])
 
-        parent_builder = self.builder
-        parent_symbol_table = self.symbol_table
-        parent_type_table = self.type_table
-        self.symbol_table = ScopedDict[str, SSAValue]()
-        self.type_table = ScopedDict[str, Attribute]()
+        with self._tmp_state(inherit=False):
+            # initialise function block
+            block = Block(arg_types=input_types)
+            self.builder = Builder(insertion_point=InsertPoint.at_end(block))
 
-        # initialise function block
-        block = Block(arg_types=input_types)
-        self.builder = Builder(insertion_point=InsertPoint.at_end(block))
+            # add arguments to symbol table
+            for proc_arg, block_arg in zip(procedure.args, block.args):
+                self.symbol_table[repr(proc_arg.name)] = block_arg
+                self.type_table[repr(proc_arg.name)] = proc_arg.type
 
-        # add arguments to symbol table
-        for proc_arg, block_arg in zip(procedure.args, block.args):
-            self.symbol_table[repr(proc_arg.name)] = block_arg
-            self.type_table[repr(proc_arg.name)] = proc_arg.type
-
-        # generate function body
-        for s in procedure.body:
-            self._stmt(s)
-        self.builder.insert(ReturnOp())
-
-        # cleanup and insert procedure into module
-        self.symbol_table = parent_symbol_table
-        self.type_table = parent_type_table
-        self.builder = parent_builder
+            # generate function body
+            for s in procedure.body:
+                self._stmt(s)
+            self.builder.insert(ReturnOp())
 
         module_builder = Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0]))
         module_builder.insert(FuncOp(procedure.name, func_type, Region(block)))
