@@ -50,7 +50,6 @@ class IRGenerator:
     type_table: ScopedDict[str, Attribute] | None = None
 
     seen_procs: set[str] = set()
-    seen_externs: set[str] = set()
 
     def __init__(self):
         self.module = ModuleOp([])
@@ -420,62 +419,27 @@ class IRGenerator:
         return usub.result
 
     def generate_binop_expr(self, binop):
-        # generate a binary operation expression.
-
         type = self.get_type(binop.type)
+        if type == i1:
+            return self.generate_binop_expr_cmp(binop)
+
+        lhs = self.generate_expr(binop.lhs)
+        rhs = self.generate_expr(binop.rhs)
+
+        float_ops = {"+": AddfOp, "-": SubfOp, "*": MulfOp, "/": DivfOp}
+        int_ops = {"+": AddiOp, "-": SubiOp, "*": MuliOp, "/": DivSIOp, "%": RemSIOp}
 
         if type in [f16, f32, f64]:
-            return self.generate_binop_expr_float(binop)
+            op_cls = float_ops[binop.op]
+            op = op_cls(lhs, rhs, result_type=type, flags=FastMathFlagsAttr("none"))
         elif type in [i8, i16, i32, i64]:
-            return self.generate_binop_expr_int(binop)
-        elif type == i1:
-            return self.generate_binop_expr_cmp(binop)
+            op_cls = int_ops[binop.op]
+            op = op_cls(lhs, rhs, result_type=type)
         else:
             assert False, f"unknown type '{type.name}'"
 
-    def generate_binop_expr_float(self, binop):
-        # generate a floating point binary operation expression.
-
-        type = self.get_type(binop.type)
-        lhs = self.generate_expr(binop.lhs)
-        rhs = self.generate_expr(binop.rhs)
-
-        if binop.op == "+":
-            binop = AddfOp(lhs, rhs, result_type=type, flags=FastMathFlagsAttr("none"))
-        elif binop.op == "-":
-            binop = SubfOp(lhs, rhs, result_type=type, flags=FastMathFlagsAttr("none"))
-        elif binop.op == "*":
-            binop = MulfOp(lhs, rhs, result_type=type, flags=FastMathFlagsAttr("none"))
-        elif binop.op == "/":
-            binop = DivfOp(lhs, rhs, result_type=type, flags=FastMathFlagsAttr("none"))
-        else:
-            assert False, f"unknown binop {binop.op}"
-
-        self.builder.insert(binop)
-        return binop.result
-
-    def generate_binop_expr_int(self, binop):
-        # generate an integer binary operation expression.
-
-        type = self.get_type(binop.type)
-        lhs = self.generate_expr(binop.lhs)
-        rhs = self.generate_expr(binop.rhs)
-
-        if binop.op == "+":
-            binop = AddiOp(lhs, rhs, result_type=type)
-        elif binop.op == "-":
-            binop = SubiOp(lhs, rhs, result_type=type)
-        elif binop.op == "*":
-            binop = MuliOp(lhs, rhs, result_type=type)
-        elif binop.op == "/":
-            binop = DivSIOp(lhs, rhs, result_type=type)
-        elif binop.op == "%":
-            binop = RemSIOp(lhs, rhs, result_type=type)
-        else:
-            assert False, f"unknown binop {binop.op}"
-
-        self.builder.insert(binop)
-        return binop.result
+        self.builder.insert(op)
+        return op.result
 
     def generate_binop_expr_cmp(self, binop):
         integer_cmp_table = {
@@ -716,15 +680,14 @@ def compile_procs(
     all_procs = sorted(find_all_subprocs(compilable), key=lambda x: x.name)
     unique_procs = list({p.name: p for p in all_procs}.values())
 
-    # run exo analysis passes
-    def analyze(proc):
+    def exo_analyze(proc):
         assert isinstance(proc, LoopIR.proc)
         proc = ParallelAnalysis().run(proc)
         proc = PrecisionAnalysis().run(proc)
         proc = WindowAnalysis().apply_proc(proc)
         return MemoryAnalysis().run(proc)
 
-    analyzed_procs = [analyze(proc) for proc in unique_procs]
+    analyzed_procs = [exo_analyze(proc) for proc in unique_procs]
     return transform(analyzed_procs, target, prefix)
 
 
