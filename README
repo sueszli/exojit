@@ -1,1 +1,38 @@
+              ,,))))))));,
+           __)))))))))))))),
+\|/       -\(((((''''((((((((.
+-*-==//////((''  .     `)))))),
+/|\      ))| o    ;-.    '(((((                                  ,(,
+         ( `|    /  )    ;))))'                               ,_))^;(~
+            |   |   |   ,))((((_     _____------~~~-.        %,;(;(>';'~
+            o_);   ;    )))(((` ~---~  `::           \      %%~~)(v;(`('~
+                  ;    ''''````         `:       `:::|\,__,%%    );`'; ~
+                 |   _                )     /      `:|`----'     `-'
+           ______/\/~    |                 /        /
+         /~;;.____/;;'  /          ___--,-(   `;;;/
+        / //  _;______;'------~~~~~    /;;/\    /
+       //  | |                        / ;   \;;,\
+      (<_  | ;                      /',/-----'  _>
+       \_| ||_                     //~;~~~~~~~~~
+           `\_|                   (,~~
+                                   \~\
+                                    ~~
+
+## usage
+
+```
 uv run xdsl-exo examples/matmul.py
+```
+
+## references
+
+exo lang
+
+- https://exo-lang.dev/
+- https://github.com/exo-lang/exo/
+- https://github.com/exo-lang/exo/blob/main/docs/README.md
+- https://gist.github.com/sueszli/76acdde675002f64a34a6a3967cbb7fa
+
+first version by skye
+
+- https://github.com/kaylendog/exo-mlir
