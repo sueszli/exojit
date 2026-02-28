@@ -15,79 +15,21 @@ from exo.main import get_procs_from_module, load_user_code
 
 from xdsl.context import Context
 from xdsl.dialects import arith, func, memref, scf
-from xdsl.dialects.builtin import Builtin, ModuleOp, StringAttr
-from xdsl.passes import ModulePass
-from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, op_type_rewrite_pattern
+from xdsl.dialects.builtin import Builtin, ModuleOp
 from xdsl.transforms.canonicalize import CanonicalizePass
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
 from xdsl.transforms.convert_scf_to_cf import ConvertScfToCf
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
-from xdsl_exo.dialects import extra
 from xdsl_exo.dialects.exo import Exo
 from xdsl_exo.dialects.extra import Index, LLVMIntrinsics
 from xdsl_exo.generator import IRGenerator
 from xdsl_exo.platforms.avx2 import InlineAVX2Pass
 from xdsl_exo.platforms.blas import InlineBLASAllocPass, InlineBLASPass
+from xdsl_exo.rewrites.add_prefix import AddPrefixPass
 from xdsl_exo.rewrites.convert_memref_to_llvm import ConvertMemRefToLLVM
 from xdsl_exo.rewrites.convert_scalar_ref import ConvertScalarRefPass
 from xdsl_exo.rewrites.inline_memory_space import InlineMemorySpacePass
-
-
-class ReconcileIndexCasts(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: extra.CastsOp, rewriter: PatternRewriter):
-        if len(op.result.uses) == 0:
-            rewriter.erase_matched_op()
-            return
-
-        # replace x -> y -> x cast with x
-        if not isinstance(op.input.owner, extra.CastsOp):
-            return
-
-        if op.input.owner.input.type != op.result.type:
-            return
-
-        rewriter.replace_matched_op((), (op.input.owner.input,))
-
-
-class ReconcileIndexCastsPass(ModulePass):
-    name = "reconcile-index-casts"
-
-    def apply(self, ctx: Context, m: ModuleOp) -> None:
-        PatternRewriteWalker(
-            GreedyRewritePatternApplier([ReconcileIndexCasts()]),
-            walk_reverse=True,
-        ).rewrite_module(m)
-
-
-class ConvertFuncOp(RewritePattern):
-    def __init__(self, prefix: str):
-        super().__init__()
-        self.prefix = prefix
-
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: func.FuncOp, rewriter: PatternRewriter):
-        if op.name.startswith(self.prefix):
-            return
-
-        op.sym_name = StringAttr(f"{self.prefix}_{op.sym_name.data}")
-
-
-class AddPrefixPass(ModulePass):
-    name = "add-prefix"
-
-    def __init__(self, prefix: str):
-        super().__init__()
-        self.prefix = prefix
-
-    def apply(self, ctx: Context, m: ModuleOp) -> None:
-        PatternRewriteWalker(
-            GreedyRewritePatternApplier(
-                [
-                    ConvertFuncOp(self.prefix),
-                ]
-            ),
-        ).rewrite_module(m)
+from xdsl_exo.rewrites.reconcile_index_casts import ReconcileIndexCastsPass
 
 
 @cache
