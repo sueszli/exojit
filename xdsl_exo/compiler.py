@@ -210,20 +210,15 @@ def compile_path_to_mlir(
     # load user code and get procedures from exo
     # procedures tend to do a lot of printing, so we suppress stdout temporarily
     with contextlib.redirect_stdout(None):
-        library = get_procs_from_module(load_user_code(src))  # type: list[Procedure]
-
-    # invoke exo analysis
+        library = get_procs_from_module(load_user_code(src))
     assert isinstance(library, list)
     assert all(isinstance(proc, Procedure) for proc in library)
 
     module = compile_many(library, target, prefix)
 
-    # print to stdout if no dst
     if not dst:
         print(module)
         return
-
-    # write MLIR to file
     os.makedirs(dst.parent, exist_ok=True)
     dst.write_text(str(module))
 
