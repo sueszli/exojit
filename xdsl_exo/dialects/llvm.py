@@ -49,7 +49,7 @@ class MaskedStoreOp(IRDLOperation):
             operands=[value, data, mask],
             result_types=[],
             properties={
-                "alignment": IntegerAttr.from_int_and_width(alignment, 32),
+                "alignment": IntegerAttr(alignment, 32),
             },
         )
 

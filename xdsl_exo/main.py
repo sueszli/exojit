@@ -334,12 +334,15 @@ class IRGenerator:
 
     def _call_stmt(self, call):
         assert isinstance(call, LoopIR.Call)
+        # lower all args to ssa values
         args = [self._expr(arg) for arg in call.args]
 
+        # hardware intrinsic: emit opaque instr op
         if call.f.instr is not None:
             self.builder.insert(InstrOp(call.f.name, args))
             return
 
+        # recursively lower callee, then emit call op
         self._procedure(call.f)
         assert len(call.args) == len(call.f.args)
 
