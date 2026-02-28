@@ -32,10 +32,10 @@ from xdsl.utils.scoped_dict import ScopedDict
 
 from xdsl_exo.dialects.exo import AllocOp, AssignOp, Exo, ExternOp, InstrOp, IntervalOp, ReadOp, ReduceOp, WindowOp
 from xdsl_exo.dialects.llvm import LLVMIntrinsics
-from xdsl_exo.platforms.avx2 import InlineAVX2Pass
-from xdsl_exo.platforms.blas import InlineBLASAllocPass, InlineBLASPass
 from xdsl_exo.rewrites.convert_memref_to_llvm import ConvertMemRefToLLVM
 from xdsl_exo.rewrites.convert_scalar_ref import ConvertScalarRefPass
+from xdsl_exo.rewrites.inline_avx2 import InlineAVX2Pass
+from xdsl_exo.rewrites.inline_blas import InlineBLASAllocPass, InlineBLASPass
 from xdsl_exo.rewrites.inline_memory_space import InlineMemorySpacePass
 from xdsl_exo.rewrites.reconcile_index_casts import ReconcileIndexCastsPass
 
@@ -408,9 +408,7 @@ class IRGenerator:
         for proc in procs:
             self._procedure(proc)
 
-        # skip verify here – scalar allocs haven't been promoted to memrefs yet,
-        # so memref.dealloc operands may still have scalar types.
-        # verification runs after ConvertScalarRefPass in _transform().
+        # verify() deferred to _transform() (after scalar-ref -> memref conversion)
         return self.module
 
 
