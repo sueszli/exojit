@@ -66,7 +66,7 @@ class AssignOp(IRDLOperation):
 
     assembly_format = "$value `,` $input `[` $indices `]` `,` `sizes` `:` `[` $sizes `]` `,` attr-dict `:` type($value) `,` type($input)"
 
-    irdl_options = [AttrSizedOperandSegments(as_property=True), ParsePropInAttrDict()]
+    irdl_options = (AttrSizedOperandSegments(as_property=True), ParsePropInAttrDict())
 
     def __init__(
         self,
@@ -79,7 +79,7 @@ class AssignOp(IRDLOperation):
         super().__init__(
             operands=[value, SSAValue.get(input), indices, dyn_sizes],
             result_types=[],
-            properties={"static_sizes": DenseArrayBase.create_dense_int(i64, static_sizes)},
+            properties={"static_sizes": DenseArrayBase.from_list(i64, static_sizes)},
         )
 
 
@@ -95,7 +95,7 @@ class ReduceOp(IRDLOperation):
 
     assembly_format = "$value `,` $input `[` $indices `]` `,` `sizes` `:` `[` $sizes `]` `,` attr-dict `:` type($value) `,` type($input)"
 
-    irdl_options = [AttrSizedOperandSegments(as_property=True), ParsePropInAttrDict()]
+    irdl_options = (AttrSizedOperandSegments(as_property=True), ParsePropInAttrDict())
 
     def __init__(
         self,
@@ -109,7 +109,7 @@ class ReduceOp(IRDLOperation):
         super().__init__(
             operands=[value, SSAValue.get(input), indices, dyn_sizes],
             result_types=[],
-            properties={"static_sizes": DenseArrayBase.create_dense_int(i64, static_sizes)},
+            properties={"static_sizes": DenseArrayBase.from_list(i64, static_sizes)},
         )
 
 
@@ -123,7 +123,7 @@ class ReadOp(IRDLOperation):
     static_sizes = prop_def(DenseArrayBase)
     result = result_def()
 
-    irdl_options = [AttrSizedOperandSegments(as_property=True), ParsePropInAttrDict()]
+    irdl_options = (AttrSizedOperandSegments(as_property=True), ParsePropInAttrDict())
 
     def __init__(
         self,
@@ -140,7 +140,7 @@ class ReadOp(IRDLOperation):
                 dyn_sizes,
             ],
             result_types=[result_type],
-            properties={"static_sizes": DenseArrayBase.create_dense_int(i64, static_sizes)},
+            properties={"static_sizes": DenseArrayBase.from_list(i64, static_sizes)},
         )
 
     def verify_(self):
@@ -154,16 +154,16 @@ class ReadOp(IRDLOperation):
 
     def print(self, printer: Printer):
         printer.print_string(" ")
-        printer.print(self.input)
+        printer.print_ssa_value(self.input)
         if len(self.indices) > 0:
-            printer.print("[")
+            printer.print_string("[")
             for i, index in enumerate(self.indices):
                 if i > 0:
-                    printer.print(", ")
-                printer.print(index)
-            printer.print("]")
-        printer.print(" -> ")
-        printer.print(self.result.type)
+                    printer.print_string(", ")
+                printer.print_ssa_value(index)
+            printer.print_string("]")
+        printer.print_string(" -> ")
+        printer.print_attribute(self.result.type)
 
 
 @irdl_op_definition
@@ -206,7 +206,7 @@ class WindowOp(IRDLOperation):
         MemRefType.constr(element_type=T),
     )
 
-    irdl_options = [AttrSizedOperandSegments(as_property=True), ParsePropInAttrDict()]
+    irdl_options = (AttrSizedOperandSegments(as_property=True), ParsePropInAttrDict())
 
     def __init__(
         self,

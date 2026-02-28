@@ -49,7 +49,7 @@ class FAbsOp(IRDLOperation):
 
     assembly_format = "`(` operands `)` attr-dict `:` functional-type(operands, results)"
 
-    irdl_options = [ParsePropInAttrDict()]
+    irdl_options = (ParsePropInAttrDict(),)
 
     def __init__(self, input: Operation | SSAValue, result_type: Attribute):
         super().__init__(operands=[input], result_types=[result_type])
@@ -66,7 +66,7 @@ class MaskedStoreOp(IRDLOperation):
 
     assembly_format = "$value `,` $data `,` $mask attr-dict `:` type($value) `,` type($mask) `into` type($data)"
 
-    irdl_options = [ParsePropInAttrDict()]
+    irdl_options = (ParsePropInAttrDict(),)
 
     def __init__(
         self,
