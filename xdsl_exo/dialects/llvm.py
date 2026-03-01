@@ -1,4 +1,4 @@
-# monkey patch. merge this upstream
+# monkey patch. will be merged upstream
 
 from typing import ClassVar
 
