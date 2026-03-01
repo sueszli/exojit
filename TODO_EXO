@@ -12,65 +12,42 @@ which ops are easiest to eliminate from the codebase one at a time, with each
 step validated by regression tests before moving on.
 
 
-STEP 0: ADD REGRESSION TESTS  ✅ DONE
-======================================
+STEP 1: DELETE exo.invert_window (InvertWindowOp)
+===================================================
 
-Regression tests added in tests/filecheck/regression/ (13 tests, all passing).
-Run with: uv run lit tests/filecheck/regression/
+InvertWindowOp is dead code in the real pipeline. It is never emitted by the
+IRGenerator or any lowering pass. It only exists in:
 
-Coverage:
-  exo.alloc:
-    - alloc_dram.py          — DRAM alloc → malloc, with read/assign
-    - assign_scalar_memref.py — scalar alloc → memref[1] → malloc(1)
-    - multi_type_alloc.py    — f32 + i32 alloc in same proc
-    - assign_from_scalar_memref.py — scalar alloc used as value source
+  - Definition: xdsl_exo/dialects/exo.py (class InvertWindowOp)
+  - Lowering pattern: xdsl_exo/rewrites/convert_tensor_ref.py (ConvertInvertWindowOp)
+  - Tests: tests/procedures/test_window.py (manually constructs it)
 
-  exo.read:
-    - read_scalar_identity.py — scalar identity read (memref[1] → memref[1])
-    - read_tensor_indexed.py  — indexed tensor read in a loop
-    - zero_index_read.py      — read at constant index 0 (edge case)
+The lowering pattern (ConvertInvertWindowOp) eliminates it entirely — it
+produces no MLIR ops, just forwards the SSA value from before the
+window/subview. Since nothing in the pipeline ever creates this op, both the
+op definition and the lowering pattern are unreachable.
 
-  exo.assign:
-    - assign_2d.py            — 2D indexed assign with stride computation
-    - assign_scalar_memref.py — scalar assign + reduce (x = x + 1.0)
-    - assign_from_scalar_memref.py — assign from scalar memref to tensor
+To drop it:
+  - Remove InvertWindowOp from xdsl_exo/dialects/exo.py and the Exo dialect op list.
+  - Remove ConvertInvertWindowOp from convert_tensor_ref.py.
 
-  exo.window:
-    - window_row.py           — row window A[i, :] → 1D subview of 2D
-    - window_col.py           — column window A[:, j] → 1D subview along cols
-    - window_chained.py       — chained windows (subview of subview, 3 procs)
+No replacement op needed — there is nothing to replace.
 
-  exo.invert_window:
-    - Covered by unit tests in tests/procedures/test_window.py
-      (test_invert_window_trivial, test_invert_window_type_matches,
-       test_invert_window_block_arg_panics)
-    - Not exercisable end-to-end via Exo @proc syntax (InvertWindowOp is
-      only created internally during lowering, not by IRGenerator)
+After deletion, add a lit test that proves the full window round-trip works
+end-to-end without InvertWindowOp:
+  1. Create a window (A[i, :] → 1D subview of 2D buffer)
+  2. Create a sub-window (subview of a subview)
+  3. Write through the sub-window
+  4. Read back from the original buffer — the write is visible
 
-  Not yet covered:
-    - VEC_AVX2 alloc path (requires platform-specific AVX2 setup)
-    - Dynamic-size tensors (blocked by upstream xDSL issue, see conv1d XFAIL)
+This proves no information is lost: the original buffer is always reachable
+through the chain of subviews, and writes through any level of windowing
+correctly propagate back to the source. The existing window_chained.py
+regression test partially covers this; extend or add a new test that
+explicitly reads back from the top-level buffer after writing through a
+nested window.
 
-After dropping each exo op (steps 1-5), these regression tests must still
-pass — the output MLIR should be identical (or functionally equivalent). This
-is the primary correctness guarantee for the refactoring.
-
-
-STEP 1: DROP exo.invert_window (InvertWindowOp)
-================================================
-
-Lowered in convert_tensor_ref.py → eliminated entirely.
-
-If the input comes from exo.WindowOp: replaced with the original input to that WindowOp.
-If the input comes from memref.SubviewOp: replaced with the source of that SubviewOp.
-Otherwise: assertion error.
-
-This is purely a bookkeeping op to recover the original un-windowed memref.
-
-To skip exo.invert_window:
-  - Don't emit it. Just keep a reference to the original memref before windowing/subview.
-
-Regression tests must pass after this step.
+`make tests` must pass after this step.
 
 
 STEP 2: DROP exo.alloc (AllocOp)
@@ -92,7 +69,7 @@ To skip exo.alloc:
     Or go straight to LLVM: emit arith.constant(num_elements) → llvm.call @malloc → unrealized_conversion_cast.
   - For VEC_AVX2: emit arith.constant(num_elements) → llvm.alloca → unrealized_conversion_cast.
 
-Regression tests must pass after this step.
+`make tests` must pass after this step.
 
 
 STEP 3: DROP exo.read (ReadOp)
@@ -113,7 +90,7 @@ To skip exo.read:
   - For scalar/identity reads: just use the SSA value directly (no op needed).
   - For index type conversions: emit arith.index_cast.
 
-Regression tests must pass after this step.
+`make tests` must pass after this step.
 
 
 STEP 4: DROP exo.assign (AssignOp)
@@ -135,7 +112,7 @@ To skip exo.assign:
   - Emit memref.store(value, memref, [index_cast_results]).
   - If the value comes from a scalar memref, load it first with memref.load.
 
-Regression tests must pass after this step.
+`make tests` must pass after this step.
 
 
 STEP 5: DROP exo.window (WindowOp)
@@ -158,10 +135,48 @@ To skip exo.window:
   - Emit memref.subview(input, offsets, output_sizes, strides) with a StridedLayoutAttr.
   - The result memref type needs a StridedLayoutAttr matching the computed strides.
 
-Regression tests must pass after this step.
+`make tests` must pass after this step.
 
 
-STEP 6: SEPARATE UPSTREAM (XDSL) VS LOCAL (THIS REPO) CHANGES
+STEP 6: CONSOLIDATE REWRITE FILES
+====================================
+
+After steps 1-5 shrink the exo dialect, merge rewrite files that handle
+overlapping concerns. Current file layout in xdsl_exo/rewrites/:
+
+  convert_tensor_ref.py    — exo read/assign/window/invert_window → memref ops
+  convert_scalar_ref.py    — scalar exo read/assign → 1-D memref wrappers
+  convert_memory_space.py  — DRAM memory space on alloc/window → memref.alloc
+  convert_memref_to_llvm.py — exo alloc (DRAM) → malloc/free
+  convert_blas.py          — exo alloc (VEC_AVX2) + mm256_* intrinsics → vector/LLVM
+  convert_avx2.py          — mm256_* intrinsics → LLVM (duplicates convert_blas.py)
+  reconcile_index_casts.py — remove redundant arith.index_cast
+  extended_memref_to_ptr.py — memref.cast/reinterpret_cast → ptr ops
+
+Merge candidates:
+
+  a) convert_avx2.py → merge into convert_blas.py
+     Near-complete overlap: both handle mm256_* AVX2 intrinsic lowering.
+
+  b) convert_tensor_ref.py + convert_scalar_ref.py → single file
+     Both handle exo.ReadOp and exo.AssignOp, just for different shapes.
+     After dropping the exo ops (steps 3-4) these may naturally collapse.
+
+  c) convert_memory_space.py + convert_memref_to_llvm.py → single file
+     Sequential stages of the same pipeline: memory space annotation →
+     malloc/free lowering. Both deal with exo.AllocOp for DRAM.
+
+  d) convert_blas.py + convert_memref_to_llvm.py (after merge c)
+     Both convert exo.AllocOp and memref.DeallocOp, dispatched by memory
+     space (DRAM vs VEC_AVX2). Could become a single alloc-lowering file.
+
+Do this after dropping exo ops — the merges will be cleaner once there are
+fewer ops to route between files.
+
+`make tests` must pass after this step.
+
+
+STEP 7: SEPARATE UPSTREAM (XDSL) VS LOCAL (THIS REPO) CHANGES
 ===============================================================
 
 As we make changes throughout steps 1-5, we need to keep a clean separation
@@ -208,7 +223,7 @@ SUMMARY: BYPASSING EXO OPS
 
 To generate MLIR directly and skip exo lowering entirely:
 
-  exo.invert_window → nothing, just track the original memref
+  exo.invert_window → delete (dead code, never emitted in the pipeline)
   exo.alloc         → memref.alloc (or llvm.call @malloc for LLVM-level)
   exo.read          → arith.index_cast per index + memref.load (or SSA forwarding)
   exo.assign        → arith.index_cast per index + memref.store

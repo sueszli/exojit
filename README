@@ -1,14 +1,44 @@
+              \
+               \
+                \\
+                 \\
+                  >\/7
+              _.-(6'  \
+             (=___._/` \
+                  )  \ |
+                 /   / |
+                /    > /
+               j    < _\
+           _.-' :      ``.
+           \ r=._\        `.
+          <`\\_  \         .`-.
+           \ r-7  `-. ._  ' .  `\
+            \`,      `-.`7  7)   )
+             \/         \|  \'  / `-._
+                        ||    .'
+                         \\  (
+                          >\  >
+                      ,.-' >.'
+                     <.'_.''
+                       <'
+
+
+
 usage: `uv run xdsl-exo examples/matmul.py`
 
 ## references
 
+xdsl
+
+- https://xdsl.dev/
+- https://github.com/xdslproject/xdsl
+
 exo lang
 
 - https://exo-lang.dev/
-- https://github.com/exo-lang/exo/
 - https://github.com/exo-lang/exo/blob/main/docs/README.md
 - https://gist.github.com/sueszli/76acdde675002f64a34a6a3967cbb7fa
 
-first version by skye
+previous iteration
 
 - https://github.com/kaylendog/exo-mlir
