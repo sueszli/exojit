@@ -32,13 +32,12 @@ from xdsl.transforms.convert_scf_to_cf import ConvertScfToCf
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.scoped_dict import ScopedDict
 
-from xdsl_exo.dialects.exo import AssignOp, Exo, WindowOp
+from xdsl_exo.dialects.exo import Exo, WindowOp
 from xdsl_exo.dialects.llvm import LLVMIntrinsics
 from xdsl_exo.rewrites.convert_avx2 import ConvertAVX2Pass
 from xdsl_exo.rewrites.convert_blas import ConvertBLASAllocPass, ConvertBLASPass, ConvertExternPass
 from xdsl_exo.rewrites.convert_memory_space import ConvertMemorySpacePass
 from xdsl_exo.rewrites.convert_memref_to_llvm import ConvertAllocFreeToLLVM, LowerMemRefTypesPass
-from xdsl_exo.rewrites.convert_scalar_ref import ConvertScalarRefPass
 from xdsl_exo.rewrites.convert_tensor_ref import ConvertTensorRefPass
 from xdsl_exo.rewrites.extended_memref_to_ptr import ExtendedConvertMemRefToPtr
 from xdsl_exo.rewrites.reconcile_index_casts import ReconcileIndexCastsPass
@@ -151,6 +150,27 @@ class IRGenerator:
             self.builder.insert(op)
         self.builder.insert(load := memref.LoadOp.get(memref_val, [op.result for op in cast_ops]))
         return load.res
+
+    def _memref_store(self, value, memref_val, idx):
+        # emit memref.store with i64→index casts, handling scalar memref cases
+        if len(idx) == 0:
+            assert isinstance(memref_val.type, MemRefType) and memref_val.type.get_shape() == (1,)
+            self.builder.insert(zero := arith.ConstantOp(IntegerAttr(0, i64)))
+            idx = [zero.result]
+
+        cast_ops = [arith.IndexCastOp(i, IndexType()) for i in idx]
+        for op in cast_ops:
+            self.builder.insert(op)
+        index_indices = [op.result for op in cast_ops]
+
+        # if value is a scalar memref, load it first
+        if isinstance(value.type, MemRefType):
+            assert value.type.get_shape() == (1,)
+            self.builder.insert(zero_idx := arith.ConstantOp(IntegerAttr(0, IndexType())))
+            self.builder.insert(load := memref.LoadOp.get(value, [zero_idx.result]))
+            value = load.res
+
+        self.builder.insert(memref.StoreOp.get(value, memref_val, index_indices))
 
     def _read_expr(self, read):
         # lower LoopIR read to arith/memref ops
@@ -281,23 +301,19 @@ class IRGenerator:
                 assert False
 
     def _store_stmt(self, stmt):
-        # lower assignment to exo.assign (store value into buffer)
+        # lower assignment to memref.store
         assert isinstance(stmt, LoopIR.Assign)
         idx = [self._expr(e) for e in stmt.idx]
         value = self._expr(stmt.rhs)
-        memref = self.symbol_table[repr(stmt.name)]
-        exo_type = self.type_table[repr(stmt.name)]
-        sizes = self._shape(exo_type, dynamic=True) if isinstance(exo_type, T.Tensor) else []
-        self.builder.insert(AssignOp(value, memref, idx, sizes))
+        memref_val = self.symbol_table[repr(stmt.name)]
+        self._memref_store(value, memref_val, idx)
 
     def _reduce_stmt(self, stmt):
-        # lower reduce to load + add + assign (accumulate into buffer)
+        # lower reduce to load + add + store (accumulate into buffer)
         assert isinstance(stmt, LoopIR.Reduce)
         idx = [self._expr(e) for e in stmt.idx]
         value = self._expr(stmt.rhs)
         memref_val = self.symbol_table[repr(stmt.name)]
-        exo_type = self.type_table[repr(stmt.name)]
-        sizes = self._shape(exo_type, dynamic=True) if isinstance(exo_type, T.Tensor) else []
 
         current = self._memref_load(memref_val, idx)
         if value.type in [f16, f32, f64]:
@@ -305,7 +321,7 @@ class IRGenerator:
         else:
             add_op = AddiOp(current, value, result_type=value.type)
         self.builder.insert(add_op)
-        self.builder.insert(AssignOp(add_op.result, memref_val, idx, sizes))
+        self._memref_store(add_op.result, memref_val, idx)
 
     def _if_stmt(self, if_stmt):
         # lower if/else to scf.if with true and false regions
@@ -426,6 +442,19 @@ class IRGenerator:
             case _:
                 assert False
 
+    @staticmethod
+    def _is_mutated(name: str, body) -> bool:
+        # check if a variable is assigned to or reduced into in the body
+        for stmt in body:
+            match stmt:
+                case LoopIR.Assign() | LoopIR.Reduce() if repr(stmt.name) == name:
+                    return True
+                case LoopIR.For() if IRGenerator._is_mutated(name, stmt.body):
+                    return True
+                case LoopIR.If() if IRGenerator._is_mutated(name, stmt.body) or IRGenerator._is_mutated(name, stmt.orelse):
+                    return True
+        return False
+
     def _procedure(self, procedure):
         # lower loopir proc to func.func
         assert isinstance(procedure, LoopIR.proc)
@@ -439,7 +468,10 @@ class IRGenerator:
         input_types = []
         for arg in procedure.args:
             mem = StringAttr(arg.mem.name()) if hasattr(arg, "mem") else None
-            input_types.append(self._type(arg.type, mem))
+            t = self._type(arg.type, mem)
+            if not isinstance(t, MemRefType) and self._is_mutated(repr(arg.name), procedure.body):
+                t = MemRefType(t, [1], NoneAttr())
+            input_types.append(t)
         func_type = FunctionType.from_lists(input_types, [])
 
         with self._tmp_state(inherit=False):
@@ -483,9 +515,8 @@ def _transform(analyzed_procs: list) -> ModuleOp:
     # exo LoopIR -> raw exo IR
     module = IRGenerator().generate(analyzed_procs)
 
-    # partial lowering: convert memory spaces, scalar refs, and index casts to standard mlir
+    # partial lowering: convert memory spaces, externs, and index casts to standard mlir
     ConvertMemorySpacePass().apply(ctx, module)
-    ConvertScalarRefPass().apply(ctx, module)
     ConvertExternPass().apply(ctx, module)
     ReconcileIndexCastsPass().apply(ctx, module)
     module.verify()
@@ -497,7 +528,7 @@ def _transform(analyzed_procs: list) -> ModuleOp:
 
     # full lowering to llvm dialect
     ConvertBLASAllocPass().apply(ctx, module)
-    ConvertTensorRefPass().apply(ctx, module)  # exo.{read,assign,window} → memref.{load,store,subview}
+    ConvertTensorRefPass().apply(ctx, module)  # exo.window → memref.subview
     ConvertAllocFreeToLLVM().apply(ctx, module)  # memref.AllocOp → malloc, memref.DeallocOp → free
     ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview} → ptr.*
     ConvertPtrTypeOffsetsPass().apply(ctx, module)  # ptr.TypeOffsetOp → arith.constant(sizeof)

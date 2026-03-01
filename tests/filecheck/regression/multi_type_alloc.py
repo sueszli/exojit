@@ -14,13 +14,13 @@ from exo import *
 # CHECK-NEXT:   %offset_pointer_3 = "llvm.call"(%0) <{callee = @malloc, {{.*}}}> : (i64) -> !llvm.ptr
 # CHECK-NEXT:   %1 = arith.constant 3.140000e+00 : f32
 # CHECK:        "llvm.store"(%1, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
-# CHECK:        %3 = arith.constant 42 : i32
-# CHECK:        "llvm.store"(%3, {{.*}}) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
-# CHECK:        %4 = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-# CHECK:        "llvm.store"(%4, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+# CHECK:        %4 = arith.constant 42 : i32
+# CHECK:        "llvm.store"(%4, {{.*}}) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
+# CHECK:        %5 = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+# CHECK:        "llvm.store"(%5, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
 # CHECK:        "llvm.call"(%offset_pointer_2) <{callee = @free, {{.*}}}> : (!llvm.ptr) -> ()
-# CHECK:        %5 = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
-# CHECK:        "llvm.store"(%5, {{.*}}) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
+# CHECK:        %6 = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
+# CHECK:        "llvm.store"(%6, {{.*}}) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
 # CHECK:        "llvm.call"(%offset_pointer_3) <{callee = @free, {{.*}}}> : (!llvm.ptr) -> ()
 # CHECK-NEXT:   func.return
 # CHECK-NEXT: }

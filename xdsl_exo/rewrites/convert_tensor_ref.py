@@ -11,34 +11,6 @@ from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, 
 from xdsl_exo.dialects import exo
 
 
-class ConvertAssignOp(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: exo.AssignOp, rewriter: PatternRewriter):
-        # convert tensor writes only
-        if len(op.indices) < 1:
-            return
-
-        assert isinstance(op.input.type, MemRefType)
-
-        ops = [arith.IndexCastOp(idx, IndexType()) for idx in op.indices]
-        idx = [op.result for op in ops]
-
-        # if the value is a scalar memref, we need to load
-        if isinstance(op.value.type, MemRefType):
-            assert op.value.type.get_shape() == (1,), f"expected scalar memref type, got {op.value.type}"
-
-            return rewriter.replace_matched_op(
-                (
-                    *ops,
-                    zero_op := arith.ConstantOp(IntegerAttr(0, IndexType())),
-                    load_op := memref.LoadOp.get(op.value, [zero_op.result]),
-                    memref.StoreOp.get(load_op.res, op.input, idx),
-                )
-            )
-
-        rewriter.replace_matched_op((*ops, memref.StoreOp.get(op.value, op.input, idx)))
-
-
 def compute_memref_strides(
     sizes: list[SSAValue[Attribute] | int],
 ) -> tuple[list[Operation], list[SSAValue[Attribute] | int]]:
@@ -172,7 +144,6 @@ class ConvertTensorRefPass(ModulePass):
         PatternRewriteWalker(
             GreedyRewritePatternApplier(
                 [
-                    ConvertAssignOp(),
                     ConvertWindowOp(),
                 ]
             )

@@ -11,30 +11,7 @@ better-formed exo ops to prepare for later passes). The order here reflects
 which ops are easiest to eliminate from the codebase one at a time, with each
 step validated by regression tests before moving on.
 
-STEP 1: DROP exo.assign (AssignOp)
-===================================
-
-Two lowering paths:
-
-a) Tensor case (convert_tensor_ref.py) → arith.IndexCastOp (per index) + memref.StoreOp
-   Casts i64 indices to index type, then stores value into memref.
-   Special case: if value is a scalar memref (shape [1]), first loads from it:
-     arith.constant(0) → memref.load(value, [0]) → memref.store(loaded, input, indices)
-
-b) Scalar memref case (convert_scalar_ref.py) → arith.ConstantOp(0) + new exo.AssignOp(with index [0], size [1])
-   Pre-processing step: rewrites a scalar memref assign (no indices, shape [1])
-   into an indexed assign with explicit zero index, then (a) handles it.
-
-To skip exo.assign:
-  - Cast each i64 index to index type via arith.index_cast.
-  - Emit memref.store(value, memref, [index_cast_results]).
-  - If the value comes from a scalar memref, load it first with memref.load.
-
-`make tests` must pass after this step. Update this TODO_EXO file to reflect
-what was done (delete the completed step, renumber remaining steps).
-
-
-STEP 2: DROP exo.window (WindowOp)
+STEP 1: DROP exo.window (WindowOp)
 ===================================
 
 Two lowering paths:
@@ -58,14 +35,13 @@ To skip exo.window:
 what was done (delete the completed step, renumber remaining steps).
 
 
-STEP 3: CONSOLIDATE REWRITE FILES
+STEP 2: CONSOLIDATE REWRITE FILES
 ====================================
 
-After steps 1-2 shrink the exo dialect, merge rewrite files that handle
+After step 1 drops the last exo op, merge rewrite files that handle
 overlapping concerns. Current file layout in xdsl_exo/rewrites/:
 
-  convert_tensor_ref.py    — exo assign/window → memref ops
-  convert_scalar_ref.py    — scalar exo assign → 1-D memref wrappers
+  convert_tensor_ref.py    — exo.window → memref.subview
   convert_memory_space.py  — memory space propagation on window
   convert_memref_to_llvm.py — memref.AllocOp (DRAM) → malloc/free
   convert_blas.py          — VEC_AVX2 dealloc erasure + mm256_* intrinsics → vector/LLVM
@@ -78,15 +54,11 @@ Merge candidates:
   a) convert_avx2.py → merge into convert_blas.py
      Near-complete overlap: both handle mm256_* AVX2 intrinsic lowering.
 
-  b) convert_tensor_ref.py + convert_scalar_ref.py → single file
-     Both handle exo.AssignOp, just for different shapes.
-     After dropping the exo ops (steps 1-2) these may naturally collapse.
-
-  c) convert_memory_space.py + convert_memref_to_llvm.py → single file
+  b) convert_memory_space.py + convert_memref_to_llvm.py → single file
      Sequential stages of the same pipeline: memory space annotation →
      malloc/free lowering.
 
-  d) convert_blas.py + convert_memref_to_llvm.py (after merge c)
+  c) convert_blas.py + convert_memref_to_llvm.py (after merge b)
      Both handle memref deallocation, dispatched by memory space
      (DRAM vs VEC_AVX2). Could become a single alloc-lowering file.
 
@@ -97,11 +69,11 @@ fewer ops to route between files.
 what was done (delete the completed step, renumber remaining steps).
 
 
-STEP 4: SEPARATE UPSTREAM (XDSL) VS LOCAL (THIS REPO) CHANGES
+STEP 3: SEPARATE UPSTREAM (XDSL) VS LOCAL (THIS REPO) CHANGES
 ===============================================================
 
-As we make changes throughout steps 1-2, we need to keep a clean separation
-between what gets merged upstream into xDSL and what stays in this repository.
+As we make changes, we need to keep a clean separation between what gets
+merged upstream into xDSL and what stays in this repository.
 
 Upstream to xDSL: general-purpose MLIR ops and infrastructure that xDSL is
 missing but MLIR has. These are things we need regardless of Exo — they just
@@ -111,9 +83,9 @@ happen to be required by our lowering. Examples:
   - Bug fixes or extensions to xDSL's core infrastructure (irdl, rewriting, etc.)
 
 Stays in this repo: anything Exo-specific. This includes:
-  - The exo dialect itself (exo.py) and all its ops
-  - All lowering/conversion passes (convert_tensor_ref, convert_scalar_ref,
-    convert_memory_space, convert_blas, convert_memref_to_llvm, etc.)
+  - The exo dialect itself (exo.py) and its remaining ops
+  - All lowering/conversion passes (convert_tensor_ref, convert_memory_space,
+    convert_blas, convert_memref_to_llvm, etc.)
   - Exo-specific pipeline orchestration in main.py
   - Exo-specific test infrastructure
 
@@ -131,12 +103,11 @@ PIPELINE ORDER (from main.py, for reference)
 This is the current pass ordering, NOT the recommended drop order:
 
 1. ConvertMemorySpacePass     — propagate memory spaces on window
-2. ConvertScalarRefPass       — handle scalar assigns
-3. ConvertExternPass          — handle extern calls
-4. ReconcileIndexCastsPass    — clean up index casts
-5. ConvertBLASAllocPass       — dealloc erasure for VEC_AVX2
-6. ConvertTensorRefPass       — assign/window → memref ops
-7. ConvertAllocFreeToLLVM     — memref.AllocOp → malloc, memref.DeallocOp → free
+2. ConvertExternPass          — handle extern calls
+3. ReconcileIndexCastsPass    — clean up index casts
+4. ConvertBLASAllocPass       — dealloc erasure for VEC_AVX2
+5. ConvertTensorRefPass       — exo.window → memref.subview
+6. ConvertAllocFreeToLLVM     — memref.AllocOp → malloc, memref.DeallocOp → free
 
 
 SUMMARY: BYPASSING EXO OPS
@@ -147,7 +118,7 @@ To generate MLIR directly and skip exo lowering entirely:
   exo.invert_window → deleted (done)
   exo.alloc         → dropped (done) — DRAM emits memref.AllocOp, VEC_AVX2 emits llvm.AllocaOp directly
   exo.read          → dropped (done) — arith.index_cast per index + memref.load (or SSA forwarding)
-  exo.assign        → arith.index_cast per index + memref.store
+  exo.assign        → dropped (done) — arith.index_cast per index + memref.store (+ scalar memref wrapping)
   exo.window        → stride/offset math + memref.subview with StridedLayoutAttr
 
 The main complexity is in WindowOp: you need to compute strides as products of
