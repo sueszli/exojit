@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import pytest
 from exo import DRAM, proc
+from xdsl.context import Context
+from xdsl.dialects import arith, func, memref, scf
+from xdsl.dialects.builtin import Builtin, FunctionType, MemRefType, ModuleOp, NoneAttr, StringAttr, f32
+from xdsl.dialects.func import FuncOp, ReturnOp
+from xdsl.ir import Block, Region
 
+from xdsl_exo.dialects.exo import Exo, InvertWindowOp, WindowOp
 from xdsl_exo.main import compile_procs
+from xdsl_exo.rewrites.convert_tensor_ref import ConvertTensorRefPass
 
 
 def test_window_row():
@@ -105,3 +113,105 @@ def test_window_chained():
         inner(T[2, :, :])
 
     compile_procs(outer)
+
+
+def _make_ctx() -> Context:
+    ctx = Context()
+    ctx.load_dialect(arith.Arith)
+    ctx.load_dialect(Builtin)
+    ctx.load_dialect(func.Func)
+    ctx.load_dialect(memref.MemRef)
+    ctx.load_dialect(scf.Scf)
+    ctx.load_dialect(Exo)
+    return ctx
+
+
+def _build_window_invert_module(
+    source_type: MemRefType,
+    window_type: MemRefType,
+) -> ModuleOp:
+    """Build: func(@arg) { window = WindowOp(arg); orig = InvertWindowOp(window); return }"""
+    block = Block(arg_types=[source_type])
+    arg = block.args[0]
+
+    # WindowOp: source_type -> window_type (point-index dim 0, keep dim 1)
+    window_op = WindowOp(
+        input=arg,
+        indices=[],
+        input_sizes=[source_type.get_shape()[0], source_type.get_shape()[1]],
+        output_sizes=[window_type.get_shape()[0]],
+        result_type=window_type,
+    )
+    block.add_op(window_op)
+
+    invert_op = InvertWindowOp(input=window_op.result, result_type=source_type)
+    block.add_op(invert_op)
+
+    ret = ReturnOp()
+    block.add_op(ret)
+
+    func_type = FunctionType.from_lists([source_type], [])
+    func_op = FuncOp("test_fn", func_type, Region(block))
+    return ModuleOp([func_op])
+
+
+def test_invert_window_trivial():
+    """WindowOp -> InvertWindowOp: both eliminated after pass, original source forwarded."""
+    source_type = MemRefType(f32, [4, 4], NoneAttr(), StringAttr("DRAM"))
+    window_type = MemRefType(f32, [4], NoneAttr(), StringAttr("DRAM"))
+
+    module = _build_window_invert_module(source_type, window_type)
+    module.verify()
+
+    ctx = _make_ctx()
+    ConvertTensorRefPass().apply(ctx, module)
+    module.verify()
+
+    # After the pass, InvertWindowOp should be gone (and WindowOp lowered to SubviewOp)
+    ir_text = str(module)
+    assert "exo.invert_window" not in ir_text
+    assert "exo.window" not in ir_text
+
+
+def test_invert_window_type_matches():
+    """Forwarded value has the correct original type."""
+    source_type = MemRefType(f32, [8, 8], NoneAttr(), StringAttr("DRAM"))
+    window_type = MemRefType(f32, [8], NoneAttr(), StringAttr("DRAM"))
+
+    module = _build_window_invert_module(source_type, window_type)
+
+    # Before pass: InvertWindowOp result type should match source_type
+    func_op = module.body.block.first_op
+    ops = list(func_op.body.block.ops)
+    invert_op = ops[1]
+    assert isinstance(invert_op, InvertWindowOp)
+    assert invert_op.result.type == source_type
+
+    ctx = _make_ctx()
+    ConvertTensorRefPass().apply(ctx, module)
+    module.verify()
+
+
+def test_invert_window_block_arg_panics():
+    """InvertWindowOp on a block arg (not a WindowOp/SubviewOp result) should raise."""
+    source_type = MemRefType(f32, [4], NoneAttr(), StringAttr("DRAM"))
+    original_type = MemRefType(f32, [4, 4], NoneAttr(), StringAttr("DRAM"))
+
+    # Build: func(@arg: memref<4xf32>) { InvertWindowOp(@arg) -> memref<4x4xf32> }
+    block = Block(arg_types=[source_type])
+    arg = block.args[0]
+
+    invert_op = InvertWindowOp(input=arg, result_type=original_type)
+    block.add_op(invert_op)
+
+    ret = ReturnOp()
+    block.add_op(ret)
+
+    func_type = FunctionType.from_lists([source_type], [])
+    func_op = FuncOp("test_fn", func_type, Region(block))
+    module = ModuleOp([func_op])
+    module.verify()
+
+    ctx = _make_ctx()
+    with pytest.raises(AssertionError, match="InvertWindowOp"):
+        ConvertTensorRefPass().apply(ctx, module)

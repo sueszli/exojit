@@ -154,11 +154,36 @@ class WindowOp(IRDLOperation):
         )
 
 
+@irdl_op_definition
+class InvertWindowOp(IRDLOperation):
+    name = "exo.invert_window"
+
+    input = operand_def(
+        MemRefType.constr(element_type=AnyAttr()),
+    )
+    result = result_def(
+        MemRefType.constr(element_type=AnyAttr()),
+    )
+
+    assembly_format = "$input attr-dict `:` type($input) `->` type($result)"
+
+    def __init__(
+        self,
+        input: SSAValue | Operation,
+        result_type: MemRefType,
+    ) -> None:
+        super().__init__(
+            operands=[SSAValue.get(input)],
+            result_types=[result_type],
+        )
+
+
 Exo = Dialect(
     "exo",
     [
         AllocOp,
         AssignOp,
+        InvertWindowOp,
         ReadOp,
         WindowOp,
     ],

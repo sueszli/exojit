@@ -183,6 +183,18 @@ class ConvertWindowOp(RewritePattern):
         )
 
 
+class ConvertInvertWindowOp(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: exo.InvertWindowOp, rewriter: PatternRewriter):
+        owner = op.input.owner
+        if isinstance(owner, exo.WindowOp):
+            rewriter.replace_matched_op([], new_results=[owner.input])
+        elif isinstance(owner, memref.SubviewOp):
+            rewriter.replace_matched_op([], new_results=[owner.source])
+        else:
+            raise AssertionError(f"InvertWindowOp: input must be a direct result of WindowOp or SubviewOp, " f"got {type(owner).__name__}")
+
+
 class ConvertTensorRefPass(ModulePass):
     name = "convert-tensor-ref"
 
@@ -193,6 +205,7 @@ class ConvertTensorRefPass(ModulePass):
                     ConvertReadOp(),
                     ConvertAssignOp(),
                     ConvertWindowOp(),
+                    ConvertInvertWindowOp(),
                 ]
             )
         ).rewrite_module(m)
