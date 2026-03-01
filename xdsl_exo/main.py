@@ -422,8 +422,6 @@ class IRGenerator:
     def generate(self, procs) -> ModuleOp:
         for proc in procs:
             self._procedure(proc)
-
-        # verify() deferred to _transform() (after scalar-ref -> memref conversion)
         return self.module
 
 
@@ -508,12 +506,10 @@ def main():
 
     module = compile_procs(library)
 
-    dst = None
-    if args.output and args.output != "-":
-        dst = Path(args.output)
-
-    if not dst:
+    if not args.output or args.output == "-":
         print(module)
         return
+
+    dst = Path(args.output)
     os.makedirs(dst.parent, exist_ok=True)
     dst.write_text(str(module))
