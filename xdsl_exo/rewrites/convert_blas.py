@@ -4,7 +4,7 @@ from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, IntegerAttr, MemRefT
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, op_type_rewrite_pattern
 
-from xdsl_exo.dialects import llvm as llvm_extra
+from xdsl_exo import patches as llvm_extra
 
 
 class ConvertFreeOp(RewritePattern):

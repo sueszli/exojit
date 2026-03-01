@@ -60,6 +60,11 @@ Rule of thumb: if the change would make sense in a codebase that has never
 heard of Exo, it belongs upstream. If it only exists to support Exo's
 abstractions or lowering, it stays here.
 
+All upstream-worthy ops and patches should live in xdsl_exo/patches.py until
+they are merged into xDSL. This is the single collection point — don't scatter
+upstream candidates across dialect or rewrite files. Once a patch lands
+upstream, delete it from patches.py.
+
 Track this throughout the refactoring — don't let upstream-worthy changes
 accumulate silently in local code. File xDSL PRs as they come up.
 

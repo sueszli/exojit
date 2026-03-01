@@ -1,4 +1,6 @@
-# monkey patch. will be merged upstream
+"""
+to be merged into upstream xDSL
+"""
 
 from typing import ClassVar
 

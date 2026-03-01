@@ -33,7 +33,7 @@ from xdsl.transforms.convert_scf_to_cf import ConvertScfToCf
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.scoped_dict import ScopedDict
 
-from xdsl_exo.dialects.llvm import LLVMIntrinsics
+from xdsl_exo.patches import LLVMIntrinsics
 from xdsl_exo.rewrites.convert_avx2 import ConvertAVX2Pass
 from xdsl_exo.rewrites.convert_blas import ConvertBLASAllocPass, ConvertBLASPass, ConvertExternPass
 from xdsl_exo.rewrites.convert_memref_to_llvm import ConvertAllocFreeToLLVM, LowerMemRefTypesPass
