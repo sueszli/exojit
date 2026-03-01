@@ -12,22 +12,46 @@ which ops are easiest to eliminate from the codebase one at a time, with each
 step validated by regression tests before moving on.
 
 
-STEP 0: ADD REGRESSION TESTS
-=============================
+STEP 0: ADD REGRESSION TESTS  ✅ DONE
+======================================
 
-Before touching any lowering code, add a comprehensive set of regression tests
-in tests/regression/ that exercise every exo op through the full pipeline.
-These tests should:
+Regression tests added in tests/filecheck/regression/ (13 tests, all passing).
+Run with: uv run lit tests/filecheck/regression/
 
-  - Cover every exo op: alloc, assign, read, window, invert_window.
-  - Cover every lowering path per op (e.g. DRAM vs VEC_AVX2 for alloc,
-    scalar vs tensor for read/assign, memory space propagation for window).
-  - Include edge cases: scalar memrefs, identity reads, zero indices,
-    multi-dimensional windows, chained window+invert_window.
-  - Test end-to-end: LoopIR input → full pipeline → expected MLIR output.
-  - All tests must pass on the current codebase before any refactoring begins.
+Coverage:
+  exo.alloc:
+    - alloc_dram.py          — DRAM alloc → malloc, with read/assign
+    - assign_scalar_memref.py — scalar alloc → memref[1] → malloc(1)
+    - multi_type_alloc.py    — f32 + i32 alloc in same proc
+    - assign_from_scalar_memref.py — scalar alloc used as value source
 
-After dropping each exo op (steps 1-5), the same regression tests must still
+  exo.read:
+    - read_scalar_identity.py — scalar identity read (memref[1] → memref[1])
+    - read_tensor_indexed.py  — indexed tensor read in a loop
+    - zero_index_read.py      — read at constant index 0 (edge case)
+
+  exo.assign:
+    - assign_2d.py            — 2D indexed assign with stride computation
+    - assign_scalar_memref.py — scalar assign + reduce (x = x + 1.0)
+    - assign_from_scalar_memref.py — assign from scalar memref to tensor
+
+  exo.window:
+    - window_row.py           — row window A[i, :] → 1D subview of 2D
+    - window_col.py           — column window A[:, j] → 1D subview along cols
+    - window_chained.py       — chained windows (subview of subview, 3 procs)
+
+  exo.invert_window:
+    - Covered by unit tests in tests/procedures/test_window.py
+      (test_invert_window_trivial, test_invert_window_type_matches,
+       test_invert_window_block_arg_panics)
+    - Not exercisable end-to-end via Exo @proc syntax (InvertWindowOp is
+      only created internally during lowering, not by IRGenerator)
+
+  Not yet covered:
+    - VEC_AVX2 alloc path (requires platform-specific AVX2 setup)
+    - Dynamic-size tensors (blocked by upstream xDSL issue, see conv1d XFAIL)
+
+After dropping each exo op (steps 1-5), these regression tests must still
 pass — the output MLIR should be identical (or functionally equivalent). This
 is the primary correctness guarantee for the refactoring.
 

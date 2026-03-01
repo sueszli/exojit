@@ -1,0 +1,40 @@
+# RUN: uv run xdsl-exo -o - %s | filecheck %s
+
+# Exercises: exo.window (column access A[:, j] → 1D subview along columns)
+# Lowering: exo.window → stride/offset with column stride → ptr arithmetic
+
+from __future__ import annotations
+
+from exo import *
+
+
+# CHECK:      func.func @set_col(%offset_pointer : !llvm.ptr) {
+# CHECK:        cf.br ^bb0(%0 : i64)
+# CHECK:      ^bb0(%4 : i64):
+# CHECK:        cf.cond_br %5, ^bb1, ^bb2
+# CHECK:      ^bb1:
+# CHECK:        "llvm.store"(%3, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+# CHECK:      ^bb2:
+# CHECK-NEXT:   func.return
+# CHECK-NEXT: }
+# CHECK:      func.func @window_col(%offset_pointer : !llvm.ptr) {
+# CHECK:        cf.br ^bb0(%0 : i64)
+# CHECK:      ^bb0(%3 : i64):
+# CHECK:        cf.cond_br %4, ^bb1, ^bb2
+# CHECK:      ^bb1:
+# CHECK:        %6 = arith.constant 4 : i64
+# CHECK-NEXT:   %7 = arith.muli %3, %6 : i64
+# CHECK:        func.call @set_col({{.*}}) : (!llvm.ptr) -> ()
+# CHECK:      ^bb2:
+# CHECK-NEXT:   func.return
+# CHECK-NEXT: }
+@proc
+def set_col(col: [f32][4] @ DRAM):
+    for i in seq(0, 4):
+        col[i] = 0.0
+
+
+@proc
+def window_col(A: f32[4, 4] @ DRAM):
+    for j in seq(0, 4):
+        set_col(A[:, j])
