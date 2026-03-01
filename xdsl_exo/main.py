@@ -223,7 +223,7 @@ class IRGenerator:
         return binop.result
 
     def _window_expr(self, window):
-        # lower window expression to exo.window subview op
+        # lower window expression
         assert isinstance(window, LoopIR.WindowExpr)
 
         def w_access(w):
@@ -256,7 +256,7 @@ class IRGenerator:
         return op.res[0]
 
     def _expr(self, expr) -> OpResult | SSAValue:
-        # dispatch loopir expression node to its typed lowering method
+        # dispatch LoopIR expression node to its typed lowering method
         match expr:
             case LoopIR.Read():
                 return self._read_expr(expr)
@@ -291,7 +291,7 @@ class IRGenerator:
         memref_val = self.symbol_table[repr(stmt.name)]
         exo_type = self.type_table[repr(stmt.name)]
         sizes = self._shape(exo_type, dynamic=True) if isinstance(exo_type, T.Tensor) else []
-        # read current value, add, assign back
+
         self.builder.insert(read_op := ReadOp(memref_val, idx, sizes, result_type=value.type))
         if value.type in [f16, f32, f64]:
             add_op = AddfOp(read_op.result, value, result_type=value.type, flags=FastMathFlagsAttr("none"))
@@ -306,14 +306,12 @@ class IRGenerator:
         cond = self._expr(if_stmt.cond)
 
         with self._tmp_state():
-            # construct true_block
             true_block = Block()
             self.builder = Builder(insertion_point=InsertPoint.at_end(true_block))
             for s in if_stmt.body:
                 self._stmt(s)
             self.builder.insert(YieldOp())
 
-            # construct false_block
             false_block = Block()
             self.builder = Builder(insertion_point=InsertPoint.at_end(false_block))
             for s in if_stmt.orelse:
@@ -323,27 +321,22 @@ class IRGenerator:
         self.builder.insert(IfOp(cond, [], Region(true_block), Region(false_block)))
 
     def _for_stmt(self, for_stmt):
-        # lower for loop to scf.for with lo/hi bounds and step=1
+        # lower for loop to scf.for with lo/hi bounds and step inferred from bound types
         assert isinstance(for_stmt, LoopIR.For)
         lo = self._expr(for_stmt.lo)
         hi = self._expr(for_stmt.hi)
-        step = ConstantOp(IntegerAttr(1, i64))
+        assert lo.type == hi.type
+        step = ConstantOp(IntegerAttr(1, lo.type))
         self.builder.insert(step)
 
         with self._tmp_state():
-            # construct loop block
-            loop_block = Block(
-                # TODO: this should be inferred from lo and hi
-                arg_types=[i64],
-            )
+            loop_block = Block(arg_types=[lo.type])
             self.builder = Builder(insertion_point=InsertPoint.at_end(loop_block))
             self.symbol_table = ScopedDict(self.symbol_table)
 
-            # add loop variable to symbol table
             self.symbol_table[repr(for_stmt.iter)] = loop_block.args[0]
             self.type_table[repr(for_stmt.iter)] = T.Index
 
-            # generate loop body
             for s in for_stmt.body:
                 self._stmt(s)
             self.builder.insert(YieldOp())
@@ -361,17 +354,16 @@ class IRGenerator:
 
     def _free_stmt(self, free):
         # lower free to memref.dealloc
-        assert isinstance(free, LoopIR.Free)
         # memory space is already on the memref type, so standard memref.dealloc suffices
+        assert isinstance(free, LoopIR.Free)
         self.builder.insert(memref.DeallocOp.get(self.symbol_table[repr(free.name)]))
 
     def _call_stmt(self, call):
-        # lower call to func.call; emits extern decl for intrinsics, recurses for procs
+        # lower call to func.call. emit extern decl for intrinsics, recurse for procs
         assert isinstance(call, LoopIR.Call)
-        # lower all args to ssa values
+
         args = [self._expr(arg) for arg in call.args]
 
-        # hardware intrinsic: emit func.call (with external declaration)
         if call.f.instr is not None:
             if call.f.name not in self.seen_procs:
                 self.seen_procs.add(call.f.name)
@@ -381,14 +373,13 @@ class IRGenerator:
             self.builder.insert(CallOp(call.f.name, args, []))
             return
 
-        # recursively lower callee, then emit call op
         self._procedure(call.f)
         assert len(call.args) == len(call.f.args)
 
         self.builder.insert(CallOp(call.f.name, args, []))
 
     def _stmt(self, stmt):
-        # dispatch loopir statement node to its typed lowering method
+        # dispatch LoopIR statement node to its typed lowering method
         match stmt:
             case LoopIR.Assign():
                 self._store_stmt(stmt)
@@ -414,7 +405,7 @@ class IRGenerator:
                 assert False
 
     def _procedure(self, procedure):
-        # lower loopir proc to func.func with fresh symbol/type scope
+        # lower loopir proc to func.func
         assert isinstance(procedure, LoopIR.proc)
         if procedure.name in self.seen_procs:
             return
@@ -445,7 +436,6 @@ class IRGenerator:
         module_builder.insert(FuncOp(procedure.name, func_type, Region(block)))
 
     def generate(self, procs) -> ModuleOp:
-        # lower all loopir procs into the module and return it
         for proc in procs:
             self._procedure(proc)
         return self.module
