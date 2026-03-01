@@ -6,8 +6,8 @@
 (2) get rid of exo dialect
 
 - https://github.com/xdslproject/xdsl/pull/4371 -> adds lowering for `memref.reinterpret_cast` and `memref.cast` in the upstream `convert-memref-to-ptr` pass. building block for the larger effort below.
-    - [memref.subview](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview-memrefsubviewop)
-    - [memref.reinterpret_cast](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefreinterpret_cast-memrefreinterpretcastop)
+    - `memref.subview`: https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview-memrefsubviewop
+    - `memref.reinterpret_cast`: https://mlir.llvm.org/docs/Dialects/MemRef/#memrefreinterpret_cast-memrefreinterpretcastop
 
 ---
 
