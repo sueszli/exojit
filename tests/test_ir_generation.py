@@ -45,7 +45,7 @@ def test_emit_procedure():
     def noop():
         pass
 
-    module = compile_procs([noop])
+    module = compile_procs(noop)
     print(module)
 
 
@@ -54,7 +54,7 @@ def test_emit_procedure_with_args():
     def unary_noop(x: f32[16]):
         pass
 
-    module = compile_procs([unary_noop])
+    module = compile_procs(unary_noop)
     print(module)
 
 
@@ -64,7 +64,7 @@ def test_emit_procedure_preserves_args():
         assert idx >= 0 and idx < 16
         x[idx] = 0.0
 
-    module = compile_procs([unary_preserves_args])
+    module = compile_procs(unary_preserves_args)
     print(module)
 
 

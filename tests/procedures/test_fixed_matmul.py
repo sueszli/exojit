@@ -14,4 +14,4 @@ def test_fixed_matmul():
                 for k in seq(0, 16):
                     C[i, j] += A[i, k] * B[k, j]
 
-    compile_procs([fixed_matmul])
+    compile_procs(fixed_matmul)

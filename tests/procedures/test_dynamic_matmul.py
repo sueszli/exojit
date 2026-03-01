@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import pytest
 from exo import DRAM, proc
 
 from xdsl_exo.main import compile_procs
 
 
+@pytest.mark.xfail(reason="upstream ConvertMemRefToPtr does not support dynamic strides")
 def test_dynamic_matmul():
     @proc
     def dynamic_matmul(
@@ -20,4 +22,4 @@ def test_dynamic_matmul():
                 for k in seq(0, K):
                     C[i, j] += A[i, k] * B[k, j]
 
-    compile_procs([dynamic_matmul])
+    compile_procs(dynamic_matmul)

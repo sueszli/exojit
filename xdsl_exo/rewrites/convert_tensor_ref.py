@@ -114,25 +114,6 @@ def compute_memref_offsets(
     return ops, offsets
 
 
-def compute_memref_sizes(
-    sizes: list[SSAValue[Attribute] | int],
-) -> tuple[list[Operation], list[SSAValue[Attribute] | int]]:
-    ops = []
-    sizes: list[SSAValue[Attribute] | int] = []
-
-    for size in sizes:
-        if isinstance(size, int):
-            size = arith.ConstantOp(IntegerAttr(size, i64)).result
-            ops.append(size.op)
-
-        # multiply
-        mul_op = arith.MuliOp(operand1=size, operand2=size)
-        ops.append(mul_op)
-        sizes.append(mul_op.result)
-
-    return ops, sizes
-
-
 def convert_all_to_index(
     input: Sequence[SSAValue[Attribute] | int],
 ) -> tuple[list[Operation], list[SSAValue[Attribute]]]:

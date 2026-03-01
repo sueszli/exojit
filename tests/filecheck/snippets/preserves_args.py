@@ -6,10 +6,16 @@ from exo import *
 
 
 # CHECK: builtin.module {
-# CHECK-NEXT: func.func @preserves_args(%0 : !llvm.ptr, %1 : i64) {
-# CHECK-NEXT:   %2 = arith.constant 0.000000e+00 : f32
-# CHECK-NEXT:   %3 = "llvm.getelementptr"(%0, %1) <{rawConstantIndices = array<i32: -2147483648>, elem_type = f32, noWrapFlags = 0 : i32}> : (!llvm.ptr, i64) -> !llvm.ptr
-# CHECK-NEXT:   "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+# CHECK-NEXT: func.func @preserves_args(%offset_pointer : !llvm.ptr, %0 : i64) {
+# CHECK-NEXT:   %1 = arith.constant 0.000000e+00 : f32
+# CHECK-NEXT:   %2 = arith.index_cast %0 : i64 to index
+# CHECK-NEXT:   %bytes_per_element = arith.constant 4 : index
+# CHECK-NEXT:   %scaled_pointer_offset = arith.muli %2, %bytes_per_element : index
+# CHECK-NEXT:   %offset_pointer_1 = arith.index_cast %scaled_pointer_offset : index to i64
+# CHECK-NEXT:   %offset_pointer_2 = "llvm.ptrtoint"(%offset_pointer) : (!llvm.ptr) -> i64
+# CHECK-NEXT:   %offset_pointer_3 = arith.addi %offset_pointer_2, %offset_pointer_1 : i64
+# CHECK-NEXT:   %offset_pointer_4 = "llvm.inttoptr"(%offset_pointer_3) : (i64) -> !llvm.ptr
+# CHECK-NEXT:   "llvm.store"(%1, %offset_pointer_4) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
 # CHECK-NEXT:   func.return
 # CHECK-NEXT: }
 @proc

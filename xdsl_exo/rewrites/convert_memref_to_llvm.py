@@ -5,7 +5,6 @@ from xdsl.builder import Builder
 from xdsl.context import Context
 from xdsl.dialects import arith, llvm, memref
 from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, StringAttr, UnrealizedConversionCastOp, i64
-from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
 from xdsl.ir import Attribute, Operation, SSAValue
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
@@ -47,136 +46,6 @@ def compute_memref_strides(
         current_stride = mul_op.result
 
     return ops, strides
-
-
-def compute_memref_offsets(
-    indices: list[SSAValue[Attribute]],
-    strides: list[SSAValue[Attribute] | int],
-) -> tuple[list[Operation], list[SSAValue[Attribute] | int]]:
-    ops = []
-    offsets: list[SSAValue[Attribute]] = []
-
-    for idx, stride in zip(indices, strides):
-        if isinstance(stride, int):
-            stride_op = arith.ConstantOp(IntegerAttr(stride, i64))
-            ops.append(stride_op)
-            stride_val = stride_op.result
-        else:
-            stride_val = stride
-
-        mul_op = arith.MuliOp(operand1=idx, operand2=stride_val)
-        ops.append(mul_op)
-        offsets.append(mul_op.result)
-
-    if not offsets:
-        return ops, [arith.ConstantOp(IntegerAttr(0, i64)).result]
-
-    accumulator = offsets[0]
-
-    for offset in offsets[1:]:
-        add_op = arith.AddiOp(operand1=accumulator, operand2=offset)
-        ops.append(add_op)
-        accumulator = add_op.result
-
-    return ops, [accumulator]
-
-
-class ConvertReadOp(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: exo.ReadOp, rewriter: PatternRewriter):
-        # compute strides and offsets
-        stride_ops, strides = compute_memref_strides(
-            get_dynamic_index_list(
-                op.static_sizes.get_values(),
-                op.sizes,
-                memref.DYNAMIC_INDEX,
-            )
-        )
-        offest_ops, offsets = compute_memref_offsets(op.indices, strides)
-
-        # split static and dynamic offsets
-        static_offsets, dynamic_offsets = split_dynamic_index_list(offsets, llvm.GEP_USE_SSA_VAL)
-
-        rewriter.replace_matched_op(
-            (
-                *stride_ops,
-                *offest_ops,
-                cast_op := UnrealizedConversionCastOp.get([op.input], [llvm.LLVMPointerType()]),
-                # get pointer and load
-                gep_op := llvm.GEPOp(
-                    cast_op.results[0],
-                    static_offsets,
-                    op.result.type,
-                    ssa_indices=dynamic_offsets,
-                ),
-                llvm.LoadOp(gep_op, op.result.type),
-            )
-        )
-
-
-class ConvertAssignOp(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: exo.AssignOp, rewriter: PatternRewriter):
-        # compute strides and offsets
-        stride_ops, strides = compute_memref_strides(
-            get_dynamic_index_list(
-                op.static_sizes.get_values(),
-                op.sizes,
-                memref.DYNAMIC_INDEX,
-            )
-        )
-        offset_ops, offsets = compute_memref_offsets(op.indices, strides)
-
-        # split static and dynamic offsets
-        static_offsets, dynamic_offsets = split_dynamic_index_list(offsets, llvm.GEP_USE_SSA_VAL)
-
-        rewriter.replace_matched_op(
-            (
-                *stride_ops,
-                *offset_ops,
-                cast_op := UnrealizedConversionCastOp.get([op.input], [llvm.LLVMPointerType()]),
-                # get pointer and store
-                gep_op := llvm.GEPOp(
-                    cast_op.results[0],
-                    static_offsets,
-                    op.value.type,
-                    ssa_indices=dynamic_offsets,
-                ),
-                llvm.StoreOp(op.value, gep_op),
-            )
-        )
-
-
-class ConvertWindowOp(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: exo.WindowOp, rewriter: PatternRewriter):
-        # compute strides and offsets
-        stride_ops, strides = compute_memref_strides(
-            get_dynamic_index_list(
-                op.static_input_sizes.get_values(),
-                op.input_sizes,
-                memref.DYNAMIC_INDEX,
-            )
-        )
-        offset_ops, offsets = compute_memref_offsets(op.indices, strides)
-
-        # split static and dynamic offsets
-        static_offsets, dynamic_offsets = split_dynamic_index_list(offsets, llvm.GEP_USE_SSA_VAL)
-
-        rewriter.replace_matched_op(
-            (
-                *stride_ops,
-                *offset_ops,
-                cast_op := UnrealizedConversionCastOp.get([op.input], [llvm.LLVMPointerType()]),
-                gep_op := llvm.GEPOp(
-                    cast_op.results[0],
-                    static_offsets,
-                    op.result.type.element_type,
-                    ssa_indices=dynamic_offsets,
-                ),
-                UnrealizedConversionCastOp.get([gep_op.result], [op.result.type]),
-            )
-        )
 
 
 class ConvertAllocOp(RewritePattern):
@@ -227,8 +96,10 @@ class RewriteMemRefTypes(TypeConversionPattern):
         return llvm.LLVMPointerType()
 
 
-class ConvertMemRefToLLVM(ModulePass):
-    name = "convert-memref-to-llvm"
+class ConvertAllocFreeToLLVM(ModulePass):
+    """Converts exo.AllocOp to malloc and memref.DeallocOp to free."""
+
+    name = "convert-alloc-free-to-llvm"
 
     def apply(self, ctx: Context, m: ModuleOp) -> None:
         builder = Builder(InsertPoint.at_end(m.body.block))
@@ -256,12 +127,16 @@ class ConvertMemRefToLLVM(ModulePass):
             ),
         ).rewrite_module(m)
 
+
+class LowerMemRefTypesPass(ModulePass):
+    """Converts remaining MemRefType to LLVMPointerType."""
+
+    name = "lower-memref-types"
+
+    def apply(self, ctx: Context, m: ModuleOp) -> None:
         PatternRewriteWalker(
             GreedyRewritePatternApplier(
                 [
-                    ConvertReadOp(),
-                    ConvertAssignOp(),
-                    ConvertWindowOp(),
                     RewriteMemRefTypes(),
                 ]
             ),

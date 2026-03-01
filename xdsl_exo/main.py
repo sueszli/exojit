@@ -17,7 +17,7 @@ from exo.core.LoopIR import LoopIR, T
 from exo.main import get_procs_from_module, load_user_code
 from xdsl.builder import Builder
 from xdsl.context import Context
-from xdsl.dialects import arith, func, memref, scf
+from xdsl.dialects import arith, func, memref, ptr, scf
 from xdsl.dialects.arith import AddfOp, AddiOp, AndIOp, CmpfOp, CmpiOp, ConstantOp, DivfOp, DivSIOp, FastMathFlagsAttr, MulfOp, MuliOp, NegfOp, OrIOp, RemSIOp, SubfOp, SubiOp
 from xdsl.dialects.builtin import BoolAttr, Builtin, FloatAttr, FunctionType, IntAttr, IntegerAttr, MemRefType, ModuleOp, NoneAttr, StringAttr, f16, f32, f64, i1, i8, i16, i32, i64
 from xdsl.dialects.func import CallOp, FuncOp, ReturnOp
@@ -26,6 +26,8 @@ from xdsl.ir import Attribute, Block, OpResult, Region, SSAValue
 from xdsl.rewriter import InsertPoint
 from xdsl.transforms.canonicalize import CanonicalizePass
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
+from xdsl.transforms.convert_ptr_to_llvm import ConvertPtrToLLVMPass
+from xdsl.transforms.convert_ptr_type_offsets import ConvertPtrTypeOffsetsPass
 from xdsl.transforms.convert_scf_to_cf import ConvertScfToCf
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.scoped_dict import ScopedDict
@@ -35,8 +37,10 @@ from xdsl_exo.dialects.llvm import LLVMIntrinsics
 from xdsl_exo.rewrites.convert_avx2 import ConvertAVX2Pass
 from xdsl_exo.rewrites.convert_blas import ConvertBLASAllocPass, ConvertBLASPass, ConvertExternPass
 from xdsl_exo.rewrites.convert_memory_space import ConvertMemorySpacePass
-from xdsl_exo.rewrites.convert_memref_to_llvm import ConvertMemRefToLLVM
+from xdsl_exo.rewrites.convert_memref_to_llvm import ConvertAllocFreeToLLVM, LowerMemRefTypesPass
 from xdsl_exo.rewrites.convert_scalar_ref import ConvertScalarRefPass
+from xdsl_exo.rewrites.convert_tensor_ref import ConvertTensorRefPass
+from xdsl_exo.rewrites.extended_memref_to_ptr import ExtendedConvertMemRefToPtr
 from xdsl_exo.rewrites.reconcile_index_casts import ReconcileIndexCastsPass
 
 
@@ -457,6 +461,7 @@ def _context() -> Context:
     ctx.load_dialect(scf.Scf)
     ctx.load_dialect(Exo)
     ctx.load_dialect(LLVMIntrinsics)
+    ctx.load_dialect(ptr.Ptr)
     return ctx
 
 
@@ -480,7 +485,12 @@ def _transform(analyzed_procs: list) -> ModuleOp:
 
     # full lowering to llvm dialect
     ConvertBLASAllocPass().apply(ctx, module)
-    ConvertMemRefToLLVM().apply(ctx, module)
+    ConvertTensorRefPass().apply(ctx, module)  # exo.{read,assign,window} → memref.{load,store,subview}
+    ConvertAllocFreeToLLVM().apply(ctx, module)  # exo.AllocOp → malloc, memref.DeallocOp → free
+    ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview} → ptr.*
+    ConvertPtrTypeOffsetsPass().apply(ctx, module)  # ptr.TypeOffsetOp → arith.constant(sizeof)
+    ConvertPtrToLLVMPass().apply(ctx, module)  # ptr.* → llvm.*
+    LowerMemRefTypesPass().apply(ctx, module)  # MemRefType → LLVMPointerType
     ConvertAVX2Pass().apply(ctx, module)
     ConvertBLASPass().apply(ctx, module)
     ConvertScfToCf().apply(ctx, module)
@@ -496,8 +506,10 @@ def _transform(analyzed_procs: list) -> ModuleOp:
 
 
 def compile_procs(
-    library: Sequence[Procedure],  # list of exo funcs decorated with @proc
+    library: Procedure | Sequence[Procedure],  # exo funcs decorated with @proc
 ) -> ModuleOp:
+    if isinstance(library, Procedure):
+        library = [library]
     compilable = [proc._loopir_proc for proc in library if not proc.is_instr()]
     all_procs = sorted(find_all_subprocs(compilable), key=lambda x: x.name)
     unique_procs = list({p.name: p for p in all_procs}.values())

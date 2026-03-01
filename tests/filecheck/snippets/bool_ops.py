@@ -5,13 +5,13 @@ from __future__ import annotations
 from exo import *
 
 
-# CHECK:      func.func @bool_ops(%0 : !llvm.ptr, %1 : i64, %2 : i64, %3 : i64) {
+# CHECK:      func.func @bool_ops(%offset_pointer : !llvm.ptr, %0 : i64, %1 : i64, %2 : i64) {
+# CHECK-NEXT:   %3 = arith.cmpi slt, %0, %1 : i64
 # CHECK-NEXT:   %4 = arith.cmpi slt, %1, %2 : i64
-# CHECK-NEXT:   %5 = arith.cmpi slt, %2, %3 : i64
-# CHECK-NEXT:   %6 = arith.andi %4, %5 : i1
-# CHECK-NEXT:   cf.cond_br %6, ^bb0, ^bb1
-# CHECK:        %10 = arith.ori %4, %5 : i1
-# CHECK-NEXT:   cf.cond_br %10, ^bb2, ^bb3
+# CHECK-NEXT:   %5 = arith.andi %3, %4 : i1
+# CHECK-NEXT:   cf.cond_br %5, ^bb0, ^bb1
+# CHECK:        %9 = arith.ori %3, %4 : i1
+# CHECK-NEXT:   cf.cond_br %9, ^bb2, ^bb3
 @proc
 def bool_ops(out: f32[1] @ DRAM, a: index, b: index, c: index):
     assert a >= 0

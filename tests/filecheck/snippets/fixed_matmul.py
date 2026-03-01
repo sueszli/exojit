@@ -6,59 +6,94 @@ from exo import DRAM, proc
 
 
 # CHECK: builtin.module {
-# CHECK-NEXT:   func.func @fixed_matmul(%0 : !llvm.ptr, %1 : !llvm.ptr, %2 : !llvm.ptr) {
-# CHECK-NEXT:     %3 = arith.constant 0 : i64
-# CHECK-NEXT:     %4 = arith.constant 16 : i64
-# CHECK-NEXT:     %5 = arith.constant 1 : i64
-# CHECK-NEXT:     %6 = arith.constant 0.000000e+00 : f32
-# CHECK-NEXT:     cf.br ^bb0(%3 : i64)
-# CHECK-NEXT:   ^bb0(%7 : i64):
-# CHECK-NEXT:     %8 = arith.cmpi slt, %7, %4 : i64
-# CHECK-NEXT:     cf.cond_br %8, ^bb1(%3 : i64), ^bb2
-# CHECK-NEXT:   ^bb1(%9 : i64):
-# CHECK-NEXT:     %10 = arith.cmpi slt, %9, %4 : i64
-# CHECK-NEXT:     cf.cond_br %10, ^bb3, ^bb4
+# CHECK-NEXT:   func.func @fixed_matmul(%offset_pointer : !llvm.ptr, %offset_pointer_1 : !llvm.ptr, %offset_pointer_2 : !llvm.ptr) {
+# CHECK-NEXT:     %0 = arith.constant 0 : i64
+# CHECK-NEXT:     %1 = arith.constant 16 : i64
+# CHECK-NEXT:     %2 = arith.constant 1 : i64
+# CHECK-NEXT:     %3 = arith.constant 0.000000e+00 : f32
+# CHECK-NEXT:     cf.br ^bb0(%0 : i64)
+# CHECK-NEXT:   ^bb0(%4 : i64):
+# CHECK-NEXT:     %5 = arith.cmpi slt, %4, %1 : i64
+# CHECK-NEXT:     cf.cond_br %5, ^bb1(%0 : i64), ^bb2
+# CHECK-NEXT:   ^bb1(%6 : i64):
+# CHECK-NEXT:     %7 = arith.cmpi slt, %6, %1 : i64
+# CHECK-NEXT:     cf.cond_br %7, ^bb3, ^bb4
 # CHECK-NEXT:   ^bb3:
-# CHECK-NEXT:     %11 = arith.constant 16 : i64
-# CHECK-NEXT:     %12 = arith.muli %7, %11 : i64
-# CHECK-NEXT:     %13 = arith.addi %12, %9 : i64
-# CHECK-NEXT:     %14 = "llvm.getelementptr"(%0, %13) <{rawConstantIndices = array<i32: -2147483648>, elem_type = f32, noWrapFlags = 0 : i32}> : (!llvm.ptr, i64) -> !llvm.ptr
-# CHECK-NEXT:     "llvm.store"(%6, %14) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
-# CHECK-NEXT:     cf.br ^bb5(%3 : i64)
-# CHECK-NEXT:   ^bb5(%15 : i64):
-# CHECK-NEXT:     %16 = arith.cmpi slt, %15, %4 : i64
-# CHECK-NEXT:     cf.cond_br %16, ^bb6, ^bb7
+# CHECK-NEXT:     %8 = arith.index_cast %4 : i64 to index
+# CHECK-NEXT:     %9 = arith.index_cast %6 : i64 to index
+# CHECK-NEXT:     %pointer_dim_stride = arith.constant 16 : index
+# CHECK-NEXT:     %pointer_dim_offset = arith.muli %8, %pointer_dim_stride : index
+# CHECK-NEXT:     %pointer_dim_stride_1 = arith.addi %pointer_dim_offset, %9 : index
+# CHECK-NEXT:     %bytes_per_element = arith.constant 4 : index
+# CHECK-NEXT:     %scaled_pointer_offset = arith.muli %pointer_dim_stride_1, %bytes_per_element : index
+# CHECK-NEXT:     %offset_pointer_3 = arith.index_cast %scaled_pointer_offset : index to i64
+# CHECK-NEXT:     %offset_pointer_4 = "llvm.ptrtoint"(%offset_pointer) : (!llvm.ptr) -> i64
+# CHECK-NEXT:     %offset_pointer_5 = arith.addi %offset_pointer_4, %offset_pointer_3 : i64
+# CHECK-NEXT:     %offset_pointer_6 = "llvm.inttoptr"(%offset_pointer_5) : (i64) -> !llvm.ptr
+# CHECK-NEXT:     "llvm.store"(%3, %offset_pointer_6) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+# CHECK-NEXT:     cf.br ^bb5(%0 : i64)
+# CHECK-NEXT:   ^bb5(%10 : i64):
+# CHECK-NEXT:     %11 = arith.cmpi slt, %10, %1 : i64
+# CHECK-NEXT:     cf.cond_br %11, ^bb6, ^bb7
 # CHECK-NEXT:   ^bb6:
-# CHECK-NEXT:     %17 = arith.constant 16 : i64
-# CHECK-NEXT:     %18 = arith.muli %7, %17 : i64
-# CHECK-NEXT:     %19 = arith.addi %18, %15 : i64
-# CHECK-NEXT:     %20 = "llvm.getelementptr"(%1, %19) <{rawConstantIndices = array<i32: -2147483648>, elem_type = f32, noWrapFlags = 0 : i32}> : (!llvm.ptr, i64) -> !llvm.ptr
-# CHECK-NEXT:     %21 = "llvm.load"(%20) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-# CHECK-NEXT:     %22 = arith.constant 16 : i64
-# CHECK-NEXT:     %23 = arith.muli %15, %22 : i64
-# CHECK-NEXT:     %24 = arith.addi %23, %9 : i64
-# CHECK-NEXT:     %25 = "llvm.getelementptr"(%2, %24) <{rawConstantIndices = array<i32: -2147483648>, elem_type = f32, noWrapFlags = 0 : i32}> : (!llvm.ptr, i64) -> !llvm.ptr
-# CHECK-NEXT:     %26 = "llvm.load"(%25) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-# CHECK-NEXT:     %27 = arith.mulf %21, %26 : f32
-# CHECK-NEXT:     %28 = arith.constant 16 : i64
-# CHECK-NEXT:     %29 = arith.muli %7, %28 : i64
-# CHECK-NEXT:     %30 = arith.addi %29, %9 : i64
-# CHECK-NEXT:     %31 = "llvm.getelementptr"(%0, %30) <{rawConstantIndices = array<i32: -2147483648>, elem_type = f32, noWrapFlags = 0 : i32}> : (!llvm.ptr, i64) -> !llvm.ptr
-# CHECK-NEXT:     %32 = "llvm.load"(%31) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-# CHECK-NEXT:     %33 = arith.addf %32, %27 : f32
-# CHECK-NEXT:     %34 = arith.constant 16 : i64
-# CHECK-NEXT:     %35 = arith.muli %7, %34 : i64
-# CHECK-NEXT:     %36 = arith.addi %35, %9 : i64
-# CHECK-NEXT:     %37 = "llvm.getelementptr"(%0, %36) <{rawConstantIndices = array<i32: -2147483648>, elem_type = f32, noWrapFlags = 0 : i32}> : (!llvm.ptr, i64) -> !llvm.ptr
-# CHECK-NEXT:     "llvm.store"(%33, %37) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
-# CHECK-NEXT:     %38 = arith.addi %15, %5 : i64
-# CHECK-NEXT:     cf.br ^bb5(%38 : i64)
+# CHECK-NEXT:     %12 = arith.index_cast %4 : i64 to index
+# CHECK-NEXT:     %13 = arith.index_cast %10 : i64 to index
+# CHECK-NEXT:     %pointer_dim_stride_2 = arith.constant 16 : index
+# CHECK-NEXT:     %pointer_dim_offset_1 = arith.muli %12, %pointer_dim_stride_2 : index
+# CHECK-NEXT:     %pointer_dim_stride_3 = arith.addi %pointer_dim_offset_1, %13 : index
+# CHECK-NEXT:     %bytes_per_element_1 = arith.constant 4 : index
+# CHECK-NEXT:     %scaled_pointer_offset_1 = arith.muli %pointer_dim_stride_3, %bytes_per_element_1 : index
+# CHECK-NEXT:     %offset_pointer_7 = arith.index_cast %scaled_pointer_offset_1 : index to i64
+# CHECK-NEXT:     %offset_pointer_8 = "llvm.ptrtoint"(%offset_pointer_1) : (!llvm.ptr) -> i64
+# CHECK-NEXT:     %offset_pointer_9 = arith.addi %offset_pointer_8, %offset_pointer_7 : i64
+# CHECK-NEXT:     %offset_pointer_10 = "llvm.inttoptr"(%offset_pointer_9) : (i64) -> !llvm.ptr
+# CHECK-NEXT:     %14 = "llvm.load"(%offset_pointer_10) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+# CHECK-NEXT:     %15 = arith.index_cast %10 : i64 to index
+# CHECK-NEXT:     %16 = arith.index_cast %6 : i64 to index
+# CHECK-NEXT:     %pointer_dim_stride_4 = arith.constant 16 : index
+# CHECK-NEXT:     %pointer_dim_offset_2 = arith.muli %15, %pointer_dim_stride_4 : index
+# CHECK-NEXT:     %pointer_dim_stride_5 = arith.addi %pointer_dim_offset_2, %16 : index
+# CHECK-NEXT:     %bytes_per_element_2 = arith.constant 4 : index
+# CHECK-NEXT:     %scaled_pointer_offset_2 = arith.muli %pointer_dim_stride_5, %bytes_per_element_2 : index
+# CHECK-NEXT:     %offset_pointer_11 = arith.index_cast %scaled_pointer_offset_2 : index to i64
+# CHECK-NEXT:     %offset_pointer_12 = "llvm.ptrtoint"(%offset_pointer_2) : (!llvm.ptr) -> i64
+# CHECK-NEXT:     %offset_pointer_13 = arith.addi %offset_pointer_12, %offset_pointer_11 : i64
+# CHECK-NEXT:     %offset_pointer_14 = "llvm.inttoptr"(%offset_pointer_13) : (i64) -> !llvm.ptr
+# CHECK-NEXT:     %17 = "llvm.load"(%offset_pointer_14) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+# CHECK-NEXT:     %18 = arith.mulf %14, %17 : f32
+# CHECK-NEXT:     %19 = arith.index_cast %4 : i64 to index
+# CHECK-NEXT:     %20 = arith.index_cast %6 : i64 to index
+# CHECK-NEXT:     %pointer_dim_stride_6 = arith.constant 16 : index
+# CHECK-NEXT:     %pointer_dim_offset_3 = arith.muli %19, %pointer_dim_stride_6 : index
+# CHECK-NEXT:     %pointer_dim_stride_7 = arith.addi %pointer_dim_offset_3, %20 : index
+# CHECK-NEXT:     %bytes_per_element_3 = arith.constant 4 : index
+# CHECK-NEXT:     %scaled_pointer_offset_3 = arith.muli %pointer_dim_stride_7, %bytes_per_element_3 : index
+# CHECK-NEXT:     %offset_pointer_15 = arith.index_cast %scaled_pointer_offset_3 : index to i64
+# CHECK-NEXT:     %offset_pointer_16 = "llvm.ptrtoint"(%offset_pointer) : (!llvm.ptr) -> i64
+# CHECK-NEXT:     %offset_pointer_17 = arith.addi %offset_pointer_16, %offset_pointer_15 : i64
+# CHECK-NEXT:     %offset_pointer_18 = "llvm.inttoptr"(%offset_pointer_17) : (i64) -> !llvm.ptr
+# CHECK-NEXT:     %21 = "llvm.load"(%offset_pointer_18) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+# CHECK-NEXT:     %22 = arith.addf %21, %18 : f32
+# CHECK-NEXT:     %23 = arith.index_cast %4 : i64 to index
+# CHECK-NEXT:     %24 = arith.index_cast %6 : i64 to index
+# CHECK-NEXT:     %pointer_dim_stride_8 = arith.constant 16 : index
+# CHECK-NEXT:     %pointer_dim_offset_4 = arith.muli %23, %pointer_dim_stride_8 : index
+# CHECK-NEXT:     %pointer_dim_stride_9 = arith.addi %pointer_dim_offset_4, %24 : index
+# CHECK-NEXT:     %bytes_per_element_4 = arith.constant 4 : index
+# CHECK-NEXT:     %scaled_pointer_offset_4 = arith.muli %pointer_dim_stride_9, %bytes_per_element_4 : index
+# CHECK-NEXT:     %offset_pointer_19 = arith.index_cast %scaled_pointer_offset_4 : index to i64
+# CHECK-NEXT:     %offset_pointer_20 = "llvm.ptrtoint"(%offset_pointer) : (!llvm.ptr) -> i64
+# CHECK-NEXT:     %offset_pointer_21 = arith.addi %offset_pointer_20, %offset_pointer_19 : i64
+# CHECK-NEXT:     %offset_pointer_22 = "llvm.inttoptr"(%offset_pointer_21) : (i64) -> !llvm.ptr
+# CHECK-NEXT:     "llvm.store"(%22, %offset_pointer_22) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+# CHECK-NEXT:     %25 = arith.addi %10, %2 : i64
+# CHECK-NEXT:     cf.br ^bb5(%25 : i64)
 # CHECK-NEXT:   ^bb7:
-# CHECK-NEXT:     %39 = arith.addi %9, %5 : i64
-# CHECK-NEXT:     cf.br ^bb1(%39 : i64)
+# CHECK-NEXT:     %26 = arith.addi %6, %2 : i64
+# CHECK-NEXT:     cf.br ^bb1(%26 : i64)
 # CHECK-NEXT:   ^bb4:
-# CHECK-NEXT:     %40 = arith.addi %7, %5 : i64
-# CHECK-NEXT:     cf.br ^bb0(%40 : i64)
+# CHECK-NEXT:     %27 = arith.addi %4, %2 : i64
+# CHECK-NEXT:     cf.br ^bb0(%27 : i64)
 # CHECK-NEXT:   ^bb2:
 # CHECK-NEXT:     func.return
 # CHECK-NEXT:   }

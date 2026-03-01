@@ -1,5 +1,3 @@
-# llvm intrinsic ops missing from upstream xdsl
-
 from typing import ClassVar
 
 from xdsl.dialects.builtin import I1, AnyFloatConstr, IntegerAttr, VectorType, i32

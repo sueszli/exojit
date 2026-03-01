@@ -5,13 +5,13 @@ from __future__ import annotations
 from exo import *
 
 
-# CHECK:      func.func @int_comparisons(%0 : !llvm.ptr, %1 : i64, %2 : i64) {
-# CHECK-NEXT:   %3 = arith.cmpi eq, %1, %2 : i64
-# CHECK-NEXT:   cf.cond_br %3, ^bb0, ^bb1
-# CHECK:        %7 = arith.cmpi slt, %1, %2 : i64
-# CHECK-NEXT:   cf.cond_br %7, ^bb2, ^bb3
-# CHECK:        %11 = arith.cmpi sgt, %1, %2 : i64
-# CHECK-NEXT:   cf.cond_br %11, ^bb4, ^bb5
+# CHECK:      func.func @int_comparisons(%offset_pointer : !llvm.ptr, %0 : i64, %1 : i64) {
+# CHECK-NEXT:   %2 = arith.cmpi eq, %0, %1 : i64
+# CHECK-NEXT:   cf.cond_br %2, ^bb0, ^bb1
+# CHECK:        %6 = arith.cmpi slt, %0, %1 : i64
+# CHECK-NEXT:   cf.cond_br %6, ^bb2, ^bb3
+# CHECK:        %10 = arith.cmpi sgt, %0, %1 : i64
+# CHECK-NEXT:   cf.cond_br %10, ^bb4, ^bb5
 @proc
 def int_comparisons(out: i32[1] @ DRAM, a: index, b: index):
     assert a >= 0

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import pytest
 from exo import proc
 
 from xdsl_exo.main import compile_procs
 
 
+@pytest.mark.xfail(reason="upstream ConvertMemRefToPtr does not support dynamic strides")
 def test_conv1d():
     @proc
     def conv1d(
@@ -30,4 +32,4 @@ def test_conv1d():
                             y = 0
                         out[i, j] += kernels[i, c, r] * y
 
-    compile_procs([conv1d])
+    compile_procs(conv1d)
