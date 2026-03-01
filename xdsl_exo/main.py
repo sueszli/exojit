@@ -36,7 +36,6 @@ from xdsl.utils.scoped_dict import ScopedDict
 from xdsl_exo.convert_blas import ConvertAVX2Pass, ConvertBLASPass, ConvertExternPass
 from xdsl_exo.convert_memref_to_llvm import ConvertAllocFreeToLLVM, LowerMemRefTypesPass
 from xdsl_exo.patches import ExtendedConvertMemRefToPtr, LLVMIntrinsics
-from xdsl_exo.reconcile_index_casts import ReconcileIndexCastsPass
 
 
 class IRGenerator:
@@ -558,9 +557,8 @@ def _transform(analyzed_procs: list) -> ModuleOp:
     # exo LoopIR -> raw exo IR
     module = IRGenerator().generate(analyzed_procs)
 
-    # partial lowering: convert externs and index casts to standard mlir
-    ConvertExternPass().apply(ctx, module)
-    ReconcileIndexCastsPass().apply(ctx, module)
+    # partial lowering
+    ConvertExternPass().apply(ctx, module)  # select → arith.cmpf + arith.select
     module.verify()
 
     # optimize
@@ -570,14 +568,14 @@ def _transform(analyzed_procs: list) -> ModuleOp:
 
     # full lowering to llvm dialect
     ConvertAllocFreeToLLVM().apply(ctx, module)  # VEC_AVX2 dealloc erasure + DRAM alloc→malloc, dealloc→free
-    ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview} → ptr.*
+    ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} → ptr ops
     ConvertPtrTypeOffsetsPass().apply(ctx, module)  # ptr.TypeOffsetOp → arith.constant(sizeof)
     ConvertPtrToLLVMPass().apply(ctx, module)  # ptr.* → llvm.*
     LowerMemRefTypesPass().apply(ctx, module)  # MemRefType → LLVMPointerType
-    ConvertAVX2Pass().apply(ctx, module)
-    ConvertBLASPass().apply(ctx, module)
-    ConvertScfToCf().apply(ctx, module)
-    ReconcileUnrealizedCastsPass().apply(ctx, module)
+    ConvertAVX2Pass().apply(ctx, module)  # mm256_* intrinsic calls → llvm/vector ops
+    ConvertBLASPass().apply(ctx, module)  # vec_* BLAS intrinsic calls → llvm/vector ops
+    ConvertScfToCf().apply(ctx, module)  # scf → cf
+    ReconcileUnrealizedCastsPass().apply(ctx, module)  # remove unrealized cast chains
     module.verify()
 
     # optimize
