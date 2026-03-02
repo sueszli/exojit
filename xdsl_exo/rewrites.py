@@ -115,7 +115,7 @@ def _build_broadcast(args, vt):
 
 
 def _build_zero(args, vt):
-    zero = arith.ConstantOp(DenseIntOrFPElementsAttr.create_dense_float(vt, [0.0] * vt.get_shape()[0]))
+    zero = arith.ConstantOp(DenseIntOrFPElementsAttr.from_list(vt, [0.0] * vt.get_shape()[0]))
     return [zero], zero.result, args[0]
 
 
