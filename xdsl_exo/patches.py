@@ -55,11 +55,7 @@ class FNegOp(IRDLOperation):
     def __init__(self, arg: Operation | SSAValue, fast_math: FastMathAttr | None = None):
         if fast_math is None:
             fast_math = FastMathAttr(None)
-        super().__init__(
-            operands=[arg],
-            result_types=[SSAValue.get(arg).type],
-            properties={"fastmathFlags": fast_math},
-        )
+        super().__init__(operands=[arg], result_types=[SSAValue.get(arg).type], properties={"fastmathFlags": fast_math})
 
 
 @irdl_op_definition
@@ -75,13 +71,7 @@ class MaskedStoreOp(IRDLOperation):
 
     irdl_options = (ParsePropInAttrDict(),)
 
-    def __init__(
-        self,
-        value: Operation | SSAValue,
-        data: Operation | SSAValue,
-        mask: Operation | SSAValue,
-        alignment: int = 32,
-    ):
+    def __init__(self, value: Operation | SSAValue, data: Operation | SSAValue, mask: Operation | SSAValue, alignment: int = 32):
         super().__init__(operands=[value, data, mask], result_types=[], properties={"alignment": IntegerAttr(alignment, 32)})
 
 
