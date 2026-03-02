@@ -47,6 +47,7 @@ def _mask_f64x4(m):
 #
 # each takes (op, vt, pfx) and returns (ops_list, result_value, dst_ptr).
 # for pfx variants, argument indices shift by 1 (arg[0] is mask threshold m).
+#
 
 
 def _build_identity(op, vt, pfx):
