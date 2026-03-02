@@ -33,9 +33,8 @@ from xdsl.transforms.convert_scf_to_cf import ConvertScfToCf
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.scoped_dict import ScopedDict
 
-from xdsl_exo.convert_blas import ConvertExternPass, ConvertIntrinsicsPass
-from xdsl_exo.convert_memref_to_llvm import ConvertAllocFreeToLLVM, LowerMemRefTypesPass
 from xdsl_exo.patches import ExtendedConvertMemRefToPtr, LLVMIntrinsics
+from xdsl_exo.rewrites import ConvertAllocFreeToLLVM, ConvertExternPass, ConvertIntrinsicsPass, LowerMemRefTypesPass
 
 
 class IRGenerator:
@@ -69,7 +68,7 @@ class IRGenerator:
             self.type_table = parent_type_table
 
     def _type(self, exo_type, mem_space: StringAttr | None = None) -> Attribute:
-        # map exo type (T.F32, T.Tensor, etc.) to mlir type (f32, memref, etc.)
+        # map exo type (t.f32, t.tensor, etc.) to mlir type (f32, memref, etc.)
         match exo_type:
             case SSAValue():
                 return exo_type.type
@@ -108,10 +107,10 @@ class IRGenerator:
                     # literal (e.g. `f32[16, 16]`)
                     return expr.val
                 case LoopIR.Read():
-                    # variable (e.g. `f32[M, K]`)
+                    # variable (e.g. `f32[m, k]`)
                     return self.symbol_table[repr(expr.name)] if dynamic else -1
                 case LoopIR.BinOp():
-                    # computed (e.g. `f32[M+1, K*2]`)
+                    # computed (e.g. `f32[m+1, k*2]`)
                     return self._binop_expr(expr) if dynamic else -1
                 case _:
                     assert False
@@ -119,7 +118,7 @@ class IRGenerator:
         return [from_expr(expr) for expr in tensor.shape()]
 
     def _const_expr(self, const):
-        # lower LoopIR literal to arith.constant op
+        # lower loopir literal to arith.constant op
         assert isinstance(const, LoopIR.Const)
         type = self._type(const.type)
 
@@ -168,7 +167,7 @@ class IRGenerator:
         self.builder.insert(memref.StoreOp.get(value, memref_val, index_indices))
 
     def _read_expr(self, read):
-        # lower LoopIR read to arith/memref ops
+        # lower loopir read to arith/memref ops
         assert isinstance(read, LoopIR.Read)
         idx = [self._expr(e) for e in read.idx]
         operand = self.symbol_table[repr(read.name)]
@@ -277,7 +276,7 @@ class IRGenerator:
 
     @staticmethod
     def _to_index(ops: list[Operation], values: Sequence[SSAValue | int]) -> list[SSAValue]:
-        # cast i64 SSAValues to index type, pass through static ints as-is for SubviewOp
+        # cast i64 ssavalues to index type, pass through static ints as-is for subviewop
         static, dynamic = split_dynamic_index_list(values, memref.DYNAMIC_INDEX)
         casted = []
         for v in dynamic:
@@ -326,7 +325,7 @@ class IRGenerator:
         return op.res[0]
 
     def _expr(self, expr) -> OpResult | SSAValue:
-        # dispatch LoopIR expression node to its typed lowering method
+        # dispatch loopir expression node to its typed lowering method
         match expr:
             case LoopIR.Read():
                 return self._read_expr(expr)
@@ -410,7 +409,7 @@ class IRGenerator:
         self.builder.insert(ForOp(lo, hi, step.result, [], Region(loop_block)))
 
     def _alloc_stmt(self, alloc):
-        # lower alloc to memref.alloc (DRAM) or llvm.alloca (other)
+        # lower alloc to memref.alloc (dram) or llvm.alloca (other)
         assert isinstance(alloc, LoopIR.Alloc)
         mem_name = alloc.mem.name()
         mem_space = StringAttr(mem_name)
@@ -427,7 +426,7 @@ class IRGenerator:
             self.type_table[repr(alloc.name)] = alloc.type
             return result
 
-        # VEC_AVX2 or other
+        # vec_avx2 or other
         total_size = reduce(lambda x, y: x * y, type.get_shape())
         self.builder.insert(const_op := arith.ConstantOp(IntegerAttr(total_size, i64)))
         self.builder.insert(alloc_op := llvm.AllocaOp(const_op.result, type.element_type))
@@ -460,7 +459,7 @@ class IRGenerator:
         self.builder.insert(CallOp(call.f.name, args, []))
 
     def _stmt(self, stmt):
-        # dispatch LoopIR statement node to its typed lowering method
+        # dispatch loopir statement node to its typed lowering method
         match stmt:
             case LoopIR.Assign():
                 self._store_stmt(stmt)
@@ -554,7 +553,7 @@ def _context() -> Context:
 def _transform(analyzed_procs: list) -> ModuleOp:
     ctx = _context()
 
-    # exo LoopIR -> raw exo IR
+    # exo loopir -> raw exo ir
     module = IRGenerator().generate(analyzed_procs)
 
     # partial lowering

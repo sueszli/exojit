@@ -1,8 +1,13 @@
+from dataclasses import dataclass
+from functools import reduce
+
+from xdsl.builder import Builder
 from xdsl.context import Context
 from xdsl.dialects import arith, func, llvm, memref, vector
-from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, Float32Type, IndexType, IntegerAttr, ModuleOp, VectorType, f32, f64, i32, i64
+from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, Float32Type, IndexType, IntegerAttr, MemRefType, ModuleOp, StringAttr, UnrealizedConversionCastOp, VectorType, f32, f64, i32, i64
 from xdsl.passes import ModulePass
-from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, op_type_rewrite_pattern
+from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
+from xdsl.rewriter import InsertPoint
 
 from xdsl_exo import patches as llvm_extra
 
@@ -10,7 +15,9 @@ VT_F32x8 = VectorType(f32, [8])
 VT_F64x4 = VectorType(f64, [4])
 
 
-# --- Mask generation for prefix (partial-width) variants ---
+#
+# mask generation for prefix (partial width) variants
+#
 
 
 def _mask_f32x8(m):
@@ -35,9 +42,11 @@ def _mask_f64x4(m):
     return [indices, broadcast, mask], mask.res
 
 
-# --- Core operation builders ---
-# Each takes (op, vt, pfx) and returns (ops_list, result_value, dst_ptr).
-# For pfx variants, argument indices shift by 1 (arg[0] is mask threshold m).
+#
+# core operation builders
+#
+# each takes (op, vt, pfx) and returns (ops_list, result_value, dst_ptr).
+# for pfx variants, argument indices shift by 1 (arg[0] is mask threshold m).
 
 
 def _build_identity(op, vt, pfx):
@@ -118,9 +127,12 @@ def _build_zero(op, vt, pfx):
     return [zero], zero.result, op.arguments[off]
 
 
-# --- Intrinsic dispatch table ---
-# Maps callee name -> (builder_fn, vector_type, mask_fn_or_None).
+#
+# intrinsic dispatch table
+#
+# maps callee name -> (builder_fn, vector_type, mask_fn_or_none).
 # f64x4 pfx: abs/add_red/copy/load use _mask_f64x4_ext, all others use _mask_f64x4.
+#
 
 _VEC_INTRINSICS: dict = {}
 for _name, _builder, _f64_mask in [
@@ -144,7 +156,9 @@ for _name, _builder, _f64_mask in [
     _VEC_INTRINSICS[f"vec_{_name}_f64x4_pfx"] = (_builder, VT_F64x4, _f64_mask)
 
 
-# --- Rewrite patterns ---
+#
+# blas rewrite patterns
+#
 
 
 class ConvertSelect(RewritePattern):
@@ -252,7 +266,72 @@ class ConvertMM256LoaduPsOp(RewritePattern):
         )
 
 
-# --- Passes ---
+#
+# memref to llvm rewrite patterns
+#
+
+
+class EraseVecDeallocOp(RewritePattern):
+    # erases memref.deallocop for vec_avx2 memory space (stack-allocated, no free needed).
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: memref.DeallocOp, rewriter: PatternRewriter):
+        if not isinstance(op.memref.type, MemRefType) or not isinstance(op.memref.type.memory_space, StringAttr):
+            return
+        if op.memref.type.memory_space.data != "VEC_AVX2":
+            return
+
+        rewriter.erase_op(op)
+
+
+class ConvertAllocOp(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: memref.AllocOp, rewriter: PatternRewriter):
+        memref_type = op.memref.type
+        if not isinstance(memref_type.memory_space, StringAttr):
+            return
+        if memref_type.memory_space.data != "DRAM":
+            return
+
+        assert all(size != -1 for size in memref_type.get_shape())
+
+        rewriter.replace_matched_op(
+            (
+                const_op := arith.ConstantOp(IntegerAttr(reduce(lambda x, y: x * y, memref_type.get_shape()), i64)),
+                alloc_op := llvm.CallOp("malloc", const_op.result, return_type=llvm.LLVMPointerType()),
+                UnrealizedConversionCastOp.get(alloc_op.returned, memref_type),
+            )
+        )
+
+
+class ConvertFreeOp(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: memref.DeallocOp, rewriter: PatternRewriter):
+        if not isinstance(op.memref.type, MemRefType) or not isinstance(op.memref.type.memory_space, StringAttr):
+            return
+        if op.memref.type.memory_space.data != "DRAM":
+            return
+
+        rewriter.replace_matched_op(
+            (
+                cast_op := UnrealizedConversionCastOp.get([op.memref], [llvm.LLVMPointerType()]),
+                llvm.CallOp("free", cast_op.results[0]),
+            )
+        )
+
+
+@dataclass
+class RewriteMemRefTypes(TypeConversionPattern):
+    recursive: bool = True
+
+    @attr_type_rewrite_pattern
+    def convert_type(self, type: MemRefType):
+        return llvm.LLVMPointerType()
+
+
+#
+# passes
+#
 
 
 class ConvertExternPass(ModulePass):
@@ -277,4 +356,40 @@ class ConvertIntrinsicsPass(ModulePass):
                     ConvertMM256LoaduPsOp(),
                 ]
             )
+        ).rewrite_module(m)
+
+
+class ConvertAllocFreeToLLVM(ModulePass):
+    # converts memref.allocop to malloc and memref.deallocop to free.
+
+    name = "convert-alloc-free-to-llvm"
+
+    def apply(self, ctx: Context, m: ModuleOp) -> None:
+        builder = Builder(InsertPoint.at_end(m.body.block))
+        builder.insert(llvm.FuncOp("malloc", llvm.LLVMFunctionType([i64], llvm.LLVMPointerType()), llvm.LinkageAttr("external")))
+        builder.insert(llvm.FuncOp("free", llvm.LLVMFunctionType([llvm.LLVMPointerType()]), llvm.LinkageAttr("external")))
+
+        PatternRewriteWalker(
+            GreedyRewritePatternApplier(
+                [
+                    EraseVecDeallocOp(),
+                    ConvertAllocOp(),
+                    ConvertFreeOp(),
+                ]
+            ),
+        ).rewrite_module(m)
+
+
+class LowerMemRefTypesPass(ModulePass):
+    # converts remaining memreftype to llvmpointertype.
+
+    name = "lower-memref-types"
+
+    def apply(self, ctx: Context, m: ModuleOp) -> None:
+        PatternRewriteWalker(
+            GreedyRewritePatternApplier(
+                [
+                    RewriteMemRefTypes(),
+                ]
+            ),
         ).rewrite_module(m)

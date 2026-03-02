@@ -1,6 +1,6 @@
-"""
-to be merged into upstream xDSL
-"""
+#
+# to be merged into upstream xdsl
+#
 
 from dataclasses import dataclass
 from typing import ClassVar
@@ -98,13 +98,13 @@ LLVMIntrinsics = Dialect(
 )
 
 #
-# ConvertMemRefToPtr extensions
+# convertmemreftoptr extensions
 #
 
 
 @dataclass
 class ConvertCastOp(RewritePattern):
-    """Converts memref.cast to identity (forwards source)."""
+    # converts memref.cast to identity (forwards source).
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: memref.CastOp, rewriter: PatternRewriter, /):
@@ -114,7 +114,7 @@ class ConvertCastOp(RewritePattern):
 
 @dataclass
 class ConvertReinterpretCastOp(RewritePattern):
-    """Converts memref.reinterpret_cast to ptr cast."""
+    # converts memref.reinterpret_cast to ptr cast.
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: memref.ReinterpretCastOp, rewriter: PatternRewriter, /):
