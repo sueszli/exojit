@@ -1,15 +1,44 @@
-llvm dialect PRs
+memref doesnt support strides
 
-- https://github.com/xdslproject/xdsl/pull/5683
-- https://github.com/xdslproject/xdsl/pull/5684
+e2e tests where we also use mlir toolchain
 
-exo dialect PRs
+malloc size is in elements, not bytes
 
-- https://github.com/xdslproject/xdsl/pull/4371
-    - needs to be redone
-    - attempts to add lowering for `memref.reinterpret_cast` and `memref.cast` in the upstream `convert-memref-to-ptr` pass
-    - `memref.subview`: https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview-memrefsubviewop
-    - `memref.reinterpret_cast`: https://mlir.llvm.org/docs/Dialects/MemRef/#memrefreinterpret_cast-memrefreinterpretcastop
+    rewrites.py:277 — ConvertAllocOp passes num_elements to malloc instead of
+    num_elements * sizeof(element_type). For f32[16,16] this allocates 256 bytes
+    instead of 1024. The downstream ptr arithmetic correctly scales by
+    bytes_per_element, so loads/stores go out-of-bounds.
+
+    The alloc_free.py test doesn't catch this because it only allocates a scalar
+    (1 element at offset 0).
+
+    Fix: multiply by element size before calling malloc.
+
+
+mm256_loadu_ps stores to source instead of destination
+
+    rewrites.py:235 — _build_mm256_loadu_ps stores back to args[1] (source).
+    Every other mm256 builder stores to args[0] (destination).
+
+        def _build_mm256_loadu_ps(args):
+            ...
+            return (zero, load, llvm.StoreOp(load.dereferenced_value, args[1], ...))
+            #                                                         ^^ should be args[0]
+
+
+type mismatch in _mask_f64x4
+
+    rewrites.py:38-42 — indices are vector<4xi64> but broadcast is vector<4xi32>.
+    The ICmpOp compares mismatched types.
+
+    _mask_f64x4_ext handles this correctly by extending m to i64 first.
+    _mask_f64x4 skips the extension.
+
+        indices = ... VectorType(i64, [4]) ...
+        broadcast = vector.BroadcastOp(..., result_types=[VectorType(i32, [4])])  # should be i64
+        mask = llvm.ICmpOp(indices.result, broadcast.vector, ...)  # i64 vs i32
+
+---
 
 long term goal
 
