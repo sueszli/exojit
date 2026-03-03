@@ -1,6 +1,5 @@
-memref doesnt support strides
+memref doesnt support strides (see examples/window_roundtrip.py)
 
-e2e tests where we also use mlir toolchain
 
 malloc size is in elements, not bytes
 
@@ -37,6 +36,7 @@ type mismatch in _mask_f64x4
         indices = ... VectorType(i64, [4]) ...
         broadcast = vector.BroadcastOp(..., result_types=[VectorType(i32, [4])])  # should be i64
         mask = llvm.ICmpOp(indices.result, broadcast.vector, ...)  # i64 vs i32
+
 
 ---
 

@@ -1,6 +1,5 @@
 .lit_test_times.txt
 tests/**/Output/
-CLAUDE.md
 
 # Created by https://www.toptal.com/developers/gitignore/api/r,vim,emacs,latex,linux,macos,python,windows,jetbrains+all,visualstudiocode,c++
 # Edit at https://www.toptal.com/developers/gitignore?templates=r,vim,emacs,latex,linux,macos,python,windows,jetbrains+all,visualstudiocode,c++

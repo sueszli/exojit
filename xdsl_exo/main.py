@@ -484,6 +484,7 @@ class IRGenerator:
         if procedure.instr is not None:
             raise NotImplementedError()
 
+        # build func signature: map each arg to its mlir type, wrapping mutated scalars in memref<1x>
         input_types = []
         for arg in procedure.args:
             mem = StringAttr(arg.mem.name()) if hasattr(arg, "mem") else None
