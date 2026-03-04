@@ -145,7 +145,7 @@ class IRGenerator:
         return load.res
 
     def _memref_store(self, value, memref_val, idx):
-        # emit memref.store with i64→index casts, handling scalar memref cases
+        # emit memref.store with i64->index casts, handling scalar memref cases
         if len(idx) == 0:
             assert isinstance(memref_val.type, MemRefType) and memref_val.type.get_shape() == (1,)
             idx = [self._emit(arith.ConstantOp(IntegerAttr(0, i64)))]
@@ -535,7 +535,7 @@ def _transform(analyzed_procs: list) -> ModuleOp:
     module = IRGenerator().generate(analyzed_procs)
 
     # partial lowering
-    ConvertExternPass().apply(ctx, module)  # select → arith.cmpf + arith.select
+    ConvertExternPass().apply(ctx, module)  # select -> arith.cmpf + arith.select
     module.verify()
 
     # optimize
@@ -544,13 +544,13 @@ def _transform(analyzed_procs: list) -> ModuleOp:
     module.verify()
 
     # full lowering to llvm dialect
-    ConvertAllocFreeToLLVM().apply(ctx, module)  # VEC_AVX2 dealloc erasure + DRAM alloc→malloc, dealloc→free
-    ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} → ptr ops
-    ConvertPtrTypeOffsetsPass().apply(ctx, module)  # ptr.TypeOffsetOp → arith.constant(sizeof)
-    ConvertPtrToLLVMPass().apply(ctx, module)  # ptr.* → llvm.*
-    LowerMemRefTypesPass().apply(ctx, module)  # MemRefType → LLVMPointerType
-    ConvertIntrinsicsPass().apply(ctx, module)  # mm256_*/vec_* intrinsic calls → llvm/vector ops
-    ConvertScfToCf().apply(ctx, module)  # scf → cf
+    ConvertAllocFreeToLLVM().apply(ctx, module)  # VEC_AVX2 dealloc erasure + DRAM alloc -> malloc, dealloc -> free
+    ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> ptr ops
+    ConvertPtrTypeOffsetsPass().apply(ctx, module)  # ptr.TypeOffsetOp -> arith.constant(sizeof)
+    ConvertPtrToLLVMPass().apply(ctx, module)  # ptr.* -> llvm.*
+    LowerMemRefTypesPass().apply(ctx, module)  # MemRefType -> LLVMPointerType
+    ConvertIntrinsicsPass().apply(ctx, module)  # mm256_*/vec_* intrinsic calls -> llvm/vector ops
+    ConvertScfToCf().apply(ctx, module)  # scf -> cf
     ReconcileUnrealizedCastsPass().apply(ctx, module)  # remove unrealized cast chains
     module.verify()
 
