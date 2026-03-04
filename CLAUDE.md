@@ -1,4 +1,4 @@
-# Code Intelligence
+# Plugins
 
 Prefer LSP over Grep/Glob/Read for code navigation:
 - `goToDefinition` / `goToImplementation` to jump to source
