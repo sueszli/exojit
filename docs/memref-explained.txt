@@ -247,7 +247,7 @@ Step 1 -- ConvertSubviewPattern lowers the subview:
     In C:
     void *ptr = (void *)buf;
     void *sub_ptr = ptr + 5 * sizeof(int32_t);  // ptr + 20 bytes
-    int32_t *sub = (int32_t *)sub_ptr;           // from_ptr
+    int32_t *sub = (int32_t *)sub_ptr;          // from_ptr
 
 Step 2 -- ConvertLoadPattern lowers the load:
 
