@@ -24,6 +24,7 @@ from xdsl.dialects.func import CallOp, FuncOp, ReturnOp
 from xdsl.dialects.scf import ForOp, IfOp, YieldOp
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
 from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
+from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriteWalker
 from xdsl.rewriter import InsertPoint
 from xdsl.transforms.canonicalize import CanonicalizePass
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
@@ -34,7 +35,7 @@ from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsP
 from xdsl.utils.scoped_dict import ScopedDict
 
 from xdsl_exo.patches import ExtendedConvertMemRefToPtr, LLVMIntrinsics
-from xdsl_exo.rewrites import ConvertAllocFreeToLLVM, ConvertIntrinsicsPass, LowerMemRefTypesPass
+from xdsl_exo.rewrites import ConvertAllocOp, ConvertFreeOp, ConvertVecIntrinsic, RewriteMemRefTypes
 
 
 class IRGenerator:
@@ -414,7 +415,7 @@ class IRGenerator:
         # lower free to memref.dealloc
         assert isinstance(free, LoopIR.Free)
         if free.mem.name() == "VEC_AVX2":
-            return # live on stack (llvm.alloca)
+            return  # live on stack (llvm.alloca)
         self.builder.insert(memref.DeallocOp.get(self.symbol_table[repr(free.name)]))
 
     def _window_stmt(self, stmt):
@@ -547,12 +548,19 @@ def _transform(analyzed_procs: list) -> ModuleOp:
     module.verify()
 
     # full lowering to llvm dialect
-    ConvertAllocFreeToLLVM().apply(ctx, module)  # DRAM alloc -> malloc, dealloc -> free
+    _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
+
+    # DRAM alloc -> malloc, dealloc -> free
+    b = Builder(InsertPoint.at_end(module.body.block))
+    b.insert(llvm.FuncOp("malloc", llvm.LLVMFunctionType([i64], llvm.LLVMPointerType()), llvm.LinkageAttr("external")))
+    b.insert(llvm.FuncOp("free", llvm.LLVMFunctionType([llvm.LLVMPointerType()]), llvm.LinkageAttr("external")))
+    _rewrite([ConvertAllocOp(), ConvertFreeOp()])
+
     ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> ptr ops
     ConvertPtrTypeOffsetsPass().apply(ctx, module)  # ptr.TypeOffsetOp -> arith.constant(sizeof)
     ConvertPtrToLLVMPass().apply(ctx, module)  # ptr.* -> llvm.*
-    LowerMemRefTypesPass().apply(ctx, module)  # MemRefType -> LLVMPointerType
-    ConvertIntrinsicsPass().apply(ctx, module)  # mm256_*/vec_* intrinsic calls -> llvm/vector ops
+    _rewrite([RewriteMemRefTypes()])  # MemRefType -> LLVMPointerType
+    _rewrite([ConvertVecIntrinsic()])  # mm256_*/vec_* intrinsic calls -> llvm/vector ops
     ConvertScfToCf().apply(ctx, module)  # scf -> cf
     ReconcileUnrealizedCastsPass().apply(ctx, module)  # remove unrealized cast chains
     module.verify()

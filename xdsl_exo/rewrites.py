@@ -1,13 +1,9 @@
 from dataclasses import dataclass
 from functools import reduce
 
-from xdsl.builder import Builder
-from xdsl.context import Context
 from xdsl.dialects import arith, func, llvm, memref, vector
-from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, IndexType, IntegerAttr, MemRefType, ModuleOp, StringAttr, UnrealizedConversionCastOp, VectorType, f32, f64, i32, i64
-from xdsl.passes import ModulePass
-from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
-from xdsl.rewriter import InsertPoint
+from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, IndexType, IntegerAttr, MemRefType, StringAttr, UnrealizedConversionCastOp, VectorType, f32, f64, i32, i64
+from xdsl.pattern_rewriter import PatternRewriter, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
 
 from xdsl_exo import patches as llvm_extra
 
@@ -44,9 +40,6 @@ def _mask_f64x4(m):
 
 #
 # core operation builders
-#
-# each takes (args, vt) and returns (ops_list, result_value, dst_ptr).
-# args is pre-sliced: args[0] is dst, args[1..] are sources.
 #
 
 
@@ -122,9 +115,7 @@ def _build_zero(args, vt):
 #
 # intrinsic dispatch table
 #
-# maps callee name -> (builder_fn, vector_type, mask_fn_or_none).
-# f64x4 pfx: abs/add_red/copy/load use _mask_f64x4_ext, all others use _mask_f64x4.
-#
+
 
 _VEC_INTRINSICS: dict = {}
 for _name, _builder, _f64_mask in [
@@ -146,8 +137,6 @@ for _name, _builder, _f64_mask in [
     _VEC_INTRINSICS[f"vec_{_name}_f32x8_pfx"] = (_builder, VT_F32x8, _mask_f32x8)
     _VEC_INTRINSICS[f"vec_{_name}_f64x4"] = (_builder, VT_F64x4, None)
     _VEC_INTRINSICS[f"vec_{_name}_f64x4_pfx"] = (_builder, VT_F64x4, _f64_mask)
-
-
 
 
 class ConvertVecIntrinsic(RewritePattern):
@@ -275,56 +264,3 @@ class RewriteMemRefTypes(TypeConversionPattern):
     @attr_type_rewrite_pattern
     def convert_type(self, type: MemRefType):
         return llvm.LLVMPointerType()
-
-
-#
-# passes
-#
-
-
-class ConvertIntrinsicsPass(ModulePass):
-    name = "convert-intrinsics"
-
-    def apply(self, ctx: Context, m: ModuleOp) -> None:
-        PatternRewriteWalker(
-            GreedyRewritePatternApplier(
-                [
-                    ConvertVecIntrinsic(),
-                ]
-            )
-        ).rewrite_module(m)
-
-
-class ConvertAllocFreeToLLVM(ModulePass):
-    # converts memref.allocop to malloc and memref.deallocop to free.
-
-    name = "convert-alloc-free-to-llvm"
-
-    def apply(self, ctx: Context, m: ModuleOp) -> None:
-        builder = Builder(InsertPoint.at_end(m.body.block))
-        builder.insert(llvm.FuncOp("malloc", llvm.LLVMFunctionType([i64], llvm.LLVMPointerType()), llvm.LinkageAttr("external")))
-        builder.insert(llvm.FuncOp("free", llvm.LLVMFunctionType([llvm.LLVMPointerType()]), llvm.LinkageAttr("external")))
-
-        PatternRewriteWalker(
-            GreedyRewritePatternApplier(
-                [
-                    ConvertAllocOp(),
-                    ConvertFreeOp(),
-                ]
-            ),
-        ).rewrite_module(m)
-
-
-class LowerMemRefTypesPass(ModulePass):
-    # converts remaining memreftype to llvmpointertype.
-
-    name = "lower-memref-types"
-
-    def apply(self, ctx: Context, m: ModuleOp) -> None:
-        PatternRewriteWalker(
-            GreedyRewritePatternApplier(
-                [
-                    RewriteMemRefTypes(),
-                ]
-            ),
-        ).rewrite_module(m)
