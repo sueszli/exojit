@@ -1,6 +1,8 @@
 memref doesnt support strides (see examples/window_roundtrip.py)
 
 
+study rewrites
+
 ---
 
 
