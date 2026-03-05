@@ -197,6 +197,7 @@ class ConvertVecIntrinsic(RewritePattern):
 
 @dataclass
 class RewriteMemRefTypes(TypeConversionPattern):
+    # must run last: after shape/element info is consumed by earlier passes into ops.
     recursive: bool = True
 
     @attr_type_rewrite_pattern
