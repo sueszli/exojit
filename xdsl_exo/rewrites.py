@@ -7,8 +7,44 @@ from xdsl.pattern_rewriter import PatternRewriter, RewritePattern, TypeConversio
 
 from xdsl_exo import patches as llvm_extra
 
+# `vec_*` intrinsic lowering: `func.CallOp` -> LLVM/vector dialect ops
+#
+# Naming:
+# -------
+#     vec_<op>_<type>      plain variant  – all lanes written
+#     vec_<op>_<type>_pfx  prefix variant – only lanes 0..n-1 written (loop tails)
+#
+#     <type>  =  f32x8  |  f64x4
+#     <op>    =  add, mul, neg, abs, fmadd1, fmadd2, fmadd_red, zero, ...
+#
+#
+# Plain variant:
+# --------------
+#     func.call @vec_add_f32x8(%dst, %a, %b)
+#     =>
+#     %v0  = llvm.load %a : vector<8xf32>
+#     %v1  = llvm.load %b : vector<8xf32>
+#     %r   = llvm.fadd %v0, %v1
+#            llvm.store %r, %dst
+#
+#
+# Prefix (_pfx) variant:
+# ----------------------
+# First arg is a lane-count `n`. A boolean mask selects which lanes get written.
+#
+#     func.call @vec_add_f32x8_pfx(%n, %dst, %a, %b)      e.g. n=3
+#     =>
+#     %idx  = arith.constant   [0, 1, 2, 3, 4, 5, 6, 7]
+#     %bc   = vector.broadcast [3, 3, 3, 3, 3, 3, 3, 3]   (n splatted to all lanes)
+#     %mask = llvm.icmp "slt"  [T, T, T, F, F, F, F, F]   (idx < bc)
+#     %v0   = llvm.load %a : vector<8xf32>
+#     %v1   = llvm.load %b : vector<8xf32>
+#     %r    = llvm.fadd %v0, %v1
+#             llvm.masked_store %r, %dst, %mask
+
 
 def _mask_f32x8(m):
+    # prefix mask for f32x8: lane i is active if i < m (i64 indices vs i64 broadcast)
     indices = arith.ConstantOp(DenseIntOrFPElementsAttr.from_list(VectorType(i64, [8]), list(range(8))))
     broadcast = vector.BroadcastOp(operands=[m], result_types=[VectorType(i64, [8])])
     mask = llvm.ICmpOp(indices.result, broadcast.vector, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64))
@@ -16,6 +52,7 @@ def _mask_f32x8(m):
 
 
 def _mask_f64x4_ext(m):
+    # prefix mask for f64x4 when m is i32: sign-extend to i64 before broadcast
     indices = arith.ConstantOp(DenseIntOrFPElementsAttr.from_list(VectorType(i64, [4]), list(range(4))))
     ext = arith.ExtSIOp(m, i64)
     broadcast = vector.BroadcastOp(operands=[ext.result], result_types=[VectorType(i64, [4])])
@@ -24,6 +61,7 @@ def _mask_f64x4_ext(m):
 
 
 def _mask_f64x4(m):
+    # prefix mask for f64x4 when m is already i64: broadcast as i32 vector, compare against i64 indices
     indices = arith.ConstantOp(DenseIntOrFPElementsAttr.from_list(VectorType(i64, [4]), list(range(4))))
     broadcast = vector.BroadcastOp(operands=[m], result_types=[VectorType(i32, [4])])
     mask = llvm.ICmpOp(indices.result, broadcast.vector, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64))
@@ -31,11 +69,13 @@ def _mask_f64x4(m):
 
 
 def _build_identity(args, vt):
+    # load src into a vector; result is the loaded value written to dst
     load = llvm.LoadOp(args[1], vt)
     return [load], load.dereferenced_value, args[0]
 
 
 def _build_abs(args, vt, *, prefixed=False):
+    # element-wise fabs; prefixed variant also pre-stores src into dst before masking
     dst, src = args[0], args[1]
     load = llvm.LoadOp(src, vt)
     fabs = llvm_extra.FAbsOp(load.dereferenced_value, vt)
@@ -45,6 +85,7 @@ def _build_abs(args, vt, *, prefixed=False):
 
 
 def _build_neg(args, vt):
+    # element-wise fneg: load src, negate, write to dst
     load = llvm.LoadOp(args[1], vt)
     neg = llvm_extra.FNegOp(load.dereferenced_value)
     return [load, neg], neg.res, args[0]
@@ -52,6 +93,7 @@ def _build_neg(args, vt):
 
 @cache
 def _build_binary(binop_cls):
+    # factory: returns a builder that loads two operands and applies binop_cls
     def build(args, vt):
         l1 = llvm.LoadOp(args[1], vt)
         l2 = llvm.LoadOp(args[2], vt)
@@ -62,6 +104,7 @@ def _build_binary(binop_cls):
 
 
 def _build_add_red(args, vt):
+    # reduction add: dst += src (loads dst first, then adds src into it)
     dst = args[0]
     l_dst = llvm.LoadOp(dst, vt)
     l_src = llvm.LoadOp(args[1], vt)
@@ -70,6 +113,7 @@ def _build_add_red(args, vt):
 
 
 def _build_fma(args, vt):
+    # fused multiply-add: dst = a*b + c (all three operands loaded from memory)
     l1 = llvm.LoadOp(args[1], vt)
     l2 = llvm.LoadOp(args[2], vt)
     l3 = llvm.LoadOp(args[3], vt)
@@ -78,6 +122,7 @@ def _build_fma(args, vt):
 
 
 def _build_fma_red(args, vt):
+    # fma reduction: dst = a*b + dst (accumulates into existing dst value)
     dst = args[0]
     ld = llvm.LoadOp(dst, vt)
     l1 = llvm.LoadOp(args[1], vt)
@@ -87,15 +132,18 @@ def _build_fma_red(args, vt):
 
 
 def _build_broadcast(args, vt):
+    # splat scalar args[1] to all lanes of a vector of type vt
     bcast = vector.BroadcastOp(operands=[args[1]], result_types=[vt])
     return [bcast], bcast.vector, args[0]
 
 
 def _build_zero(args, vt):
+    # zero-initialize a vector constant of type vt
     zero = arith.ConstantOp(DenseIntOrFPElementsAttr.from_list(vt, [0.0] * vt.get_shape()[0]))
     return [zero], zero.result, args[0]
 
 
+# registry mapping intrinsic name -> (builder_fn, vector_type, optional_prefix_mask_fn)
 _VEC_INTRINSICS: dict = {}
 for _name, _builder, _f64_mask in [
     ("abs", _build_abs, _mask_f64x4_ext),
@@ -112,6 +160,7 @@ for _name, _builder, _f64_mask in [
     ("fmadd_red", _build_fma_red, _mask_f64x4),
     ("zero", _build_zero, _mask_f64x4),
 ]:
+    # register plain and prefixed (masked) variants for both f32x8 and f64x4
     _VEC_INTRINSICS[f"vec_{_name}_f32x8"] = (_builder, VectorType(f32, [8]), None)
     _VEC_INTRINSICS[f"vec_{_name}_f32x8_pfx"] = (_builder, VectorType(f32, [8]), _mask_f32x8)
     _VEC_INTRINSICS[f"vec_{_name}_f64x4"] = (_builder, VectorType(f64, [4]), None)
@@ -119,11 +168,13 @@ for _name, _builder, _f64_mask in [
 
 
 def _build_mm256_storeu_ps(args):
+    # _mm256_storeu_ps: load f32x8 from args[1], store to args[0]
     load = llvm.LoadOp(args[1], VectorType(f32, [8]))
     return (load, llvm.StoreOp(load.dereferenced_value, args[0]))
 
 
 def _build_mm256_fmadd_ps(args):
+    # _mm256_fmadd_ps: args[0] = args[1]*args[2] + args[0] (in-place accumulate)
     zero = arith.ConstantOp(IntegerAttr(0, IndexType()))
     l0 = llvm.LoadOp(args[0], VectorType(f32, [8]))
     l1 = llvm.LoadOp(args[1], VectorType(f32, [8]))
@@ -133,6 +184,7 @@ def _build_mm256_fmadd_ps(args):
 
 
 def _build_mm256_broadcast_ss(args):
+    # _mm256_broadcast_ss: load scalar from memref args[1][0], splat to f32x8, store to args[0]
     zero = arith.ConstantOp(IntegerAttr(0, IndexType()))
     load = memref.LoadOp.get(args[1], [zero.result])
     bcast = vector.BroadcastOp(operands=[load.results[0]], result_types=[VectorType(f32, [8])])
@@ -140,6 +192,7 @@ def _build_mm256_broadcast_ss(args):
 
 
 def _build_mm256_loadu_ps(args):
+    # _mm256_loadu_ps: load f32x8 from args[1] and store back (materializes the pointer as a vector)
     zero = arith.ConstantOp(IntegerAttr(0, IndexType()))
     load = llvm.LoadOp(args[1], VectorType(f32, [8]))
     return (zero, load, llvm.StoreOp(load.dereferenced_value, args[1], [zero.result]))
@@ -154,6 +207,7 @@ _MM256_INTRINSICS: dict = {
 
 
 def _reduce(op, rewriter, vt):
+    # horizontal add-reduction: acc_scalar += sum(src_vector); writes result back through acc's load ptr
     assert isinstance(op.arguments[0].owner, llvm.LoadOp)
     acc_load = op.arguments[0].owner
     load = llvm.LoadOp(op.arguments[1], vt)
@@ -182,6 +236,7 @@ class ConvertVecIntrinsic(RewritePattern):
 
         builder, vt, mask_fn = entry
         pfx = mask_fn is not None
+        # prefixed variants pass the lane-count as args[0]; strip it before forwarding to builder
         args = list(op.arguments[1:]) if pfx else list(op.arguments)
         if builder is _build_abs and pfx:
             core_ops, result, dst = builder(args, vt, prefixed=True)
@@ -189,6 +244,7 @@ class ConvertVecIntrinsic(RewritePattern):
             core_ops, result, dst = builder(args, vt)
 
         if pfx:
+            # emit mask ops + core ops + a masked store to apply the prefix predicate
             mask_ops, mask = mask_fn(op.arguments[0])
             rewriter.replace_matched_op((*mask_ops, *core_ops, llvm_extra.MaskedStoreOp(result, dst, mask)))
         else:
