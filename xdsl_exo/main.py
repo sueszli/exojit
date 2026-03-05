@@ -34,7 +34,7 @@ from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsP
 from xdsl.utils.scoped_dict import ScopedDict
 
 from xdsl_exo.patches import ExtendedConvertMemRefToPtr, LLVMIntrinsics
-from xdsl_exo.rewrites import ConvertAllocFreeToLLVM, ConvertExternPass, ConvertIntrinsicsPass, LowerMemRefTypesPass
+from xdsl_exo.rewrites import ConvertAllocFreeToLLVM, ConvertIntrinsicsPass, LowerMemRefTypesPass
 
 
 class IRGenerator:
@@ -290,8 +290,14 @@ class IRGenerator:
     def _extern_expr(self, extern):
         # lower extern function call to func.call with return value
         assert isinstance(extern, LoopIR.Extern)
-        output_type = self._type(extern.f.typecheck(extern.args))
         args = [self._expr(e) for e in extern.args]
+
+        if extern.f.name() == "select":
+            # select(a, b, c, d) -> (a < b) ? c : d
+            cmp = self._emit(CmpfOp(args[0], args[1], "olt"))
+            return self._emit(arith.SelectOp(cmp, args[2], args[3]))
+
+        output_type = self._type(extern.f.typecheck(extern.args))
         return self._emit(CallOp(extern.f.name(), args, [output_type]))
 
     def _expr(self, expr) -> OpResult | SSAValue:
@@ -406,8 +412,9 @@ class IRGenerator:
 
     def _free_stmt(self, free):
         # lower free to memref.dealloc
-        # memory space is already on the memref type, so standard memref.dealloc suffices
         assert isinstance(free, LoopIR.Free)
+        if free.mem.name() == "VEC_AVX2":
+            return # live on stack (llvm.alloca)
         self.builder.insert(memref.DeallocOp.get(self.symbol_table[repr(free.name)]))
 
     def _window_stmt(self, stmt):
@@ -534,17 +541,13 @@ def _transform(analyzed_procs: list) -> ModuleOp:
     # exo loopir -> raw exo ir
     module = IRGenerator().generate(analyzed_procs)
 
-    # partial lowering
-    ConvertExternPass().apply(ctx, module)  # select -> arith.cmpf + arith.select
-    module.verify()
-
     # optimize
     CanonicalizePass().apply(ctx, module)
     CommonSubexpressionElimination().apply(ctx, module)
     module.verify()
 
     # full lowering to llvm dialect
-    ConvertAllocFreeToLLVM().apply(ctx, module)  # VEC_AVX2 dealloc erasure + DRAM alloc -> malloc, dealloc -> free
+    ConvertAllocFreeToLLVM().apply(ctx, module)  # DRAM alloc -> malloc, dealloc -> free
     ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> ptr ops
     ConvertPtrTypeOffsetsPass().apply(ctx, module)  # ptr.TypeOffsetOp -> arith.constant(sizeof)
     ConvertPtrToLLVMPass().apply(ctx, module)  # ptr.* -> llvm.*

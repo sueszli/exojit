@@ -17,5 +17,8 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["xdsl_exo*"]
 
+[tool.pytest.ini_options]
+addopts = "--forked"
+
 [project.scripts]
 xdsl-exo = "xdsl_exo.main:main"

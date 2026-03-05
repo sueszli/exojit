@@ -148,22 +148,6 @@ for _name, _builder, _f64_mask in [
     _VEC_INTRINSICS[f"vec_{_name}_f64x4_pfx"] = (_builder, VT_F64x4, _f64_mask)
 
 
-#
-# blas rewrite patterns
-#
-
-
-class ConvertSelect(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: func.CallOp, rewriter: PatternRewriter):
-        if op.callee.root_reference.data != "select":
-            return
-        rewriter.replace_matched_op(
-            (
-                cmp_op := arith.CmpfOp(op.arguments[0], op.arguments[1], "olt"),
-                arith.SelectOp(cmp_op.results[0], op.arguments[2], op.arguments[3]),
-            )
-        )
 
 
 class ConvertVecIntrinsic(RewritePattern):
@@ -248,19 +232,6 @@ _MM256_INTRINSICS: dict = {
 #
 
 
-class EraseVecDeallocOp(RewritePattern):
-    # erases memref.deallocop for vec_avx2 memory space (stack-allocated, no free needed).
-
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: memref.DeallocOp, rewriter: PatternRewriter):
-        if not isinstance(op.memref.type, MemRefType) or not isinstance(op.memref.type.memory_space, StringAttr):
-            return
-        if op.memref.type.memory_space.data != "VEC_AVX2":
-            return
-
-        rewriter.erase_op(op)
-
-
 class ConvertAllocOp(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: memref.AllocOp, rewriter: PatternRewriter):
@@ -325,7 +296,6 @@ class ConvertIntrinsicsPass(ModulePass):
         PatternRewriteWalker(
             GreedyRewritePatternApplier(
                 [
-                    ConvertSelect(),
                     ConvertVecIntrinsic(),
                 ]
             )
@@ -345,7 +315,6 @@ class ConvertAllocFreeToLLVM(ModulePass):
         PatternRewriteWalker(
             GreedyRewritePatternApplier(
                 [
-                    EraseVecDeallocOp(),
                     ConvertAllocOp(),
                     ConvertFreeOp(),
                 ]

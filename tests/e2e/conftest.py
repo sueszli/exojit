@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ctypes
 import functools
-import gc
 import os
 import re
 import shutil
@@ -16,8 +15,6 @@ from exo import compile_procs as exo_compile_procs
 from exo.core.LoopIR import LoopIR
 
 from xdsl_exo.main import compile_procs as xdsl_compile_procs
-
-gc.disable()  # xdsl's IRDL segfaults on GC
 
 
 def pytest_sessionfinish(session, exitstatus):
