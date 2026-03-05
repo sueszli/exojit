@@ -411,8 +411,9 @@ class IRGenerator:
     def _free_stmt(self, free):
         # lower free to llvm.call @free (DRAM) or no-op (stack)
         assert isinstance(free, LoopIR.Free)
-        if free.mem.name() != "DRAM":
-            return  # non-DRAM buffers live on stack (llvm.alloca)
+        is_heap_mem = free.mem.name() == "DRAM"
+        if not is_heap_mem:
+            return
         memref_val = self.symbol_table[repr(free.name)]
         cast = self._emit(UnrealizedConversionCastOp.get([memref_val], [llvm.LLVMPointerType()]))
         self.builder.insert(llvm.CallOp("free", cast))
@@ -542,7 +543,6 @@ def _context() -> Context:
 def _transform(analyzed_procs: list) -> ModuleOp:
     ctx = _context()
 
-    # exo loopir -> raw exo ir
     module = IRGenerator().generate(analyzed_procs)
 
     # optimize
@@ -552,7 +552,6 @@ def _transform(analyzed_procs: list) -> ModuleOp:
 
     # full lowering to llvm dialect
     _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
-
     ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> ptr ops
     ConvertPtrTypeOffsetsPass().apply(ctx, module)  # ptr.TypeOffsetOp -> arith.constant(sizeof)
     ConvertPtrToLLVMPass().apply(ctx, module)  # ptr.* -> llvm.*
@@ -570,9 +569,7 @@ def _transform(analyzed_procs: list) -> ModuleOp:
     return module
 
 
-def compile_procs(
-    library: Procedure | Sequence[Procedure],  # exo funcs decorated with @proc
-) -> ModuleOp:
+def compile_procs(library: Procedure | Sequence[Procedure]) -> ModuleOp:
     if isinstance(library, Procedure):
         library = [library]
     compilable = [proc._loopir_proc for proc in library if not proc.is_instr()]
