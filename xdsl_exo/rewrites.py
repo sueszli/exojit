@@ -153,15 +153,23 @@ _MM256_INTRINSICS: dict = {
 }
 
 
+def _reduce(op, rewriter, vt):
+    assert isinstance(op.arguments[0].owner, llvm.LoadOp)
+    acc_load = op.arguments[0].owner
+    load = llvm.LoadOp(op.arguments[1], vt)
+    reduce = vector.ReductionOp(load.dereferenced_value, vector.CombiningKindAttr([vector.CombiningKindFlag.ADD]), acc=op.arguments[0])
+    rewriter.replace_matched_op((load, reduce, llvm.StoreOp(reduce.dest, acc_load.ptr)))
+
+
 class ConvertVecIntrinsic(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: func.CallOp, rewriter: PatternRewriter):
         callee = op.callee.root_reference.data
 
         if callee == "vec_reduce_add_scl_f32x8":
-            return self._reduce(op, rewriter, VectorType(f32, [8]))
+            return _reduce(op, rewriter, VectorType(f32, [8]))
         if callee == "vec_reduce_add_scl_f64x4":
-            return self._reduce(op, rewriter, VectorType(f64, [4]))
+            return _reduce(op, rewriter, VectorType(f64, [4]))
 
         mm256_builder = _MM256_INTRINSICS.get(callee)
         if mm256_builder is not None:
@@ -185,14 +193,6 @@ class ConvertVecIntrinsic(RewritePattern):
             rewriter.replace_matched_op((*mask_ops, *core_ops, llvm_extra.MaskedStoreOp(result, dst, mask)))
         else:
             rewriter.replace_matched_op((*core_ops, llvm.StoreOp(result, dst)))
-
-    @staticmethod
-    def _reduce(op, rewriter, vt):
-        assert isinstance(op.arguments[0].owner, llvm.LoadOp)
-        acc_load = op.arguments[0].owner
-        load = llvm.LoadOp(op.arguments[1], vt)
-        reduce = vector.ReductionOp(load.dereferenced_value, vector.CombiningKindAttr([vector.CombiningKindFlag.ADD]), acc=op.arguments[0])
-        rewriter.replace_matched_op((load, reduce, llvm.StoreOp(reduce.dest, acc_load.ptr)))
 
 
 @dataclass
