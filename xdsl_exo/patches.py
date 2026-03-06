@@ -60,7 +60,6 @@ class FNegOp(IRDLOperation):
 
 @irdl_op_definition
 class FCmpOp(IRDLOperation):
-    # float comparison — prints as MLIR `llvm.fcmp "olt" %a, %b : f32`
     name = "llvm.fcmp"
 
     T: ClassVar = VarConstraint("T", AnyFloatConstr)

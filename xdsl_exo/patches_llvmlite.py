@@ -34,10 +34,8 @@ def _return_type(func_op: func.FuncOp | llvm.FuncOp) -> ir.Type:
 
 def _emit_op(op: Operation, builder: ir.IRBuilder, block_map: BlockMap, phi_map: PhiMap, val_map: ValMap) -> None:
     match op:
-        case llvm.ConstantOp():
+        case llvm.ConstantOp() | arith.ConstantOp():
             val_map[op.result] = ir.Constant(_convert_type(op.result.type), op.value.value.data)
-        case arith.ConstantOp():
-            val_map[op.result] = ir.Constant(_convert_type(op.value.type), op.value.value.data)
         case arith.MuliOp() | arith.AddiOp():
             method = "mul" if isinstance(op, arith.MuliOp) else "add"
             val_map[op.result] = getattr(builder, method)(val_map[op.lhs], val_map[op.rhs])
