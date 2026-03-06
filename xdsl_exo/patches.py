@@ -73,7 +73,6 @@ class FCmpOp(IRDLOperation):
     traits = traits_def(Pure())
 
     _TABLE: ClassVar = {"false": 0, "oeq": 1, "ogt": 2, "oge": 3, "olt": 4, "ole": 5, "one": 6, "ord": 7, "ueq": 8, "ugt": 9, "uge": 10, "ult": 11, "ule": 12, "une": 13, "uno": 14, "true": 15}
-    _REVERSE: ClassVar = {v: k for k, v in {"false": 0, "oeq": 1, "ogt": 2, "oge": 3, "olt": 4, "ole": 5, "one": 6, "ord": 7, "ueq": 8, "ugt": 9, "uge": 10, "ult": 11, "ule": 12, "une": 13, "uno": 14, "true": 15}.items()}
 
     def __init__(self, lhs: Operation | SSAValue, rhs: Operation | SSAValue, predicate: int | str):
         if isinstance(predicate, str):
@@ -92,7 +91,7 @@ class FCmpOp(IRDLOperation):
         return cls(lhs, rhs, pred_str)
 
     def print(self, printer: Printer) -> None:
-        pred_str = self._REVERSE[self.predicate.value.data]
+        pred_str = {v: k for k, v in self._TABLE.items()}[self.predicate.value.data]
         printer.print_string(f' "{pred_str}" ')
         printer.print_ssa_value(self.lhs)
         printer.print_string(", ")
