@@ -44,7 +44,7 @@ from xdsl_exo import patches as llvm_extra
 
 
 MaskResult: TypeAlias = tuple[list[Operation], SSAValue]
-BuildResult: TypeAlias = tuple[list[Operation], SSAValue, SSAValue]
+BuildResult: TypeAlias = tuple[list[Operation], SSAValue]
 Builder: TypeAlias = Callable[..., BuildResult]
 MaskFn: TypeAlias = Callable[[SSAValue], MaskResult]
 Handler: TypeAlias = Callable[[list[SSAValue]], tuple[Operation, ...]]
@@ -79,14 +79,14 @@ def _mask_f64x4_ext(lane_count: SSAValue) -> MaskResult:
 def _build_copy(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> BuildResult:
     # dst[:] = src[:]
     load = llvm.LoadOp(src, vec_type)
-    return [load], load.dereferenced_value, dst
+    return [load], load.dereferenced_value
 
 
 def _build_abs(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> BuildResult:
     # dst[:] = abs(src[:])
     load = llvm.LoadOp(src, vec_type)
     fabs = llvm_extra.FAbsOp(load.dereferenced_value, vec_type)
-    return [load, fabs], fabs.result, dst
+    return [load, fabs], fabs.result
 
 
 def _build_abs_pfx(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> BuildResult:
@@ -95,14 +95,14 @@ def _build_abs_pfx(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> Bui
     # net:             dst[:n] = abs(src[:n]), dst[n:] = src[n:]
     load = llvm.LoadOp(src, vec_type)
     fabs = llvm_extra.FAbsOp(load.dereferenced_value, vec_type)
-    return [load, fabs, llvm.StoreOp(load.dereferenced_value, dst)], fabs.result, dst
+    return [load, fabs, llvm.StoreOp(load.dereferenced_value, dst)], fabs.result
 
 
 def _build_neg(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> BuildResult:
     # dst[:] = -src[:]
     load = llvm.LoadOp(src, vec_type)
     neg = llvm_extra.FNegOp(load.dereferenced_value)
-    return [load, neg], neg.res, dst
+    return [load, neg], neg.res
 
 
 def _build_add(dst: SSAValue, src_a: SSAValue, src_b: SSAValue, *, vec_type: VectorType) -> BuildResult:
@@ -110,7 +110,7 @@ def _build_add(dst: SSAValue, src_a: SSAValue, src_b: SSAValue, *, vec_type: Vec
     load_a = llvm.LoadOp(src_a, vec_type)
     load_b = llvm.LoadOp(src_b, vec_type)
     result = llvm.FAddOp(load_a.dereferenced_value, load_b.dereferenced_value)
-    return [load_a, load_b, result], result.res, dst
+    return [load_a, load_b, result], result.res
 
 
 def _build_mul(dst: SSAValue, src_a: SSAValue, src_b: SSAValue, *, vec_type: VectorType) -> BuildResult:
@@ -118,7 +118,7 @@ def _build_mul(dst: SSAValue, src_a: SSAValue, src_b: SSAValue, *, vec_type: Vec
     load_a = llvm.LoadOp(src_a, vec_type)
     load_b = llvm.LoadOp(src_b, vec_type)
     result = llvm.FMulOp(load_a.dereferenced_value, load_b.dereferenced_value)
-    return [load_a, load_b, result], result.res, dst
+    return [load_a, load_b, result], result.res
 
 
 def _build_add_red(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> BuildResult:
@@ -126,7 +126,7 @@ def _build_add_red(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> Bui
     load_dst = llvm.LoadOp(dst, vec_type)
     load_src = llvm.LoadOp(src, vec_type)
     add = llvm.FAddOp(load_dst.dereferenced_value, load_src.dereferenced_value)
-    return [load_dst, load_src, add], add.res, dst
+    return [load_dst, load_src, add], add.res
 
 
 def _build_fma(dst: SSAValue, src_a: SSAValue, src_b: SSAValue, src_c: SSAValue, *, vec_type: VectorType) -> BuildResult:
@@ -135,7 +135,7 @@ def _build_fma(dst: SSAValue, src_a: SSAValue, src_b: SSAValue, src_c: SSAValue,
     load_b = llvm.LoadOp(src_b, vec_type)
     load_c = llvm.LoadOp(src_c, vec_type)
     fma = vector.FMAOp(operands=[load_a.dereferenced_value, load_b.dereferenced_value, load_c.dereferenced_value], result_types=[vec_type])
-    return [load_a, load_b, load_c, fma], fma.res, dst
+    return [load_a, load_b, load_c, fma], fma.res
 
 
 def _build_fma_red(dst: SSAValue, src_a: SSAValue, src_b: SSAValue, *, vec_type: VectorType) -> BuildResult:
@@ -144,26 +144,26 @@ def _build_fma_red(dst: SSAValue, src_a: SSAValue, src_b: SSAValue, *, vec_type:
     load_a = llvm.LoadOp(src_a, vec_type)
     load_b = llvm.LoadOp(src_b, vec_type)
     fma = vector.FMAOp(operands=[load_a.dereferenced_value, load_b.dereferenced_value, load_acc.dereferenced_value], result_types=[vec_type])
-    return [load_acc, load_a, load_b, fma], fma.res, dst
+    return [load_acc, load_a, load_b, fma], fma.res
 
 
 def _build_broadcast(dst: SSAValue, scalar: SSAValue, *, vec_type: VectorType) -> BuildResult:
     # dst[:] = [scalar] * n_lanes
     broadcast = vector.BroadcastOp(operands=[scalar], result_types=[vec_type])
-    return [broadcast], broadcast.vector, dst
+    return [broadcast], broadcast.vector
 
 
 def _build_zero(dst: SSAValue, *, vec_type: VectorType) -> BuildResult:
     # dst[:] = [0.0] * n_lanes
     zero = arith.ConstantOp(DenseIntOrFPElementsAttr.from_list(vec_type, [0.0] * vec_type.get_shape()[0]))
-    return [zero], zero.result, dst
+    return [zero], zero.result
 
 
 def _plain_handler(builder: Builder, vec_type: VectorType) -> Handler:
     def handle(args: list[SSAValue]) -> tuple[Operation, ...]:
         dst, *srcs = args
-        ops, result, out_dst = builder(dst, *srcs, vec_type=vec_type)
-        return (*ops, llvm.StoreOp(result, out_dst))
+        ops, result = builder(dst, *srcs, vec_type=vec_type)
+        return (*ops, llvm.StoreOp(result, dst))
 
     return handle
 
@@ -172,8 +172,8 @@ def _pfx_handler(builder: Builder, vec_type: VectorType, mask_fn: MaskFn) -> Han
     def handle(args: list[SSAValue]) -> tuple[Operation, ...]:
         lane_count, dst, *srcs = args
         mask_ops, mask = mask_fn(lane_count)
-        core_ops, result, out_dst = builder(dst, *srcs, vec_type=vec_type)
-        return (*mask_ops, *core_ops, llvm_extra.MaskedStoreOp(result, out_dst, mask))
+        core_ops, result = builder(dst, *srcs, vec_type=vec_type)
+        return (*mask_ops, *core_ops, llvm_extra.MaskedStoreOp(result, dst, mask))
 
     return handle
 
