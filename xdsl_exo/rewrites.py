@@ -243,7 +243,7 @@ def _make_intrinsics() -> dict[str, Handler]:
     entries["vec_reduce_add_scl_f64x4"] = _reduce_handler(VectorType(f64, [4]))
 
     entries["mm256_storeu_ps"] = lambda args: _build_mm256_storeu_ps(*args)
-    entries["mm256_loadu_ps"] = lambda args: _build_mm256_storeu_ps(*args)
+    entries["mm256_loadu_ps"] = lambda args: _build_mm256_storeu_ps(*args)  # same lowering in Exo's calling convention
     entries["mm256_fmadd_ps"] = lambda args: _build_mm256_fmadd_ps(*args)
     entries["mm256_broadcast_ss"] = lambda args: _build_mm256_broadcast_ss(*args)
 

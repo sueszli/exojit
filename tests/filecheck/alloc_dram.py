@@ -7,7 +7,7 @@ from exo import *
 
 # CHECK: builtin.module {
 # CHECK-NEXT: func.func @alloc_dram(%offset_pointer : !llvm.ptr) {
-# CHECK-NEXT:   %0 = arith.constant 4 : i64
+# CHECK-NEXT:   %0 = arith.constant 16 : i64
 # CHECK-NEXT:   %offset_pointer_1 = "llvm.call"(%0) <{callee = @malloc, fastmathFlags = #llvm.fastmath<none>, CConv = #llvm.cconv<ccc>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>, TailCallKind = #llvm.tailcallkind<none>}> : (i64) -> !llvm.ptr
 # CHECK-NEXT:   %1 = arith.constant 0 : i64
 # CHECK-NEXT:   %2 = arith.index_cast %1 : i64 to index

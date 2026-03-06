@@ -18,51 +18,6 @@ dynamic 2D memref strides (2 tests)
     (memref<?x?xf32>) get stride -1 and fail.
     Affects: test_multi_dim (test_dynamic_2d_3x4, test_dynamic_2d_1x1).
 
-xDSL IRDL GC segfault (infrastructure)
-    xDSL's IRDL type constraint system segfaults during garbage collection
-    when many compilations run in a single process. Worked around by
-    disabling GC during xdsl_compile_procs() calls in conftest.py.
-    Root cause is in xdsl/irdl/attributes.py — recursive type checking
-    interacts badly with Python's cyclic GC.
-
-# general bugs
-
-malloc size is in elements, not bytes
-
-    rewrites.py:277 — ConvertAllocOp passes num_elements to malloc instead of
-    num_elements * sizeof(element_type). For f32[16,16] this allocates 256 bytes
-    instead of 1024. The downstream ptr arithmetic correctly scales by
-    bytes_per_element, so loads/stores go out-of-bounds.
-
-    The alloc_free.py test doesn't catch this because it only allocates a scalar
-    (1 element at offset 0).
-
-    Fix: multiply by element size before calling malloc.
-
-
-mm256_loadu_ps stores to source instead of destination
-
-    rewrites.py:235 — _build_mm256_loadu_ps stores back to args[1] (source).
-    Every other mm256 builder stores to args[0] (destination).
-
-        def _build_mm256_loadu_ps(args):
-            ...
-            return (zero, load, llvm.StoreOp(load.dereferenced_value, args[1], ...))
-            #                                                         ^^ should be args[0]
-
-
-type mismatch in _mask_f64x4
-
-    rewrites.py:38-42 — indices are vector<4xi64> but broadcast is vector<4xi32>.
-    The ICmpOp compares mismatched types.
-
-    _mask_f64x4_ext handles this correctly by extending m to i64 first.
-    _mask_f64x4 skips the extension.
-
-        indices = ... VectorType(i64, [4]) ...
-        broadcast = vector.BroadcastOp(..., result_types=[VectorType(i32, [4])])  # should be i64
-        mask = llvm.ICmpOp(indices.result, broadcast.vector, ...)  # i64 vs i32
-
 
 ## final step
 

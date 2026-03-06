@@ -6,7 +6,7 @@ from exo import *
 
 
 # CHECK:      func.func @multi_type_alloc(%offset_pointer : !llvm.ptr, %offset_pointer_1 : !llvm.ptr) {
-# CHECK:        %0 = arith.constant 1 : i64
+# CHECK:        %0 = arith.constant 4 : i64
 # CHECK-NEXT:   %offset_pointer_2 = "llvm.call"(%0) <{callee = @malloc, {{.*}}}> : (i64) -> !llvm.ptr
 # CHECK-NEXT:   %offset_pointer_3 = "llvm.call"(%0) <{callee = @malloc, {{.*}}}> : (i64) -> !llvm.ptr
 # CHECK-NEXT:   %1 = arith.constant 3.140000e+00 : f32

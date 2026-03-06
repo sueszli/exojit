@@ -176,8 +176,10 @@ class IRGenerator:
             case _:
                 assert False
 
-    def _shape(self, tensor: T.Tensor, *, dynamic: bool = False) -> list[int | SSAValue]:
-        # extract tensor dimensions as ints (static) or ssa values (dynamic)
+    def _shape(self, tensor: T.Tensor, *, emit: bool = False) -> list[int | SSAValue]:
+        # extract tensor dimensions as ints (static) or SSA values (variable/computed).
+        # emit=False: variable dims -> DYNAMIC_INDEX (-1), for MemRefType declarations.
+        # emit=True:  variable dims -> live SSA values from symbol table, for stride/offset arithmetic.
         assert isinstance(tensor, T.Tensor)
 
         def from_expr(expr: object) -> int | SSAValue:
@@ -187,10 +189,10 @@ class IRGenerator:
                     return expr.val
                 case LoopIR.Read():
                     # variable (e.g. `f32[m, k]`)
-                    return self._syms[repr(expr.name)] if dynamic else memref.DYNAMIC_INDEX
+                    return self._syms[repr(expr.name)] if emit else memref.DYNAMIC_INDEX
                 case LoopIR.BinOp():
                     # computed (e.g. `f32[m+1, k*2]`)
-                    return self._expr_binop(expr) if dynamic else memref.DYNAMIC_INDEX
+                    return self._expr_binop(expr) if emit else memref.DYNAMIC_INDEX
                 case _:
                     assert False
 
@@ -226,18 +228,18 @@ class IRGenerator:
 
     def _expr_const(self, const: LoopIR.Const) -> SSAValue:
         # lower loopir literal to arith.constant op
-        type = self._type(const.type)
+        mlir_type = self._type(const.type)
 
-        if type in [f16, f32, f64]:
-            attr = FloatAttr(const.val, type)
-        elif type in [i8, i16, i32, i64]:
-            attr = IntegerAttr(IntAttr(int(const.val)), type)
-        elif type == i1:
+        if mlir_type in [f16, f32, f64]:
+            attr = FloatAttr(const.val, mlir_type)
+        elif mlir_type in [i8, i16, i32, i64]:
+            attr = IntegerAttr(IntAttr(int(const.val)), mlir_type)
+        elif mlir_type == i1:
             attr = BoolAttr(const.val, i1)
         else:
             assert False
 
-        return self._emit(ConstantOp(attr, type))
+        return self._emit(ConstantOp(attr, mlir_type))
 
     def _expr_read(self, read: LoopIR.Read) -> SSAValue:
         # lower loopir read to arith/memref ops
@@ -255,13 +257,13 @@ class IRGenerator:
     def _expr_usub(self, usub: LoopIR.USub) -> SSAValue:
         # lower unary negation to negf (float) or 0-x subi (int)
         expr = self._expr(usub.arg)
-        type = self._type(usub.type)
+        mlir_type = self._type(usub.type)
 
-        if type in [f16, f32, f64]:
+        if mlir_type in [f16, f32, f64]:
             return self._emit(NegfOp(expr))
-        elif type in [i8, i16, i32, i64]:
-            zero = self._emit(ConstantOp(IntegerAttr(0, type)))
-            return self._emit(SubiOp(zero, expr, result_type=type))
+        elif mlir_type in [i8, i16, i32, i64]:
+            zero = self._emit(ConstantOp(IntegerAttr(0, mlir_type)))
+            return self._emit(SubiOp(zero, expr, result_type=mlir_type))
         else:
             assert False
 
@@ -280,19 +282,19 @@ class IRGenerator:
 
     def _expr_binop(self, binop: LoopIR.BinOp) -> SSAValue:
         # lower binary op to typed arith op
-        type = self._type(binop.type)
+        mlir_type = self._type(binop.type)
         lhs = self._expr(binop.lhs)
         rhs = self._expr(binop.rhs)
 
-        if type == i1:
+        if mlir_type == i1:
             return self._cmp_binop(lhs, rhs, binop.op, self._emit)
 
         float_ops = {"+": AddfOp, "-": SubfOp, "*": MulfOp, "/": DivfOp}
         int_ops = {"+": AddiOp, "-": SubiOp, "*": MuliOp, "/": DivSIOp, "%": RemSIOp}
-        if type in [f16, f32, f64]:
-            return self._emit(float_ops[binop.op](lhs, rhs, result_type=type, flags=FastMathFlagsAttr("none")))
-        if type in [i8, i16, i32, i64]:
-            return self._emit(int_ops[binop.op](lhs, rhs, result_type=type))
+        if mlir_type in [f16, f32, f64]:
+            return self._emit(float_ops[binop.op](lhs, rhs, result_type=mlir_type, flags=FastMathFlagsAttr("none")))
+        if mlir_type in [i8, i16, i32, i64]:
+            return self._emit(int_ops[binop.op](lhs, rhs, result_type=mlir_type))
         assert False
 
     def _expr_window(self, window: LoopIR.WindowExpr) -> SSAValue:
@@ -300,8 +302,8 @@ class IRGenerator:
         indices = [_window_access(access, self._expr) for access in window.idx]
         source = self._syms[repr(window.name)]
         dest_type = self._type(window.type.as_tensor, source.type.memory_space)
-        input_sizes = self._shape(self._types[repr(window.name)], dynamic=True)
-        output_sizes = self._shape(window.type.as_tensor, dynamic=True)
+        input_sizes = self._shape(self._types[repr(window.name)], emit=True)
+        output_sizes = self._shape(window.type.as_tensor, emit=True)
 
         # compute strides/offsets in i64, then cast to index for subview
         strides = _window_strides(input_sizes, self._emit)
@@ -408,30 +410,31 @@ class IRGenerator:
 
         self.builder.insert(ForOp(lo, hi, step, [], Region(loop_block)))
 
-    def _stmt_alloc(self, alloc: LoopIR.Alloc) -> SSAValue:
+    def _stmt_alloc(self, alloc: LoopIR.Alloc) -> None:
         # lower alloc to llvm.call @malloc (DRAM) or llvm.alloca (stack)
         mem_name = alloc.mem.name()
         mem_space = StringAttr(mem_name)
-        type = self._type(alloc.type, mem_space)
+        mlir_type = self._type(alloc.type, mem_space)
 
         # scalar allocs: wrap as memref<1x...>
-        if not isinstance(type, MemRefType):
-            type = MemRefType(type, [1], NoneAttr(), mem_space)
+        if not isinstance(mlir_type, MemRefType):
+            mlir_type = MemRefType(mlir_type, [1], NoneAttr(), mem_space)
 
-        shape = type.get_shape()
+        shape = mlir_type.get_shape()
         assert all(dim != memref.DYNAMIC_INDEX for dim in shape), "dynamic-sized allocs are not supported"
-        total_size = reduce(lambda x, y: x * y, shape)
-        const_val = self._emit(arith.ConstantOp(IntegerAttr(total_size, i64)))
+        total_elements = reduce(lambda x, y: x * y, shape)
 
         if mem_name == "DRAM":
-            raw_ptr = self._emit(llvm.CallOp("malloc", const_val, return_type=llvm.LLVMPointerType()))
+            elem_bytes = {f16: 2, f32: 4, f64: 8, i8: 1, i16: 2, i32: 4, i64: 8}[mlir_type.element_type]
+            size_val = self._emit(arith.ConstantOp(IntegerAttr(total_elements * elem_bytes, i64)))  # malloc takes bytes
+            raw_ptr = self._emit(llvm.CallOp("malloc", size_val, return_type=llvm.LLVMPointerType()))
         else:
-            raw_ptr = self._emit(llvm.AllocaOp(const_val, type.element_type))
+            size_val = self._emit(arith.ConstantOp(IntegerAttr(total_elements, i64)))  # alloca takes element count
+            raw_ptr = self._emit(llvm.AllocaOp(size_val, mlir_type.element_type))
 
-        result = self._emit(UnrealizedConversionCastOp.get(raw_ptr, type))
+        result = self._emit(UnrealizedConversionCastOp.get(raw_ptr, mlir_type))
         self._syms[repr(alloc.name)] = result
         self._types[repr(alloc.name)] = alloc.type
-        return result
 
     def _stmt_free(self, free: LoopIR.Free) -> None:
         # lower free to llvm.call @free (DRAM) or no-op (stack)
@@ -501,10 +504,10 @@ class IRGenerator:
         input_types = []
         for arg in procedure.args:
             mem = StringAttr(arg.mem.name()) if hasattr(arg, "mem") else None
-            type = self._type(arg.type, mem)
-            if not isinstance(type, MemRefType) and _is_mutated(repr(arg.name), procedure.body):
-                type = MemRefType(type, [1], NoneAttr())
-            input_types.append(type)
+            mlir_type = self._type(arg.type, mem)
+            if not isinstance(mlir_type, MemRefType) and _is_mutated(repr(arg.name), procedure.body):
+                mlir_type = MemRefType(mlir_type, [1], NoneAttr())
+            input_types.append(mlir_type)
         func_type = FunctionType.from_lists(input_types, [])
 
         with self._tmp_state(inherit=False):
