@@ -1,6 +1,6 @@
 import llvmlite.binding as llvm_binding
 import llvmlite.ir as ir
-from xdsl.backend.llvm.convert_op import convert_op
+from xdsl.backend.llvm.convert_op import convert_op as _xdsl_convert_op
 from xdsl.backend.llvm.convert_type import convert_type as _xdsl_convert_type
 from xdsl.dialects import arith, cf, func, llvm
 from xdsl.dialects.builtin import IndexType, ModuleOp
@@ -29,7 +29,7 @@ def _convert_type(mlir_type) -> ir.Type:
             return _xdsl_convert_type(mlir_type)
 
 
-def _emit_op(op: Operation, builder: ir.IRBuilder, block_map: BlockMap, phi_map: PhiMap, val_map: ValMap) -> None:
+def _convert_op(op: Operation, builder: ir.IRBuilder, block_map: BlockMap, phi_map: PhiMap, val_map: ValMap) -> None:
     match op:
         case llvm.ConstantOp() | arith.ConstantOp():
             val_map[op.result] = ir.Constant(_convert_type(op.result.type), op.value.value.data)
@@ -69,7 +69,7 @@ def _emit_op(op: Operation, builder: ir.IRBuilder, block_map: BlockMap, phi_map:
             if op.res:
                 val_map[op.res[0]] = result
         case _:
-            convert_op(op, builder, val_map)
+            _xdsl_convert_op(op, builder, val_map)
 
 
 def _emit_func(func_op: func.FuncOp | llvm.FuncOp, llvm_module: ir.Module) -> None:
@@ -88,7 +88,7 @@ def _emit_func(func_op: func.FuncOp | llvm.FuncOp, llvm_module: ir.Module) -> No
     for mlir_block in mlir_blocks:
         builder = ir.IRBuilder(block_map[mlir_block])
         for op in mlir_block.ops:
-            _emit_op(op, builder, block_map, phi_map, val_map)
+            _convert_op(op, builder, block_map, phi_map, val_map)
 
 
 def to_llvmlite(module: ModuleOp) -> ir.Module:
