@@ -87,7 +87,7 @@ LLVMIntrinsics = Dialect(
 
 
 def _loop_ub_as_index(index: SSAValue, rewriter: PatternRewriter) -> SSAValue | None:
-    # unwrap index_cast(iv) -> iv; Exo emits i64 loop vars cast to index
+    # exo emits `%i_idx = arith.index_cast(%i_i64)` before using the IV as an index. unwrap it.
     iv = index.op.input if isinstance(index, OpResult) and isinstance(index.op, arith.IndexCastOp) else index
     if not isinstance(iv, BlockArgument) or iv.index != 0 or not isinstance(for_op := iv.block.parent_op(), scf.ForOp):
         return None
@@ -96,7 +96,8 @@ def _loop_ub_as_index(index: SSAValue, rewriter: PatternRewriter) -> SSAValue | 
 
 
 def _get_dynamic_target_ptr(memref_val: SSAValue, memref_type: builtin.MemRefType, indices: list[SSAValue], rewriter: PatternRewriter) -> SSAValue:
-    shape, ins = memref_type.get_shape(), rewriter.insert_op
+    shape = memref_type.get_shape()
+    ins = rewriter.insert_op
     iconst = lambda n: ins(arith.ConstantOp.from_int_and_width(n, builtin.IndexType())).result
 
     def dim_size(i: int) -> SSAValue:  # static -> constant; dynamic -> scf.for ub
