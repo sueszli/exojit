@@ -6,8 +6,8 @@ from exo import *
 
 
 # CHECK:      func.func @set_first(%offset_pointer : !llvm.ptr) {
-# CHECK:        %1 = arith.constant 1.000000e+00 : f32
-# CHECK:        "llvm.store"(%1, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+# CHECK:        {{.*}} = arith.constant 1.000000e+00 : f32
+# CHECK:        "llvm.store"({{.*}}, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
 # CHECK-NEXT:   func.return
 # CHECK-NEXT: }
 # CHECK:      func.func @inner(%offset_pointer : !llvm.ptr) {

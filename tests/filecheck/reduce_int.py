@@ -6,14 +6,14 @@ from exo import *
 
 
 # CHECK:      func.func @reduce_int(%offset_pointer : !llvm.ptr, %offset_pointer_1 : !llvm.ptr) {
-# CHECK:        cf.br ^bb0(%0 : i64)
-# CHECK:      ^bb0(%3 : i64):
-# CHECK:        cf.cond_br %4, ^bb1, ^bb2
+# CHECK:        cf.br ^bb0({{.*}} : i64)
+# CHECK:      ^bb0({{.*}} : i64):
+# CHECK:        cf.cond_br {{.*}}, ^bb1, ^bb2
 # CHECK:      ^bb1:
-# CHECK:        %6 = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
-# CHECK:        %8 = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
-# CHECK-NEXT:   %9 = arith.addi %8, %6 : i32
-# CHECK:        "llvm.store"(%9, {{.*}}) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
+# CHECK:        {{.*}} = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
+# CHECK:        {{.*}} = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
+# CHECK-NEXT:   {{.*}} = arith.addi {{.*}}, {{.*}} : i32
+# CHECK:        "llvm.store"({{.*}}, {{.*}}) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
 # CHECK:      ^bb2:
 # CHECK-NEXT:   func.return
 @proc

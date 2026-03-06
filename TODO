@@ -1,7 +1,5 @@
 across all lit tests, change %4 and numbered stuff to {{.*}}
 
-memref doesnt support strides (see examples/window_roundtrip.py)
-
 ## final step
 
 long term goals:

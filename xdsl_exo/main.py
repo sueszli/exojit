@@ -63,7 +63,6 @@ def _window_access(access: object, expr_fn: Callable[[object], SSAValue]) -> SSA
             assert False
 
 
-
 def _coerce_arg(
     arg_val: SSAValue,
     callee_arg: object,

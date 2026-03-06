@@ -98,11 +98,14 @@ def _loop_ub_as_index(index: SSAValue, rewriter: PatternRewriter) -> SSAValue | 
 def _get_dynamic_target_ptr(memref_val: SSAValue, memref_type: builtin.MemRefType, indices: list[SSAValue], rewriter: PatternRewriter) -> SSAValue:
     shape, ins = memref_type.get_shape(), rewriter.insert_op
     iconst = lambda n: ins(arith.ConstantOp.from_int_and_width(n, builtin.IndexType())).result
+
     def dim_size(i: int) -> SSAValue:  # static -> constant; dynamic -> scf.for ub
-        if shape[i] != DYNAMIC_INDEX: return iconst(shape[i])
+        if shape[i] != DYNAMIC_INDEX:
+            return iconst(shape[i])
         ub = _loop_ub_as_index(indices[i], rewriter)
         assert ub is not None, f"Dynamic dim {i}: index is not an scf.for induction variable"
         return ub
+
     # strides[rank-1]=1, strides[i]=strides[i+1]*dim[i+1]  (row-major, right-to-left)
     strides: list[SSAValue] = [iconst(1)] * len(shape)
     for i in range(len(shape) - 2, -1, -1):

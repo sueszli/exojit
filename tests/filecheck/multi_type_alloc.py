@@ -6,18 +6,18 @@ from exo import *
 
 
 # CHECK:      func.func @multi_type_alloc(%offset_pointer : !llvm.ptr, %offset_pointer_1 : !llvm.ptr) {
-# CHECK:        %0 = arith.constant 4 : i64
-# CHECK-NEXT:   %offset_pointer_2 = "llvm.call"(%0) <{callee = @malloc, {{.*}}}> : (i64) -> !llvm.ptr
-# CHECK-NEXT:   %offset_pointer_3 = "llvm.call"(%0) <{callee = @malloc, {{.*}}}> : (i64) -> !llvm.ptr
-# CHECK-NEXT:   %1 = arith.constant 3.140000e+00 : f32
-# CHECK:        "llvm.store"(%1, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
-# CHECK:        %4 = arith.constant 42 : i32
-# CHECK:        "llvm.store"(%4, {{.*}}) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
-# CHECK:        %5 = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-# CHECK:        "llvm.store"(%5, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+# CHECK:        {{.*}} = arith.constant 4 : i64
+# CHECK-NEXT:   %offset_pointer_2 = "llvm.call"({{.*}}) <{callee = @malloc, {{.*}}}> : (i64) -> !llvm.ptr
+# CHECK-NEXT:   %offset_pointer_3 = "llvm.call"({{.*}}) <{callee = @malloc, {{.*}}}> : (i64) -> !llvm.ptr
+# CHECK-NEXT:   {{.*}} = arith.constant 3.140000e+00 : f32
+# CHECK:        "llvm.store"({{.*}}, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+# CHECK:        {{.*}} = arith.constant 42 : i32
+# CHECK:        "llvm.store"({{.*}}, {{.*}}) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
+# CHECK:        {{.*}} = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+# CHECK:        "llvm.store"({{.*}}, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
 # CHECK:        "llvm.call"(%offset_pointer_2) <{callee = @free, {{.*}}}> : (!llvm.ptr) -> ()
-# CHECK:        %6 = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
-# CHECK:        "llvm.store"(%6, {{.*}}) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
+# CHECK:        {{.*}} = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
+# CHECK:        "llvm.store"({{.*}}, {{.*}}) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
 # CHECK:        "llvm.call"(%offset_pointer_3) <{callee = @free, {{.*}}}> : (!llvm.ptr) -> ()
 # CHECK-NEXT:   func.return
 # CHECK-NEXT: }
