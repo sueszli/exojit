@@ -121,6 +121,9 @@ def _get_dynamic_target_ptr(memref_val: SSAValue, memref_type: builtin.MemRefTyp
 
 @dataclass
 class DynamicConvertStorePattern(RewritePattern):
+    # like ConvertStorePattern but for dynamic shapes.
+    # dim sizes recovered from scf.for upper bound.
+    # (can't use memref.dim because types are erased later by RewriteMemRefTypes)
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: memref.StoreOp, rewriter: PatternRewriter, /):
         assert isa(memref_type := op.memref.type, builtin.MemRefType)
@@ -132,6 +135,8 @@ class DynamicConvertStorePattern(RewritePattern):
 
 @dataclass
 class DynamicConvertLoadPattern(RewritePattern):
+    # like ConvertLoadPattern but for dynamic shapes.
+    # same as above.
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: memref.LoadOp, rewriter: PatternRewriter, /):
         assert isa(memref_type := op.memref.type, builtin.MemRefType)
