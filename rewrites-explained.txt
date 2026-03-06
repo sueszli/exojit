@@ -1,0 +1,289 @@
+================================================================================
+  REWRITES.PY — EXPLAINED FOR PYTHON PROGRAMMERS WITH NO HARDWARE KNOWLEDGE
+================================================================================
+
+--------------------------------------------------------------------------------
+  BACKGROUND: WHAT IS THIS FILE EVEN DOING?
+--------------------------------------------------------------------------------
+
+You know how Python code gets turned into bytecode before running? And how
+bytecode is just a simpler, lower-level version of your Python?
+
+This file does something similar, but one layer lower:
+
+  HIGH-LEVEL:  func.call @vec_add_f32x8(dst, a, b)   <-- fake "intrinsic" call
+  LOW-LEVEL:   load a
+               load b
+               add them together
+               store result into dst
+
+The "fake calls" are called INTRINSICS — they look like function calls but
+they're not real functions. They're placeholders that say "hey, do this SIMD
+vector operation." This file's job is to REPLACE each placeholder with the
+actual low-level operations that do the work.
+
+Think of it like a macro expander. You write @vec_add_f32x8(...) and this
+file expands it into the real instructions.
+
+
+--------------------------------------------------------------------------------
+  BACKGROUND: WHAT IS SIMD / VECTOR?
+--------------------------------------------------------------------------------
+
+Normal code processes ONE number at a time:
+
+  result = a + b    # adds 1 float
+
+SIMD (Single Instruction, Multiple Data) processes MANY numbers at once:
+
+  result = [a0+b0, a1+b1, a2+b2, a3+b3, a4+b4, a5+b5, a6+b6, a7+b7]
+
+This is called a VECTOR OPERATION. Modern CPUs have special registers that
+hold 8 floats (f32x8) or 4 doubles (f64x4) and can add all of them in one go.
+
+So in Python terms, think of it like numpy:
+
+  import numpy as np
+  a = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+  b = np.array([9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0])
+  r = a + b    # [10, 10, 10, 10, 10, 10, 10, 10]
+
+That's what f32x8 means: 8 floats. f64x4 means 4 doubles.
+
+
+--------------------------------------------------------------------------------
+  BACKGROUND: WHAT IS A "PREFIX" (_pfx) VARIANT?
+--------------------------------------------------------------------------------
+
+Imagine you have a list of 1000 numbers and you want to process them 8 at a
+time. 1000 / 8 = 125 groups exactly.
+
+But what if you had 1003 numbers? Then:
+  - 125 full groups of 8   (processed normally)
+  - 1 leftover group of 3  (only 3 valid numbers, slots 4-7 are garbage)
+
+For that last leftover group, you need a PREFIX variant that says:
+  "only process the first N lanes (e.g. N=3), ignore the rest"
+
+The way this is done in hardware is with a MASK — a list of true/false values
+that says which lanes are "active":
+
+  n=3  ->  mask = [T, T, T, F, F, F, F, F]
+
+Only the True lanes get written. False lanes are skipped.
+
+
+================================================================================
+  THE CODE, PIECE BY PIECE
+================================================================================
+
+--------------------------------------------------------------------------------
+  SECTION 1: TYPE ALIASES (lines 46-49)
+--------------------------------------------------------------------------------
+
+  MaskResult  = (list_of_ops, mask_value)
+  BuildResult = (list_of_ops, result_vector, destination_pointer)
+  Builder     = a function that takes (args, vector_type) -> BuildResult
+  MaskFn      = a function that takes (lane_count) -> MaskResult
+
+These are just Python type hints to make the code easier to read. Nothing
+exciting here — they just describe the "shape" of the data being passed around.
+
+"ops" throughout this file means low-level IR operations — think of them as
+instructions in a very simple, explicit programming language where you must
+spell out every single step (load this, add these, store that).
+
+
+--------------------------------------------------------------------------------
+  SECTION 2: _make_mask() — THE MOST IMPORTANT HELPER (lines 52-62)
+--------------------------------------------------------------------------------
+
+This is the core of the prefix logic. It builds the [T, T, T, F, F, F, F, F]
+mask. Here's what it does step by step:
+
+  INPUT:  m = 3        (we want lanes 0, 1, 2 active)
+          n_lanes = 8  (total number of lanes)
+
+  STEP 1: Create a vector of lane indices:
+          indices = [0, 1, 2, 3, 4, 5, 6, 7]
+
+  STEP 2 (only if extend=True): sign-extend m from 32-bit to 64-bit integer
+          This is just a type-widening cast. Like int32 -> int64 in Java.
+          Needed because indices are stored as i64, so m must match.
+
+  STEP 3: Broadcast m to all lanes:
+          broadcast = [3, 3, 3, 3, 3, 3, 3, 3]
+
+          "broadcast" means: take one scalar value and copy it to every slot
+          in the vector. Like: [m] * 8
+
+  STEP 4: Compare element-wise: indices < broadcast
+          mask = [0<3, 1<3, 2<3, 3<3, 4<3, 5<3, 6<3, 7<3]
+               = [T,   T,   T,   F,   F,   F,   F,   F  ]
+
+  That mask is then used to do a "masked store" — only write lanes where mask=T.
+
+  In Python, this is equivalent to:
+    indices   = list(range(8))            # [0,1,2,3,4,5,6,7]
+    broadcast = [m] * 8                   # [3,3,3,3,3,3,3,3]
+    mask      = [i < b for i, b in zip(indices, broadcast)]  # [T,T,T,F,F,F,F,F]
+
+The three wrapper functions below it are just convenience shorthands:
+
+  _mask_f32x8(m)     -> mask for 8-lane f32 vectors (no extend needed, m is i64)
+  _mask_f64x4(m)     -> mask for 4-lane f64 vectors (no extend needed, m is i64)
+  _mask_f64x4_ext(m) -> mask for 4-lane f64 vectors (extend needed, m is i32)
+
+
+--------------------------------------------------------------------------------
+  SECTION 3: BUILDER FUNCTIONS (lines 77-146)
+--------------------------------------------------------------------------------
+
+Each builder describes HOW to compute one specific operation on a vector.
+They all return (ops, result_vector, destination_pointer).
+
+Think of it like: "give me the recipe for this operation."
+
+  _build_identity(args, vt):
+      Just load src and return it. (copy / load)
+      In Python: dst = src[:]
+
+  _build_abs(args, vt):
+      Load src, apply element-wise abs().
+      In Python: dst = [abs(x) for x in src]
+
+  _build_abs_pfx(args, vt):
+      Same as abs, BUT also pre-copies raw src into dst FIRST.
+      Why? Because the masked store only writes active lanes.
+      Inactive lanes need to have SOMETHING there — so we fill them
+      with the original src values (not random garbage).
+      In Python: dst[:] = src[:]; dst[:n] = [abs(x) for x in src[:n]]
+
+  _build_neg(args, vt):
+      Load src, negate each element.
+      In Python: dst = [-x for x in src]
+
+  _build_binary(binop_cls):
+      A FACTORY function. You pass it a binary operation class (like FAddOp
+      or FMulOp) and it returns a builder for that operation.
+      In Python: dst = [a+b for a,b in zip(src_a, src_b)]  (for fadd)
+
+  _build_add_red(args, vt):
+      "red" = reduction. Accumulates: dst += src (element-wise).
+      dst vector is BOTH read and written.
+      In Python: dst = [d+s for d,s in zip(dst, src)]
+
+  _build_fma(args, vt):
+      FMA = Fused Multiply-Add. Computes: dst = a*b + c
+      "Fused" means it's done in one hardware instruction (more precise, faster).
+      In Python: dst = [a*b+c for a,b,c in zip(src1, src2, src3)]
+
+  _build_fma_red(args, vt):
+      FMA reduction. dst += a*b  (accumulates into dst).
+      In Python: dst = [d+a*b for d,a,b in zip(dst, src1, src2)]
+
+  _build_broadcast(args, vt):
+      Splat a single scalar into every lane of a vector.
+      In Python: dst = [scalar] * 8
+
+  _build_zero(args, vt):
+      Fill a vector with all zeros.
+      In Python: dst = [0.0] * 8
+
+
+--------------------------------------------------------------------------------
+  SECTION 4: THE INTRINSIC REGISTRY (lines 150-171)
+--------------------------------------------------------------------------------
+
+This is where all the builder functions get registered under their intrinsic
+names. It's just a big dictionary:
+
+  _VEC_INTRINSICS = {
+      "vec_add_f32x8":      (builder_fn, VectorType(f32, 8), None),
+      "vec_add_f32x8_pfx":  (builder_fn, VectorType(f32, 8), mask_fn),
+      "vec_add_f64x4":      (builder_fn, VectorType(f64, 4), None),
+      "vec_add_f64x4_pfx":  (builder_fn, VectorType(f64, 4), mask_fn),
+      ... (same pattern for every op)
+  }
+
+The loop generates all 4 variants for each op automatically.
+The presence of mask_fn (not None) is the signal: "this is a prefix variant."
+
+
+--------------------------------------------------------------------------------
+  SECTION 5: MM256 LEGACY INTRINSICS (lines 174-202)
+--------------------------------------------------------------------------------
+
+These are an older set of AVX2-style intrinsics (named like Intel's C
+intrinsics). They're simpler — no prefix/mask variants, no generic builder
+pattern. Each is just a one-off function that returns the ops directly.
+
+  mm256_storeu_ps:      load src vector, store to dst
+  mm256_fmadd_ps:       dst = src1*src2 + dst  (fma accumulation)
+  mm256_broadcast_ss:   load scalar from a memref, splat to all 8 lanes
+  mm256_loadu_ps:       same as storeu (load from src, write to dst)
+
+
+--------------------------------------------------------------------------------
+  SECTION 6: ConvertVecIntrinsic — THE MAIN REWRITE PATTERN (lines 214-243)
+--------------------------------------------------------------------------------
+
+This is the actual xDSL rewrite pattern. It runs on every func.CallOp in the
+IR and checks: "is this call one of our fake intrinsics?"
+
+It's like a big match/dispatch:
+
+  if callee == "vec_reduce_add_scl_f32x8":
+      # special case: sum all lanes into a scalar accumulator
+      # finds the pointer that acc came from and writes the result back there
+
+  elif callee in _MM256_INTRINSICS:
+      # legacy AVX2 intrinsics — just call the builder and replace the op
+
+  elif callee in _VEC_INTRINSICS:
+      builder, vt, mask_fn = _VEC_INTRINSICS[callee]
+      pfx = mask_fn is not None   # is this a prefix variant?
+
+      if pfx:
+          # strip args[0] (it's the lane count, not data)
+          # compute the mask
+          # emit: mask_ops + core_ops + masked_store(result, dst, mask)
+      else:
+          # emit: core_ops + store(result, dst)
+
+"replace_matched_op" is xDSL's way of saying: "delete the old func.call and
+insert these new low-level ops in its place."
+
+
+--------------------------------------------------------------------------------
+  SECTION 7: RewriteMemRefTypes — TYPE ERASER (lines 246-253)
+--------------------------------------------------------------------------------
+
+After all the op-level rewrites are done, there's one final cleanup pass.
+
+MemRefType is xDSL's typed pointer — it carries info like element type and
+shape. But LLVM only knows about raw untyped pointers (like void* in C).
+
+This rewrite converts every MemRefType -> llvm.ptr (opaque pointer).
+
+The "must run last" comment is important: earlier passes use the MemRef's
+shape info (e.g. "this is a pointer to float32[8]") to build the right ops.
+Once you erase that info, it's gone — so you can only do it at the very end.
+
+
+================================================================================
+  THE BIG PICTURE (one-liner summary)
+================================================================================
+
+This file is a MACRO EXPANDER for vector intrinsics:
+
+  fake func.call @vec_add_f32x8(dst, a, b)
+  ->
+  real: load a, load b, fadd, store result to dst
+
+  fake func.call @vec_add_f32x8_pfx(n, dst, a, b)   (only first n lanes)
+  ->
+  real: build mask [T..T F..F], load a, load b, fadd, masked_store result to dst
+
+It handles plain variants (all lanes), prefix variants (first N lanes with a
+mask), reductions (accumulate into scalar), and legacy AVX2 names.

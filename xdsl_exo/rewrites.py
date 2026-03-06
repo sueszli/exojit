@@ -49,100 +49,103 @@ Builder: TypeAlias = Callable[[list[SSAValue], VectorType], BuildResult]
 MaskFn: TypeAlias = Callable[[SSAValue], MaskResult]
 
 
-def _make_mask(m: SSAValue, n_lanes: int, *, extend: bool = False) -> MaskResult:
-    # lane i is active if i < m; extend=True sign-extends m from i32 to i64
+def _make_mask(lane_count: SSAValue, n_lanes: int, *, extend_lane_count: bool = False) -> MaskResult:
+    # lane i is active if i < lane_count
     indices = arith.ConstantOp(DenseIntOrFPElementsAttr.from_list(VectorType(i64, [n_lanes]), list(range(n_lanes))))
     ops = [indices]
-    if extend:
-        ext = arith.ExtSIOp(m, i64)
+    if extend_lane_count: # upcast i32 -> i64
+        ext = arith.ExtSIOp(lane_count, i64)
         ops.append(ext)
-        m = ext.result
-    broadcast = vector.BroadcastOp(operands=[m], result_types=[VectorType(i64, [n_lanes])])
+        lane_count = ext.result
+    broadcast = vector.BroadcastOp(operands=[lane_count], result_types=[VectorType(i64, [n_lanes])])
     mask = llvm.ICmpOp(indices.result, broadcast.vector, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64))
     return ops + [broadcast, mask], mask.res
 
 
-def _mask_f32x8(m: SSAValue) -> MaskResult:
-    return _make_mask(m, 8)
+def _mask_f32x8(lane_count: SSAValue) -> MaskResult:
+    # mask for 8-lane f32 vectors
+    return _make_mask(lane_count, 8)
 
 
-def _mask_f64x4(m: SSAValue) -> MaskResult:
-    return _make_mask(m, 4)
+def _mask_f64x4(lane_count: SSAValue) -> MaskResult:
+    # mask for 4-lane f64 vectors
+    return _make_mask(lane_count, 4)
 
 
-def _mask_f64x4_ext(m: SSAValue) -> MaskResult:
-    return _make_mask(m, 4, extend=True)  # m is i32 at call site
+def _mask_f64x4_ext(lane_count: SSAValue) -> MaskResult:
+    # mask for 4-lane f64 vectors
+    return _make_mask(lane_count, 4, extend_lane_count=True)
 
 
-def _build_identity(args: list[SSAValue], vt: VectorType) -> BuildResult:
-    load = llvm.LoadOp(args[1], vt)
+def _build_identity(args: list[SSAValue], vec_type: VectorType) -> BuildResult:
+    load = llvm.LoadOp(args[1], vec_type)
     return [load], load.dereferenced_value, args[0]
 
 
-def _build_abs(args: list[SSAValue], vt: VectorType) -> BuildResult:
+def _build_abs(args: list[SSAValue], vec_type: VectorType) -> BuildResult:
     dst, src = args[0], args[1]
-    load = llvm.LoadOp(src, vt)
-    fabs = llvm_extra.FAbsOp(load.dereferenced_value, vt)
+    load = llvm.LoadOp(src, vec_type)
+    fabs = llvm_extra.FAbsOp(load.dereferenced_value, vec_type)
     return [load, fabs], fabs.result, dst
 
 
-def _build_abs_pfx(args: list[SSAValue], vt: VectorType) -> BuildResult:
+def _build_abs_pfx(args: list[SSAValue], vec_type: VectorType) -> BuildResult:
     # Pre-store raw src to dst so non-masked lanes retain src values (not garbage)
     # when the caller's masked store writes only lanes 0..n-1 with the fabs result.
     dst, src = args[0], args[1]
-    load = llvm.LoadOp(src, vt)
-    fabs = llvm_extra.FAbsOp(load.dereferenced_value, vt)
+    load = llvm.LoadOp(src, vec_type)
+    fabs = llvm_extra.FAbsOp(load.dereferenced_value, vec_type)
     return [load, fabs, llvm.StoreOp(load.dereferenced_value, dst)], fabs.result, dst
 
 
-def _build_neg(args: list[SSAValue], vt: VectorType) -> BuildResult:
-    load = llvm.LoadOp(args[1], vt)
+def _build_neg(args: list[SSAValue], vec_type: VectorType) -> BuildResult:
+    load = llvm.LoadOp(args[1], vec_type)
     neg = llvm_extra.FNegOp(load.dereferenced_value)
     return [load, neg], neg.res, args[0]
 
 
-def _build_binary(binop_cls: Callable[[SSAValue, SSAValue], Operation]) -> Builder:
-    def build(args: list[SSAValue], vt: VectorType) -> BuildResult:
-        l1 = llvm.LoadOp(args[1], vt)
-        l2 = llvm.LoadOp(args[2], vt)
-        result = binop_cls(l1.dereferenced_value, l2.dereferenced_value)
-        return [l1, l2, result], result.res, args[0]
+def _build_binary(binary_op: Callable[[SSAValue, SSAValue], Operation]) -> Builder:
+    def build(args: list[SSAValue], vec_type: VectorType) -> BuildResult:
+        load_a = llvm.LoadOp(args[1], vec_type)
+        load_b = llvm.LoadOp(args[2], vec_type)
+        result = binary_op(load_a.dereferenced_value, load_b.dereferenced_value)
+        return [load_a, load_b, result], result.res, args[0]
 
     return build
 
 
-def _build_add_red(args: list[SSAValue], vt: VectorType) -> BuildResult:
+def _build_add_red(args: list[SSAValue], vec_type: VectorType) -> BuildResult:
     dst = args[0]
-    l_dst = llvm.LoadOp(dst, vt)
-    l_src = llvm.LoadOp(args[1], vt)
-    add = llvm.FAddOp(l_dst.dereferenced_value, l_src.dereferenced_value)
-    return [l_dst, l_src, add], add.res, dst
+    load_dst = llvm.LoadOp(dst, vec_type)
+    load_src = llvm.LoadOp(args[1], vec_type)
+    add = llvm.FAddOp(load_dst.dereferenced_value, load_src.dereferenced_value)
+    return [load_dst, load_src, add], add.res, dst
 
 
-def _build_fma(args: list[SSAValue], vt: VectorType) -> BuildResult:
-    l1 = llvm.LoadOp(args[1], vt)
-    l2 = llvm.LoadOp(args[2], vt)
-    l3 = llvm.LoadOp(args[3], vt)
-    fma = vector.FMAOp(operands=[l1.dereferenced_value, l2.dereferenced_value, l3.dereferenced_value], result_types=[vt])
-    return [l1, l2, l3, fma], fma.res, args[0]
+def _build_fma(args: list[SSAValue], vec_type: VectorType) -> BuildResult:
+    load_a = llvm.LoadOp(args[1], vec_type)
+    load_b = llvm.LoadOp(args[2], vec_type)
+    load_c = llvm.LoadOp(args[3], vec_type)
+    fma = vector.FMAOp(operands=[load_a.dereferenced_value, load_b.dereferenced_value, load_c.dereferenced_value], result_types=[vec_type])
+    return [load_a, load_b, load_c, fma], fma.res, args[0]
 
 
-def _build_fma_red(args: list[SSAValue], vt: VectorType) -> BuildResult:
+def _build_fma_red(args: list[SSAValue], vec_type: VectorType) -> BuildResult:
     dst = args[0]
-    ld = llvm.LoadOp(dst, vt)
-    l1 = llvm.LoadOp(args[1], vt)
-    l2 = llvm.LoadOp(args[2], vt)
-    fma = vector.FMAOp(operands=[l1.dereferenced_value, l2.dereferenced_value, ld.dereferenced_value], result_types=[vt])
-    return [ld, l1, l2, fma], fma.res, dst
+    load_acc = llvm.LoadOp(dst, vec_type)
+    load_a = llvm.LoadOp(args[1], vec_type)
+    load_b = llvm.LoadOp(args[2], vec_type)
+    fma = vector.FMAOp(operands=[load_a.dereferenced_value, load_b.dereferenced_value, load_acc.dereferenced_value], result_types=[vec_type])
+    return [load_acc, load_a, load_b, fma], fma.res, dst
 
 
-def _build_broadcast(args: list[SSAValue], vt: VectorType) -> BuildResult:
-    bcast = vector.BroadcastOp(operands=[args[1]], result_types=[vt])
-    return [bcast], bcast.vector, args[0]
+def _build_broadcast(args: list[SSAValue], vec_type: VectorType) -> BuildResult:
+    broadcast = vector.BroadcastOp(operands=[args[1]], result_types=[vec_type])
+    return [broadcast], broadcast.vector, args[0]
 
 
-def _build_zero(args: list[SSAValue], vt: VectorType) -> BuildResult:
-    zero = arith.ConstantOp(DenseIntOrFPElementsAttr.from_list(vt, [0.0] * vt.get_shape()[0]))
+def _build_zero(args: list[SSAValue], vec_type: VectorType) -> BuildResult:
+    zero = arith.ConstantOp(DenseIntOrFPElementsAttr.from_list(vec_type, [0.0] * vec_type.get_shape()[0]))
     return [zero], zero.result, args[0]
 
 
@@ -179,19 +182,19 @@ def _build_mm256_storeu_ps(args: list[SSAValue]) -> tuple[Operation, ...]:
 def _build_mm256_fmadd_ps(args: list[SSAValue]) -> tuple[Operation, ...]:
     # accumulates: args[0] = args[1]*args[2] + args[0]
     zero = arith.ConstantOp(IntegerAttr(0, IndexType()))
-    l0 = llvm.LoadOp(args[0], VectorType(f32, [8]))
-    l1 = llvm.LoadOp(args[1], VectorType(f32, [8]))
-    l2 = llvm.LoadOp(args[2], VectorType(f32, [8]))
-    fma = vector.FMAOp(operands=[l1.dereferenced_value, l2.dereferenced_value, l0.dereferenced_value], result_types=[VectorType(f32, [8])])
-    return (zero, l0, l1, l2, fma, llvm.StoreOp(fma.res, args[0], [zero.result]))
+    load_acc = llvm.LoadOp(args[0], VectorType(f32, [8]))
+    load_a = llvm.LoadOp(args[1], VectorType(f32, [8]))
+    load_b = llvm.LoadOp(args[2], VectorType(f32, [8]))
+    fma = vector.FMAOp(operands=[load_a.dereferenced_value, load_b.dereferenced_value, load_acc.dereferenced_value], result_types=[VectorType(f32, [8])])
+    return (zero, load_acc, load_a, load_b, fma, llvm.StoreOp(fma.res, args[0], [zero.result]))
 
 
 def _build_mm256_broadcast_ss(args: list[SSAValue]) -> tuple[Operation, ...]:
     # args[1] is a memref (scalar pointer), unlike the llvm ptrs used elsewhere
     zero = arith.ConstantOp(IntegerAttr(0, IndexType()))
     load = memref.LoadOp.get(args[1], [zero.result])
-    bcast = vector.BroadcastOp(operands=[load.results[0]], result_types=[VectorType(f32, [8])])
-    return (zero, load, bcast, llvm.StoreOp(bcast.results[0], args[0], [zero.result]))
+    broadcast = vector.BroadcastOp(operands=[load.results[0]], result_types=[VectorType(f32, [8])])
+    return (zero, load, broadcast, llvm.StoreOp(broadcast.results[0], args[0], [zero.result]))
 
 
 _MM256_INTRINSICS: dict[str, Callable[[list[SSAValue]], tuple[Operation, ...]]] = {
@@ -202,13 +205,13 @@ _MM256_INTRINSICS: dict[str, Callable[[list[SSAValue]], tuple[Operation, ...]]] 
 }
 
 
-def _reduce(op: func.CallOp, rewriter: PatternRewriter, vt: VectorType) -> None:
+def _reduce(op: func.CallOp, rewriter: PatternRewriter, vec_type: VectorType) -> None:
     # acc_scalar += sum(src_vector); result written back through acc's originating load ptr
     assert isinstance(op.arguments[0].owner, llvm.LoadOp)
     acc_load = op.arguments[0].owner
-    load = llvm.LoadOp(op.arguments[1], vt)
-    reduce = vector.ReductionOp(load.dereferenced_value, vector.CombiningKindAttr([vector.CombiningKindFlag.ADD]), acc=op.arguments[0])
-    rewriter.replace_matched_op((load, reduce, llvm.StoreOp(reduce.dest, acc_load.ptr)))
+    src_load = llvm.LoadOp(op.arguments[1], vec_type)
+    reduce = vector.ReductionOp(src_load.dereferenced_value, vector.CombiningKindAttr([vector.CombiningKindFlag.ADD]), acc=op.arguments[0])
+    rewriter.replace_matched_op((src_load, reduce, llvm.StoreOp(reduce.dest, acc_load.ptr)))
 
 
 class ConvertVecIntrinsic(RewritePattern):
@@ -230,11 +233,11 @@ class ConvertVecIntrinsic(RewritePattern):
         if entry is None:
             return
 
-        builder, vt, mask_fn = entry
+        builder, vec_type, mask_fn = entry
         pfx = mask_fn is not None
         # prefixed variants pass lane-count as args[0]; strip before forwarding to builder
         args = list(op.arguments[1:]) if pfx else list(op.arguments)
-        core_ops, result, dst = builder(args, vt)
+        core_ops, result, dst = builder(args, vec_type)
 
         if pfx:
             mask_ops, mask = mask_fn(op.arguments[0])
