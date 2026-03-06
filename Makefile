@@ -5,7 +5,7 @@ venv:
 .PHONY: tests
 tests:
 	uv run pytest -W ignore tests/
-	uv run lit tests/filecheck/
+	uv run lit -j $$(nproc 2>/dev/null || sysctl -n hw.logicalcpu) tests/filecheck/
 
 .PHONY: fmt
 fmt:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from argparse import ArgumentParser
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from functools import cache, reduce
 from pathlib import Path
@@ -38,26 +38,100 @@ from xdsl_exo.patches import ExtendedConvertMemRefToPtr, LLVMIntrinsics
 from xdsl_exo.rewrites import ConvertVecIntrinsic, RewriteMemRefTypes
 
 
+def _is_mutated(name: str, body: list) -> bool:
+    # check if a variable is assigned to or reduced into in the body
+    def check(stmt: object) -> bool:
+        match stmt:
+            case LoopIR.Assign() | LoopIR.Reduce():
+                return repr(stmt.name) == name
+            case LoopIR.For():
+                return _is_mutated(name, stmt.body)
+            case LoopIR.If():
+                return _is_mutated(name, stmt.body) or _is_mutated(name, stmt.orelse)
+        return False
+
+    return any(check(stmt) for stmt in body)
+
+
+def _window_access(access: object, expr_fn: Callable[[object], SSAValue]) -> SSAValue:
+    match access:
+        case LoopIR.Point():
+            return expr_fn(access.pt)
+        case LoopIR.Interval():
+            return expr_fn(access.lo)
+        case _:
+            assert False
+
+
+def _window_strides(sizes: list[SSAValue | int], emit: Callable[[Operation], SSAValue]) -> list[SSAValue | int]:
+    # stride[i] = product(sizes[i+1:]), computed right-to-left
+    strides: list[SSAValue | int] = [1]
+    for size in reversed(sizes):
+        last = strides[0]
+        if isinstance(last, int) and isinstance(size, int):
+            strides.insert(0, last * size)
+            continue
+        if isinstance(last, int):
+            last = emit(ConstantOp(IntegerAttr(last, i64)))
+        if isinstance(size, int):
+            size = emit(ConstantOp(IntegerAttr(size, i64)))
+        strides.insert(0, emit(MuliOp(operand1=last, operand2=size)))
+    return strides
+
+
+def _window_offsets(indices: list[SSAValue], strides: list[SSAValue | int], emit: Callable[[Operation], SSAValue]) -> list[SSAValue]:
+    # offset[i] = index[i] * stride[i]
+    offsets: list[SSAValue] = []
+    for index, stride in zip(indices, strides):
+        if isinstance(stride, int):
+            stride = emit(ConstantOp(IntegerAttr(stride, i64)))
+        offsets.append(emit(MuliOp(operand1=index, operand2=stride)))
+    return offsets
+
+
+def _to_index_list(values: list[SSAValue | int], emit: Callable[[Operation], SSAValue]) -> list:
+    # cast i64 ssavalues to index type, pass through static ints as-is for subviewop
+    static, dynamic = split_dynamic_index_list(values, memref.DYNAMIC_INDEX)
+    casted = [emit(arith.IndexCastOp(value, IndexType())) for value in dynamic]
+    return get_dynamic_index_list(static, casted, memref.DYNAMIC_INDEX)
+
+
 class IRGenerator:
     module: ModuleOp
     builder: Builder
     symbol_table: ScopedDict[str, SSAValue] | None
     type_table: ScopedDict[str, Attribute] | None
-    seen_procs: set[str]
+    seen_proc_names: set[str]
+    seen_extern_decls: set[str]
 
     def __init__(self):
         self.module = ModuleOp([])
         self.builder = Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0]))
         self.symbol_table = None
         self.type_table = None
-        self.seen_procs = set()
+        self.seen_proc_names = set()
+        self.seen_extern_decls = set()
+
+    @property
+    def _syms(self) -> ScopedDict[str, SSAValue]:
+        assert self.symbol_table is not None
+        return self.symbol_table
+
+    @property
+    def _types(self) -> ScopedDict[str, Attribute]:
+        assert self.type_table is not None
+        return self.type_table
 
     def _emit(self, op: Operation) -> SSAValue:
         self.builder.insert(op)
+        assert op.results
         return op.results[0]
 
+    def _insert_at_module(self, op: Operation) -> None:
+        Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0])).insert(op)
+
     @contextmanager
-    def _tmp_state(self, *, inherit=True):
+    def _tmp_state(self, *, inherit: bool = True):
         # save and restore builder/symbol/type state across nested scopes
         parent_builder = self.builder
         parent_symbol_table = self.symbol_table
@@ -72,7 +146,7 @@ class IRGenerator:
             self.symbol_table = parent_symbol_table
             self.type_table = parent_type_table
 
-    def _type(self, exo_type, mem_space: StringAttr | None = None) -> Attribute:
+    def _type(self, exo_type: object, mem_space: StringAttr | None = None) -> Attribute:
         # map exo type (t.f32, t.tensor, etc.) to mlir type (f32, memref, etc.)
         match exo_type:
             case SSAValue():
@@ -102,29 +176,56 @@ class IRGenerator:
             case _:
                 assert False
 
-    def _shape(self, tensor, *, dynamic=False) -> list:
+    def _shape(self, tensor: T.Tensor, *, dynamic: bool = False) -> list[int | SSAValue]:
         # extract tensor dimensions as ints (static) or ssa values (dynamic)
         assert isinstance(tensor, T.Tensor)
 
-        def from_expr(expr):
+        def from_expr(expr: object) -> int | SSAValue:
             match expr:
                 case LoopIR.Const():
                     # literal (e.g. `f32[16, 16]`)
                     return expr.val
                 case LoopIR.Read():
                     # variable (e.g. `f32[m, k]`)
-                    return self.symbol_table[repr(expr.name)] if dynamic else -1
+                    return self._syms[repr(expr.name)] if dynamic else memref.DYNAMIC_INDEX
                 case LoopIR.BinOp():
                     # computed (e.g. `f32[m+1, k*2]`)
-                    return self._binop_expr(expr) if dynamic else -1
+                    return self._expr_binop(expr) if dynamic else memref.DYNAMIC_INDEX
                 case _:
                     assert False
 
         return [from_expr(expr) for expr in tensor.shape()]
 
-    def _const_expr(self, const):
+    def _memref_load(self, memref_val: SSAValue, idx: list[SSAValue]) -> SSAValue:
+        if len(idx) == 0:
+            idx = [self._emit(arith.ConstantOp(IntegerAttr(0, i64)))]
+        indices = [self._emit(arith.IndexCastOp(index, IndexType())) for index in idx]
+        self.builder.insert(load := memref.LoadOp.get(memref_val, indices))
+        return load.res
+
+    def _memref_store(self, value: SSAValue, memref_val: SSAValue, idx: list[SSAValue]) -> None:
+        # emit memref.store with i64->index casts, handling scalar memref cases
+        if len(idx) == 0:
+            assert isinstance(memref_val.type, MemRefType) and memref_val.type.get_shape() == (1,)
+            idx = [self._emit(arith.ConstantOp(IntegerAttr(0, i64)))]
+
+        index_indices = [self._emit(arith.IndexCastOp(index, IndexType())) for index in idx]
+
+        # if value is a scalar memref, load it first
+        if isinstance(value.type, MemRefType):
+            assert value.type.get_shape() == (1,)
+            zero_idx = self._emit(arith.ConstantOp(IntegerAttr(0, IndexType())))
+            self.builder.insert(load := memref.LoadOp.get(value, [zero_idx]))
+            value = load.res
+
+        self.builder.insert(memref.StoreOp.get(value, memref_val, index_indices))
+
+    #
+    # expressions
+    #
+
+    def _expr_const(self, const: LoopIR.Const) -> SSAValue:
         # lower loopir literal to arith.constant op
-        assert isinstance(const, LoopIR.Const)
         type = self._type(const.type)
 
         if type in [f16, f32, f64]:
@@ -138,35 +239,10 @@ class IRGenerator:
 
         return self._emit(ConstantOp(attr, type))
 
-    def _memref_load(self, memref_val, idx):
-        if len(idx) == 0:
-            idx = [self._emit(arith.ConstantOp(IntegerAttr(0, i64)))]
-        indices = [self._emit(arith.IndexCastOp(i, IndexType())) for i in idx]
-        self.builder.insert(load := memref.LoadOp.get(memref_val, indices))
-        return load.res
-
-    def _memref_store(self, value, memref_val, idx):
-        # emit memref.store with i64->index casts, handling scalar memref cases
-        if len(idx) == 0:
-            assert isinstance(memref_val.type, MemRefType) and memref_val.type.get_shape() == (1,)
-            idx = [self._emit(arith.ConstantOp(IntegerAttr(0, i64)))]
-
-        index_indices = [self._emit(arith.IndexCastOp(i, IndexType())) for i in idx]
-
-        # if value is a scalar memref, load it first
-        if isinstance(value.type, MemRefType):
-            assert value.type.get_shape() == (1,)
-            zero_idx = self._emit(arith.ConstantOp(IntegerAttr(0, IndexType())))
-            self.builder.insert(load := memref.LoadOp.get(value, [zero_idx]))
-            value = load.res
-
-        self.builder.insert(memref.StoreOp.get(value, memref_val, index_indices))
-
-    def _read_expr(self, read):
+    def _expr_read(self, read: LoopIR.Read) -> SSAValue:
         # lower loopir read to arith/memref ops
-        assert isinstance(read, LoopIR.Read)
-        idx = [self._expr(e) for e in read.idx]
-        operand = self.symbol_table[repr(read.name)]
+        idx = [self._expr(expr) for expr in read.idx]
+        operand = self._syms[repr(read.name)]
 
         if not isinstance(operand.type, MemRefType):
             return operand
@@ -176,9 +252,8 @@ class IRGenerator:
             return operand
         return self._memref_load(operand, idx)
 
-    def _usub_expr(self, usub):
+    def _expr_usub(self, usub: LoopIR.USub) -> SSAValue:
         # lower unary negation to negf (float) or 0-x subi (int)
-        assert isinstance(usub, LoopIR.USub)
         expr = self._expr(usub.arg)
         type = self._type(usub.type)
 
@@ -190,108 +265,57 @@ class IRGenerator:
         else:
             assert False
 
-    def _binop_expr(self, binop):
-        # lower binary op to typed arith op; delegates to _binop_expr_cmp for i1
-        assert isinstance(binop, LoopIR.BinOp)
-        type = self._type(binop.type)
-        if type == i1:
-            return self._binop_expr_cmp(binop)
-
-        lhs = self._expr(binop.lhs)
-        rhs = self._expr(binop.rhs)
-
-        float_ops = {"+": AddfOp, "-": SubfOp, "*": MulfOp, "/": DivfOp}
-        int_ops = {"+": AddiOp, "-": SubiOp, "*": MuliOp, "/": DivSIOp, "%": RemSIOp}
-
-        if type in [f16, f32, f64]:
-            return self._emit(float_ops[binop.op](lhs, rhs, result_type=type, flags=FastMathFlagsAttr("none")))
-        elif type in [i8, i16, i32, i64]:
-            return self._emit(int_ops[binop.op](lhs, rhs, result_type=type))
-        else:
-            assert False
-
-    def _binop_expr_cmp(self, binop):
+    @staticmethod
+    def _cmp_binop(lhs: SSAValue, rhs: SSAValue, op: str, emit: Callable[[Operation], SSAValue]) -> SSAValue:
         # lower comparison/logical binop to cmpi, cmpf, andi, or ori
-        assert isinstance(binop, LoopIR.BinOp)
         bool_ops = {"and": AndIOp, "or": OrIOp}
         integer_cmp_table = {"==": "eq", "!=": "ne", "<": "slt", "<=": "sle", ">": "sgt", ">=": "sge"}
         float_cmp_table = {"==": "oeq", "!=": "one", "<": "olt", "<=": "ole", ">": "ogt", ">=": "oge"}
+        assert lhs.type == rhs.type
+        if lhs.type == i1:
+            return emit(bool_ops[op](lhs, rhs))
+        if lhs.type in [i8, i16, i32, i64]:
+            return emit(CmpiOp(lhs, rhs, integer_cmp_table[op]))
+        return emit(CmpfOp(lhs, rhs, float_cmp_table[op]))
 
+    def _expr_binop(self, binop: LoopIR.BinOp) -> SSAValue:
+        # lower binary op to typed arith op
+        type = self._type(binop.type)
         lhs = self._expr(binop.lhs)
         rhs = self._expr(binop.rhs)
 
-        assert lhs.type == rhs.type, f"cannot compare {lhs.type} and {rhs.type} with operator '{binop.op}'"
+        if type == i1:
+            return self._cmp_binop(lhs, rhs, binop.op, self._emit)
 
-        if lhs.type == i1:
-            return self._emit(bool_ops[binop.op](lhs, rhs))
-        elif lhs.type in [i8, i16, i32, i64]:
-            return self._emit(CmpiOp(lhs, rhs, integer_cmp_table[binop.op]))
-        else:
-            return self._emit(CmpfOp(lhs, rhs, float_cmp_table[binop.op]))
+        float_ops = {"+": AddfOp, "-": SubfOp, "*": MulfOp, "/": DivfOp}
+        int_ops = {"+": AddiOp, "-": SubiOp, "*": MuliOp, "/": DivSIOp, "%": RemSIOp}
+        if type in [f16, f32, f64]:
+            return self._emit(float_ops[binop.op](lhs, rhs, result_type=type, flags=FastMathFlagsAttr("none")))
+        if type in [i8, i16, i32, i64]:
+            return self._emit(int_ops[binop.op](lhs, rhs, result_type=type))
+        assert False
 
-    def _window_expr(self, window):
+    def _expr_window(self, window: LoopIR.WindowExpr) -> SSAValue:
         # lower window expression to stride/offset computation + memref.subview
-        assert isinstance(window, LoopIR.WindowExpr)
-
-        def w_access(w):
-            match w:
-                case LoopIR.Point():
-                    return self._expr(w.pt)
-                case LoopIR.Interval():
-                    return self._expr(w.lo)
-                case _:
-                    assert False
-
-        def compute_strides(sizes):
-            # stride[i] = product(sizes[i+1:]), computed right-to-left
-            strides: list[SSAValue | int] = [1]
-            for size in reversed(sizes):
-                last = strides[0]
-                if isinstance(last, int) and isinstance(size, int):
-                    strides.insert(0, last * size)
-                    continue
-                if isinstance(last, int):
-                    last = self._emit(ConstantOp(IntegerAttr(last, i64)))
-                if isinstance(size, int):
-                    size = self._emit(ConstantOp(IntegerAttr(size, i64)))
-                strides.insert(0, self._emit(MuliOp(operand1=last, operand2=size)))
-            return strides
-
-        def compute_offsets(indices, strides):
-            # offset[i] = index[i] * stride[i]
-            offsets: list[SSAValue] = []
-            for idx, stride in zip(indices, strides):
-                if isinstance(stride, int):
-                    stride = self._emit(ConstantOp(IntegerAttr(stride, i64)))
-                offsets.append(self._emit(MuliOp(operand1=idx, operand2=stride)))
-            return offsets
-
-        def to_index(values):
-            # cast i64 ssavalues to index type, pass through static ints as-is for subviewop
-            static, dynamic = split_dynamic_index_list(values, memref.DYNAMIC_INDEX)
-            casted = [self._emit(arith.IndexCastOp(v, IndexType())) for v in dynamic]
-            return get_dynamic_index_list(static, casted, memref.DYNAMIC_INDEX)
-
-        idx = [w_access(w) for w in window.idx]
-        input = self.symbol_table[repr(window.name)]
-        dest_type = self._type(window.type.as_tensor, input.type.memory_space)
-        input_sizes = self._shape(self.type_table[repr(window.name)], dynamic=True)
+        indices = [_window_access(access, self._expr) for access in window.idx]
+        source = self._syms[repr(window.name)]
+        dest_type = self._type(window.type.as_tensor, source.type.memory_space)
+        input_sizes = self._shape(self._types[repr(window.name)], dynamic=True)
         output_sizes = self._shape(window.type.as_tensor, dynamic=True)
 
         # compute strides/offsets in i64, then cast to index for subview
-        strides = compute_strides(input_sizes)
-        offsets = compute_offsets(idx, strides)
-        strides_idx = to_index(strides)
-        offsets_idx = to_index(offsets)
-        sizes_idx = to_index(output_sizes)
+        strides = _window_strides(input_sizes, self._emit)
+        offsets = _window_offsets(indices, strides, self._emit)
+        strides_idx = _to_index_list(strides, self._emit)
+        offsets_idx = _to_index_list(offsets, self._emit)
+        sizes_idx = _to_index_list(output_sizes, self._emit)
 
-        self.builder.insert(subview := memref.SubviewOp.get(input, offsets_idx, sizes_idx, strides_idx, dest_type))
+        self.builder.insert(subview := memref.SubviewOp.get(source, offsets_idx, sizes_idx, strides_idx, dest_type))
         return subview.result
 
-    def _extern_expr(self, extern):
+    def _expr_extern(self, extern: LoopIR.Extern) -> SSAValue:
         # lower extern function call to func.call with return value
-        assert isinstance(extern, LoopIR.Extern)
-        args = [self._expr(e) for e in extern.args]
+        args = [self._expr(arg) for arg in extern.args]
 
         if extern.f.name() == "select":
             # select(a, b, c, d) -> (a < b) ? c : d
@@ -301,38 +325,40 @@ class IRGenerator:
         output_type = self._type(extern.f.typecheck(extern.args))
         return self._emit(CallOp(extern.f.name(), args, [output_type]))
 
-    def _expr(self, expr) -> OpResult | SSAValue:
+    def _expr(self, expr: object) -> OpResult | SSAValue:
         # dispatch loopir expression node to its typed lowering method
         match expr:
             case LoopIR.Read():
-                return self._read_expr(expr)
+                return self._expr_read(expr)
             case LoopIR.Const():
-                return self._const_expr(expr)
+                return self._expr_const(expr)
             case LoopIR.USub():
-                return self._usub_expr(expr)
+                return self._expr_usub(expr)
             case LoopIR.BinOp():
-                return self._binop_expr(expr)
+                return self._expr_binop(expr)
             case LoopIR.WindowExpr():
-                return self._window_expr(expr)
+                return self._expr_window(expr)
             case LoopIR.Extern():
-                return self._extern_expr(expr)
+                return self._expr_extern(expr)
             case _:
                 assert False
 
-    def _store_stmt(self, stmt):
+    #
+    # statements
+    #
+
+    def _stmt_assign(self, stmt: LoopIR.Assign) -> None:
         # lower assignment to memref.store
-        assert isinstance(stmt, LoopIR.Assign)
-        idx = [self._expr(e) for e in stmt.idx]
+        idx = [self._expr(expr) for expr in stmt.idx]
         value = self._expr(stmt.rhs)
-        memref_val = self.symbol_table[repr(stmt.name)]
+        memref_val = self._syms[repr(stmt.name)]
         self._memref_store(value, memref_val, idx)
 
-    def _reduce_stmt(self, stmt):
+    def _stmt_reduce(self, stmt: LoopIR.Reduce) -> None:
         # lower reduce to load + add + store (accumulate into buffer)
-        assert isinstance(stmt, LoopIR.Reduce)
-        idx = [self._expr(e) for e in stmt.idx]
+        idx = [self._expr(expr) for expr in stmt.idx]
         value = self._expr(stmt.rhs)
-        memref_val = self.symbol_table[repr(stmt.name)]
+        memref_val = self._syms[repr(stmt.name)]
 
         current = self._memref_load(memref_val, idx)
         if value.type in [f16, f32, f64]:
@@ -342,29 +368,27 @@ class IRGenerator:
         self.builder.insert(add_op)
         self._memref_store(add_op.result, memref_val, idx)
 
-    def _if_stmt(self, if_stmt):
+    def _stmt_if(self, if_stmt: LoopIR.If) -> None:
         # lower if/else to scf.if with true and false regions
-        assert isinstance(if_stmt, LoopIR.If)
         cond = self._expr(if_stmt.cond)
 
         with self._tmp_state():
             true_block = Block()
             self.builder = Builder(insertion_point=InsertPoint.at_end(true_block))
-            for s in if_stmt.body:
-                self._stmt(s)
+            for stmt in if_stmt.body:
+                self._stmt(stmt)
             self.builder.insert(YieldOp())
 
             false_block = Block()
             self.builder = Builder(insertion_point=InsertPoint.at_end(false_block))
-            for s in if_stmt.orelse:
-                self._stmt(s)
+            for stmt in if_stmt.orelse:
+                self._stmt(stmt)
             self.builder.insert(YieldOp())
 
         self.builder.insert(IfOp(cond, [], Region(true_block), Region(false_block)))
 
-    def _for_stmt(self, for_stmt):
+    def _stmt_for(self, for_stmt: LoopIR.For) -> None:
         # lower for loop to scf.for with lo/hi bounds and step inferred from bound types
-        assert isinstance(for_stmt, LoopIR.For)
         lo = self._expr(for_stmt.lo)
         hi = self._expr(for_stmt.hi)
         assert lo.type == hi.type
@@ -373,20 +397,19 @@ class IRGenerator:
         with self._tmp_state():
             loop_block = Block(arg_types=[lo.type])
             self.builder = Builder(insertion_point=InsertPoint.at_end(loop_block))
-            self.symbol_table = ScopedDict(self.symbol_table)
+            self.symbol_table = ScopedDict(self._syms)
 
-            self.symbol_table[repr(for_stmt.iter)] = loop_block.args[0]
-            self.type_table[repr(for_stmt.iter)] = T.Index
+            self._syms[repr(for_stmt.iter)] = loop_block.args[0]
+            self._types[repr(for_stmt.iter)] = T.Index
 
-            for s in for_stmt.body:
-                self._stmt(s)
+            for stmt in for_stmt.body:
+                self._stmt(stmt)
             self.builder.insert(YieldOp())
 
         self.builder.insert(ForOp(lo, hi, step, [], Region(loop_block)))
 
-    def _alloc_stmt(self, alloc):
+    def _stmt_alloc(self, alloc: LoopIR.Alloc) -> SSAValue:
         # lower alloc to llvm.call @malloc (DRAM) or llvm.alloca (stack)
-        assert isinstance(alloc, LoopIR.Alloc)
         mem_name = alloc.mem.name()
         mem_space = StringAttr(mem_name)
         type = self._type(alloc.type, mem_space)
@@ -395,7 +418,9 @@ class IRGenerator:
         if not isinstance(type, MemRefType):
             type = MemRefType(type, [1], NoneAttr(), mem_space)
 
-        total_size = reduce(lambda x, y: x * y, type.get_shape())
+        shape = type.get_shape()
+        assert all(dim != memref.DYNAMIC_INDEX for dim in shape), "dynamic-sized allocs are not supported"
+        total_size = reduce(lambda x, y: x * y, shape)
         const_val = self._emit(arith.ConstantOp(IntegerAttr(total_size, i64)))
 
         if mem_name == "DRAM":
@@ -404,90 +429,70 @@ class IRGenerator:
             raw_ptr = self._emit(llvm.AllocaOp(const_val, type.element_type))
 
         result = self._emit(UnrealizedConversionCastOp.get(raw_ptr, type))
-        self.symbol_table[repr(alloc.name)] = result
-        self.type_table[repr(alloc.name)] = alloc.type
+        self._syms[repr(alloc.name)] = result
+        self._types[repr(alloc.name)] = alloc.type
         return result
 
-    def _free_stmt(self, free):
+    def _stmt_free(self, free: LoopIR.Free) -> None:
         # lower free to llvm.call @free (DRAM) or no-op (stack)
-        assert isinstance(free, LoopIR.Free)
         is_heap_mem = free.mem.name() == "DRAM"
         if not is_heap_mem:
             return
-        memref_val = self.symbol_table[repr(free.name)]
+        memref_val = self._syms[repr(free.name)]
         cast = self._emit(UnrealizedConversionCastOp.get([memref_val], [llvm.LLVMPointerType()]))
         self.builder.insert(llvm.CallOp("free", cast))
 
-    def _window_stmt(self, stmt):
+    def _stmt_window(self, stmt: LoopIR.WindowStmt) -> None:
         # lower window statement to subview and bind result in symbol/type tables
-        assert isinstance(stmt, LoopIR.WindowStmt)
-        result = self._window_expr(stmt.rhs)
-        self.symbol_table[repr(stmt.name)] = result
-        self.type_table[repr(stmt.name)] = stmt.rhs.type.as_tensor
+        result = self._expr_window(stmt.rhs)
+        self._syms[repr(stmt.name)] = result
+        self._types[repr(stmt.name)] = stmt.rhs.type.as_tensor
 
-    def _call_stmt(self, call):
+    def _stmt_call(self, call: LoopIR.Call) -> None:
         # lower call to func.call. emit extern decl for intrinsics, recurse for procs
-        assert isinstance(call, LoopIR.Call)
         args = [self._expr(arg) for arg in call.args]
 
         if call.f.instr is None:
             self._procedure(call.f)
             assert len(call.args) == len(call.f.args)
-        elif call.f.name not in self.seen_procs:
-            self.seen_procs.add(call.f.name)
-            input_types = [SSAValue.get(a).type for a in args]
-            module_builder = Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0]))
-            module_builder.insert(FuncOp.external(call.f.name, input_types, []))
+        elif call.f.name not in self.seen_extern_decls:
+            self.seen_extern_decls.add(call.f.name)
+            input_types = [SSAValue.get(arg).type for arg in args]
+            self._insert_at_module(FuncOp.external(call.f.name, input_types, []))
 
         self.builder.insert(CallOp(call.f.name, args, []))
 
-    def _stmt(self, stmt):
+    def _stmt(self, stmt: object) -> None:
         # dispatch loopir statement node to its typed lowering method
         match stmt:
             case LoopIR.Assign():
-                self._store_stmt(stmt)
+                self._stmt_assign(stmt)
             case LoopIR.Reduce():
-                self._reduce_stmt(stmt)
+                self._stmt_reduce(stmt)
             case LoopIR.WriteConfig():
                 raise NotImplementedError()
             case LoopIR.Pass():
                 pass
             case LoopIR.If():
-                self._if_stmt(stmt)
+                self._stmt_if(stmt)
             case LoopIR.For():
-                self._for_stmt(stmt)
+                self._stmt_for(stmt)
             case LoopIR.Alloc():
-                self._alloc_stmt(stmt)
+                self._stmt_alloc(stmt)
             case LoopIR.Free():
-                self._free_stmt(stmt)
+                self._stmt_free(stmt)
             case LoopIR.Call():
-                self._call_stmt(stmt)
+                self._stmt_call(stmt)
             case LoopIR.WindowStmt():
-                self._window_stmt(stmt)
+                self._stmt_window(stmt)
             case _:
                 assert False
 
-    @staticmethod
-    def _is_mutated(name: str, body) -> bool:
-        # check if a variable is assigned to or reduced into in the body
-        def check(stmt):
-            match stmt:
-                case LoopIR.Assign() | LoopIR.Reduce():
-                    return repr(stmt.name) == name
-                case LoopIR.For():
-                    return IRGenerator._is_mutated(name, stmt.body)
-                case LoopIR.If():
-                    return IRGenerator._is_mutated(name, stmt.body) or IRGenerator._is_mutated(name, stmt.orelse)
-            return False
-
-        return any(check(s) for s in body)
-
-    def _procedure(self, procedure):
+    def _procedure(self, procedure: LoopIR.proc) -> None:
         # lower loopir proc to func.func
-        assert isinstance(procedure, LoopIR.proc)
-        if procedure.name in self.seen_procs:
+        if procedure.name in self.seen_proc_names:
             return
-        self.seen_procs.add(procedure.name)
+        self.seen_proc_names.add(procedure.name)
 
         if procedure.instr is not None:
             raise NotImplementedError()
@@ -496,34 +501,32 @@ class IRGenerator:
         input_types = []
         for arg in procedure.args:
             mem = StringAttr(arg.mem.name()) if hasattr(arg, "mem") else None
-            t = self._type(arg.type, mem)
-            if not isinstance(t, MemRefType) and self._is_mutated(repr(arg.name), procedure.body):
-                t = MemRefType(t, [1], NoneAttr())
-            input_types.append(t)
+            type = self._type(arg.type, mem)
+            if not isinstance(type, MemRefType) and _is_mutated(repr(arg.name), procedure.body):
+                type = MemRefType(type, [1], NoneAttr())
+            input_types.append(type)
         func_type = FunctionType.from_lists(input_types, [])
 
         with self._tmp_state(inherit=False):
             block = Block(arg_types=input_types)
             self.builder = Builder(insertion_point=InsertPoint.at_end(block))
 
-            self.symbol_table = ScopedDict(local_scope={repr(a.name): b for a, b in zip(procedure.args, block.args)})
-            self.type_table = ScopedDict(local_scope={repr(a.name): a.type for a in procedure.args})
+            self.symbol_table = ScopedDict(local_scope={repr(arg.name): val for arg, val in zip(procedure.args, block.args)})
+            self.type_table = ScopedDict(local_scope={repr(arg.name): arg.type for arg in procedure.args})
 
-            for s in procedure.body:
-                self._stmt(s)
+            for stmt in procedure.body:
+                self._stmt(stmt)
 
             self.builder.insert(ReturnOp())
 
-        module_builder = Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0]))
-        module_builder.insert(FuncOp(procedure.name, func_type, Region(block)))
+        self._insert_at_module(FuncOp(procedure.name, func_type, Region(block)))
 
-    def generate(self, procs) -> ModuleOp:
+    def generate(self, procs: list[LoopIR.proc]) -> ModuleOp:
         for proc in procs:
             self._procedure(proc)
         # declare external malloc/free for DRAM alloc/free lowering
-        module_builder = Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0]))
-        module_builder.insert(llvm.FuncOp("malloc", llvm.LLVMFunctionType([i64], llvm.LLVMPointerType()), llvm.LinkageAttr("external")))
-        module_builder.insert(llvm.FuncOp("free", llvm.LLVMFunctionType([llvm.LLVMPointerType()]), llvm.LinkageAttr("external")))
+        self._insert_at_module(llvm.FuncOp("malloc", llvm.LLVMFunctionType([i64], llvm.LLVMPointerType()), llvm.LinkageAttr("external")))
+        self._insert_at_module(llvm.FuncOp("free", llvm.LLVMFunctionType([llvm.LLVMPointerType()]), llvm.LinkageAttr("external")))
         return self.module
 
 
@@ -573,11 +576,11 @@ def compile_procs(library: Procedure | Sequence[Procedure]) -> ModuleOp:
     if isinstance(library, Procedure):
         library = [library]
     compilable = [proc._loopir_proc for proc in library if not proc.is_instr()]
-    all_procs = sorted(find_all_subprocs(compilable), key=lambda x: x.name)
-    unique_procs = list({p.name: p for p in all_procs}.values())
+    all_procs = sorted(find_all_subprocs(compilable), key=lambda proc: proc.name)
+    seen: set[str] = set()
+    unique_procs = [proc for proc in all_procs if not (proc.name in seen or seen.add(proc.name))]
 
-    def exo_analyze(proc):
-        assert isinstance(proc, LoopIR.proc)
+    def exo_analyze(proc: LoopIR.proc) -> LoopIR.proc:
         proc = ParallelAnalysis().run(proc)
         proc = PrecisionAnalysis().run(proc)
         proc = WindowAnalysis().apply_proc(proc)

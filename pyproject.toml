@@ -8,6 +8,8 @@ dependencies = [
     "lit",
     "numpy",
     "pytest",
+    "pytest-xdist",
+    "pytest-forked",
 ]
 
 [build-system]
@@ -18,7 +20,7 @@ build-backend = "setuptools.build_meta"
 include = ["xdsl_exo*"]
 
 [tool.pytest.ini_options]
-addopts = "--forked"
+addopts = "-n auto --forked -v"
 
 [project.scripts]
 xdsl-exo = "xdsl_exo.main:main"

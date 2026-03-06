@@ -9,19 +9,16 @@ import subprocess
 import tempfile
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from exo import compile_procs as exo_compile_procs
+from exo.API import Procedure
 from exo.core.LoopIR import LoopIR
 
 from xdsl_exo.main import compile_procs as xdsl_compile_procs
 
-
-def pytest_sessionfinish(session, exitstatus):
-    os._exit(exitstatus)
-
-
-_TYPES = {
+_TYPES: dict[str, tuple[type, type]] = {
     "f16": (np.float16, ctypes.c_uint16),
     "f32": (np.float32, ctypes.c_float),
     "f64": (np.float64, ctypes.c_double),
@@ -34,9 +31,7 @@ _TYPES = {
 
 _MLIR_SCRIPT = """\
 set -euo pipefail
-{llvm}/mlir-opt \
-  --convert-arith-to-llvm --convert-cf-to-llvm \
-  --convert-func-to-llvm --reconcile-unrealized-casts {mlir} \
+{llvm}/mlir-opt --convert-arith-to-llvm --convert-cf-to-llvm --convert-func-to-llvm --reconcile-unrealized-casts {mlir} \
 | {llvm}/mlir-translate --mlir-to-llvmir \
 | {llvm}/llc -filetype=obj -o {obj}
 clang -shared -o {so} {obj}
@@ -44,7 +39,7 @@ clang -shared -o {so} {obj}
 
 
 @functools.cache
-def _find_llvm_bin():
+def _find_llvm_bin() -> Path:
     if env := os.environ.get("LLVM_BIN"):
         return Path(env)
     if mlir_opt := shutil.which("mlir-opt"):
@@ -53,23 +48,26 @@ def _find_llvm_bin():
     return Path(prefix) / "bin"
 
 
-def _compile_exo_c(procs):
+def _compile_exo_c(procs: list[Procedure]) -> ctypes.CDLL:
     d = Path(tempfile.mkdtemp())
     exo_compile_procs(procs, d, "o.c", "o.h")
-    subprocess.run(["clang", "-shared", "-fPIC", "-O2", "-I", str(d), "-o", str(d / "lib.so"), str(d / "o.c")], check=True)
+    subprocess.run(["clang", "-shared", "-fPIC", "-O0", "-I", str(d), "-o", str(d / "lib.so"), str(d / "o.c")], check=True)
     return ctypes.CDLL(str(d / "lib.so"))
 
 
-def _compile_xdsl_mlir(procs):
+def _compile_xdsl_mlir(procs: list[Procedure]) -> ctypes.CDLL:
+    mlir_text = str(xdsl_compile_procs(procs))
     d = Path(tempfile.mkdtemp())
-    (d / "o.mlir").write_text(str(xdsl_compile_procs(procs)))
+    (d / "o.mlir").write_text(mlir_text)
     subprocess.run(["bash", "-c", _MLIR_SCRIPT.format(llvm=_find_llvm_bin(), mlir=d / "o.mlir", obj=d / "o.o", so=d / "lib.so")], check=True)
     return ctypes.CDLL(str(d / "lib.so"))
 
 
-def _call(lib, proc_ir, kwargs, *, has_ctxt):
+def _call(lib: ctypes.CDLL, proc_ir: Any, kwargs: dict[str, Any], *, has_ctxt: bool) -> dict[str, np.ndarray]:
     fn = getattr(lib, proc_ir.name)
-    argtypes, args, bufs = [], [], {}
+    argtypes: list = []
+    args: list = []
+    bufs: dict[str, np.ndarray] = {}
 
     if has_ctxt:
         argtypes += [ctypes.c_void_p]
@@ -94,7 +92,7 @@ def _call(lib, proc_ir, kwargs, *, has_ctxt):
     return bufs
 
 
-def assert_match(proc, **kwargs):
+def assert_match(proc: Procedure, **kwargs: Any) -> None:
     ir = proc._loopir_proc
     exo_bufs = _call(_compile_exo_c([proc]), ir, deepcopy(kwargs), has_ctxt=True)
     xdsl_bufs = _call(_compile_xdsl_mlir([proc]), ir, deepcopy(kwargs), has_ctxt=False)
