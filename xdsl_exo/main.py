@@ -33,7 +33,8 @@ from xdsl.transforms.convert_scf_to_cf import ConvertScfToCf
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.scoped_dict import ScopedDict
 
-from xdsl_exo.patches import ConvertCmpiPattern, ExtendedConvertMemRefToPtr, FCmpOp, FNegOp, LLVMIntrinsics, SelectOp
+from xdsl_exo.patches_intrinsics import LLVMIntrinsics
+from xdsl_exo.patches_llvm import ConvertCmpiPattern, ExtendedConvertMemRefToPtr, FCmpOp, FNegOp, SelectOp
 from xdsl_exo.patches_llvmlite import jit_compile, to_llvmlite
 from xdsl_exo.rewrites import ConvertVecIntrinsic, RewriteMemRefTypes
 

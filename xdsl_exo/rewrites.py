@@ -7,7 +7,8 @@ from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, IndexType, IntegerAt
 from xdsl.ir import Operation, SSAValue
 from xdsl.pattern_rewriter import PatternRewriter, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
 
-from xdsl_exo import patches as llvm_extra
+from xdsl_exo.patches_intrinsics import FAbsOp, MaskedStoreOp
+from xdsl_exo.patches_llvm import FNegOp
 
 # `vec_*` intrinsic lowering: `func.CallOp` -> LLVM/vector dialect ops
 #
@@ -85,7 +86,7 @@ def _build_copy(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> BuildR
 def _build_abs(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> BuildResult:
     # dst[:] = abs(src[:])
     load = llvm.LoadOp(src, vec_type)
-    fabs = llvm_extra.FAbsOp(load.dereferenced_value, vec_type)
+    fabs = FAbsOp(load.dereferenced_value, vec_type)
     return [load, fabs], fabs.result
 
 
@@ -94,14 +95,14 @@ def _build_abs_pfx(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> Bui
     # step 2 (caller): dst[:n] = abs(src[:n]) -- MaskedStoreOp overwrites active lanes
     # net:             dst[:n] = abs(src[:n]), dst[n:] = src[n:]
     load = llvm.LoadOp(src, vec_type)
-    fabs = llvm_extra.FAbsOp(load.dereferenced_value, vec_type)
+    fabs = FAbsOp(load.dereferenced_value, vec_type)
     return [load, fabs, llvm.StoreOp(load.dereferenced_value, dst)], fabs.result
 
 
 def _build_neg(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> BuildResult:
     # dst[:] = -src[:]
     load = llvm.LoadOp(src, vec_type)
-    neg = llvm_extra.FNegOp(load.dereferenced_value)
+    neg = FNegOp(load.dereferenced_value)
     return [load, neg], neg.res
 
 
@@ -173,7 +174,7 @@ def _pfx_handler(builder: Builder, vec_type: VectorType, mask_fn: MaskFn) -> Han
         lane_count, dst, *srcs = args
         mask_ops, mask = mask_fn(lane_count)
         core_ops, result = builder(dst, *srcs, vec_type=vec_type)
-        return (*mask_ops, *core_ops, llvm_extra.MaskedStoreOp(result, dst, mask))
+        return (*mask_ops, *core_ops, MaskedStoreOp(result, dst, mask))
 
     return handle
 

@@ -7,7 +7,7 @@ from xdsl.dialects.builtin import IndexType, ModuleOp
 from xdsl.dialects.llvm import LLVMVoidType
 from xdsl.ir import Block, Operation, SSAValue
 
-from xdsl_exo.patches import FCmpOp, FNegOp, SelectOp
+from xdsl_exo.patches_llvm import FCmpOp, FNegOp, SelectOp
 
 ValMap = dict[SSAValue, ir.Value]
 BlockMap = dict[Block, ir.Block]
@@ -15,18 +15,22 @@ PhiMap = dict[SSAValue, ir.PhiInstr]
 
 
 def _convert_type(xdsl_type) -> ir.Type:
-    if isinstance(xdsl_type, IndexType):
-        return ir.IntType(64)
-    if isinstance(xdsl_type, LLVMVoidType):
-        return ir.VoidType()
-    return _xdsl_convert_type(xdsl_type)
+    match xdsl_type:
+        case IndexType():
+            return ir.IntType(64)
+        case LLVMVoidType():
+            return ir.VoidType()
+        case _:
+            return _xdsl_convert_type(xdsl_type)
 
 
 def _return_type(func_op: func.FuncOp | llvm.FuncOp) -> ir.Type:
-    if isinstance(func_op, llvm.FuncOp):
-        return _convert_type(func_op.function_type.output)
-    outputs = list(func_op.function_type.outputs)
-    return _convert_type(outputs[0]) if outputs else ir.VoidType()
+    match func_op:
+        case llvm.FuncOp():
+            return _convert_type(func_op.function_type.output)
+        case func.FuncOp():
+            outputs = list(func_op.function_type.outputs)
+            return _convert_type(outputs[0]) if outputs else ir.VoidType()
 
 
 # FCmpOp predicate string -> (operator string, is_ordered)
