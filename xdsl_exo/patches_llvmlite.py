@@ -9,9 +9,6 @@ from xdsl.ir import Block, Operation, SSAValue
 
 from xdsl_exo.patches import FCmpOp, FNegOp, SelectOp
 
-# FCmpOp predicate int -> (operator string, is_ordered)
-_CMPF_PRED: dict[int, tuple[str, bool]] = {1: ("==", True), 2: (">", True), 3: (">=", True), 4: ("<", True), 5: ("<=", True), 6: ("!=", True), 7: ("ord", True), 8: ("==", False), 9: (">", False), 10: (">=", False), 11: ("<", False), 12: ("<=", False), 13: ("!=", False), 14: ("uno", False)}
-
 ValMap = dict[SSAValue, ir.Value]
 BlockMap = dict[Block, ir.Block]
 PhiMap = dict[SSAValue, ir.PhiInstr]
@@ -32,6 +29,10 @@ def _return_type(func_op: func.FuncOp | llvm.FuncOp) -> ir.Type:
     return _convert_type(outputs[0]) if outputs else ir.VoidType()
 
 
+# FCmpOp predicate string -> (operator string, is_ordered)
+_CMPF_PRED: dict[str, tuple[str, bool]] = {"oeq": ("==", True), "ogt": (">", True), "oge": (">=", True), "olt": ("<", True), "ole": ("<=", True), "one": ("!=", True), "ord": ("ord", True), "ueq": ("==", False), "ugt": (">", False), "uge": (">=", False), "ult": ("<", False), "ule": ("<=", False), "une": ("!=", False), "uno": ("uno", False)}
+
+
 def _emit_op(op: Operation, builder: ir.IRBuilder, block_map: BlockMap, phi_map: PhiMap, val_map: ValMap) -> None:
     match op:
         case llvm.ConstantOp() | arith.ConstantOp():
@@ -49,7 +50,7 @@ def _emit_op(op: Operation, builder: ir.IRBuilder, block_map: BlockMap, phi_map:
         case FNegOp():
             val_map[op.res] = builder.fneg(val_map[op.arg])
         case FCmpOp():
-            pred, is_ordered = _CMPF_PRED[op.predicate.value.data]
+            pred, is_ordered = _CMPF_PRED[op.predicate.data]
             cmp_fn = builder.fcmp_ordered if is_ordered else builder.fcmp_unordered
             val_map[op.res] = cmp_fn(pred, val_map[op.lhs], val_map[op.rhs])
         case SelectOp():

@@ -3,14 +3,12 @@ from typing import ClassVar
 
 from xdsl.context import Context
 from xdsl.dialects import arith, builtin, memref, ptr, scf
-from xdsl.dialects.builtin import DYNAMIC_INDEX, I1, AnyFloatConstr, IntegerAttr, VectorType, i1, i32, i64
+from xdsl.dialects.builtin import DYNAMIC_INDEX, I1, AnyFloatConstr, IntegerAttr, StringAttr, VectorType, i1, i32
 from xdsl.dialects.llvm import FastMathAttr, LLVMPointerType
 from xdsl.ir import BlockArgument, Dialect, Operation, OpResult, SSAValue
 from xdsl.irdl import AnyAttr, Attribute, IRDLOperation, ParsePropInAttrDict, VarConstraint, irdl_op_definition, operand_def, prop_def, result_def, traits_def
-from xdsl.parser.core import Parser
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, op_type_rewrite_pattern
-from xdsl.printer import Printer
 from xdsl.traits import Pure, SameOperandsAndResultType
 from xdsl.transforms.convert_memref_to_ptr import ConvertLoadPattern, ConvertStorePattern, ConvertSubviewPattern, get_bytes_offset, get_offset_pointer
 from xdsl.utils.hints import isa
@@ -67,36 +65,14 @@ class FCmpOp(IRDLOperation):
     lhs = operand_def(T)
     rhs = operand_def(T)
     res = result_def(I1)
-    predicate = prop_def(IntegerAttr[i64])
+    predicate = prop_def(StringAttr)
 
     traits = traits_def(Pure())
 
-    _TABLE: ClassVar = {"false": 0, "oeq": 1, "ogt": 2, "oge": 3, "olt": 4, "ole": 5, "one": 6, "ord": 7, "ueq": 8, "ugt": 9, "uge": 10, "ult": 11, "ule": 12, "une": 13, "uno": 14, "true": 15}
+    assembly_format = "$predicate $lhs `,` $rhs attr-dict `:` type($lhs)"
 
-    def __init__(self, lhs: Operation | SSAValue, rhs: Operation | SSAValue, predicate: int | str):
-        if isinstance(predicate, str):
-            predicate = self._TABLE[predicate]
-        super().__init__(operands=[lhs, rhs], result_types=[i1], properties={"predicate": IntegerAttr(predicate, i64)})
-
-    @classmethod
-    def parse(cls, parser: Parser) -> "FCmpOp":
-        pred_str = parser.parse_str_literal()
-        lhs = parser.parse_unresolved_operand()
-        parser.parse_punctuation(",")
-        rhs = parser.parse_unresolved_operand()
-        parser.parse_punctuation(":")
-        input_type = parser.parse_type()
-        lhs, rhs = parser.resolve_operands([lhs, rhs], [input_type, input_type], parser.pos)
-        return cls(lhs, rhs, pred_str)
-
-    def print(self, printer: Printer) -> None:
-        pred_str = {v: k for k, v in self._TABLE.items()}[self.predicate.value.data]
-        printer.print_string(f' "{pred_str}" ')
-        printer.print_ssa_value(self.lhs)
-        printer.print_string(", ")
-        printer.print_ssa_value(self.rhs)
-        printer.print_string(" : ")
-        printer.print_attribute(self.lhs.type)
+    def __init__(self, lhs: Operation | SSAValue, rhs: Operation | SSAValue, predicate: str):
+        super().__init__(operands=[lhs, rhs], result_types=[i1], properties={"predicate": StringAttr(predicate)})
 
 
 @irdl_op_definition

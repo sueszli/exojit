@@ -22,7 +22,7 @@
                      <.'_.''
                        <'
 
-xdsl-exo bridges Exo and xDSL: it compiles Exo Python procedures to MLIR,                                                                                                                       
+xdsl-exo bridges Exo and xDSL: it compiles Exo Python procedures to MLIR,
 enabling further lowering to LLVM IR (and hopefully one day also native code).
 
 usage:
