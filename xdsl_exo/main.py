@@ -518,9 +518,6 @@ class IRGenerator:
             return
         self.seen_proc_names.add(procedure.name)
 
-        if procedure.instr is not None:
-            return  # handled as extern declarations in _stmt_call
-
         # build func signature: map each arg to its mlir type, wrapping mutated scalars in memref<1x>
         input_types = []
         for arg in procedure.args:
@@ -600,7 +597,7 @@ def compile_procs(library: Procedure | Sequence[Procedure]) -> ModuleOp:
     compilable = [proc._loopir_proc for proc in library if not proc.is_instr()]
     all_procs = sorted(find_all_subprocs(compilable), key=lambda proc: proc.name)
     seen: set[str] = set()
-    unique_procs = [proc for proc in all_procs if not (proc.name in seen or seen.add(proc.name))]
+    unique_procs = [proc for proc in all_procs if proc.instr is None and not (proc.name in seen or seen.add(proc.name))]
 
     def exo_analyze(proc: LoopIR.proc) -> LoopIR.proc:
         proc = ParallelAnalysis().run(proc)
