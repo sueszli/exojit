@@ -2,12 +2,12 @@ import llvmlite.binding as llvm_binding
 import llvmlite.ir as ir
 from xdsl.backend.llvm.convert_op import convert_op as _xdsl_convert_op
 from xdsl.backend.llvm.convert_type import convert_type as _xdsl_convert_type
-from xdsl.dialects import cf, llvm
+from xdsl.dialects import llvm
 from xdsl.dialects.builtin import IndexType, ModuleOp
 from xdsl.dialects.llvm import FNegOp
 from xdsl.ir import Block, Operation, SSAValue
 
-from xdsl_exo.patches_llvm import FCmpOp, SelectOp
+from xdsl_exo.patches_llvm import BrOp, CondBrOp, FCmpOp, SelectOp
 
 ValMap = dict[SSAValue, ir.Value]
 BlockMap = dict[Block, ir.Block]
@@ -33,13 +33,13 @@ def _convert_op(op: Operation, builder: ir.IRBuilder, block_map: BlockMap, phi_m
             val_map[op.res] = (builder.fcmp_ordered if is_ordered else builder.fcmp_unordered)(pred, val_map[op.lhs], val_map[op.rhs])
         case SelectOp():
             val_map[op.res] = builder.select(val_map[op.cond], val_map[op.lhs], val_map[op.rhs])
-        case cf.BranchOp():
+        case BrOp():
             cur = builder.block
             for a, v in zip(op.successor.args, op.operands):
                 if a in phi_map:
                     phi_map[a].add_incoming(val_map[v], cur)
             builder.branch(block_map[op.successor])
-        case cf.ConditionalBranchOp():
+        case CondBrOp():
             cur = builder.block
             for a, v in zip(op.successors[0].args, op.then_arguments):
                 if a in phi_map:

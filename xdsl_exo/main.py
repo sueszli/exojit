@@ -17,7 +17,7 @@ from exo.core.LoopIR import LoopIR, T
 from exo.main import get_procs_from_module, load_user_code
 from xdsl.builder import Builder
 from xdsl.context import Context
-from xdsl.dialects import cf, llvm, memref
+from xdsl.dialects import llvm, memref
 from xdsl.dialects.builtin import BoolAttr, Builtin, FloatAttr, IndexType, IntAttr, IntegerAttr, MemRefType, ModuleOp, NoneAttr, StringAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
 from xdsl.dialects.llvm import FNegOp
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
@@ -30,7 +30,7 @@ from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsP
 from xdsl.utils.scoped_dict import ScopedDict
 
 from xdsl_exo.patches_intrinsics import ConvertVecIntrinsic
-from xdsl_exo.patches_llvm import ExtendedConvertMemRefToPtr, FCmpOp, RewriteMemRefTypes, SelectOp
+from xdsl_exo.patches_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, RewriteMemRefTypes, SelectOp
 from xdsl_exo.patches_llvmlite import jit_compile
 
 
@@ -369,19 +369,19 @@ class IRGenerator:
         region.add_block(true_block)
         region.add_block(false_block)
 
-        self.builder.insert(cf.ConditionalBranchOp(cond, true_block, [], false_block, []))
+        self.builder.insert(CondBrOp(cond, true_block, [], false_block, []))
 
         # true branch
         self.builder = Builder(insertion_point=InsertPoint.at_end(true_block))
         for stmt in if_stmt.body:
             self._stmt(stmt)
-        self.builder.insert(cf.BranchOp(merge_block))
+        self.builder.insert(BrOp(merge_block))
 
         # false branch
         self.builder = Builder(insertion_point=InsertPoint.at_end(false_block))
         for stmt in if_stmt.orelse:
             self._stmt(stmt)
-        self.builder.insert(cf.BranchOp(merge_block))
+        self.builder.insert(BrOp(merge_block))
 
         # continue at merge
         region.add_block(merge_block)
@@ -402,13 +402,13 @@ class IRGenerator:
         region.add_block(body_block)
 
         # branch from current block to header with initial IV
-        self.builder.insert(cf.BranchOp(header_block, lo))
+        self.builder.insert(BrOp(header_block, lo))
 
         # header: condition check
         self.builder = Builder(insertion_point=InsertPoint.at_end(header_block))
         iv = header_block.args[0]
         cond = self._emit(llvm.ICmpOp(iv, hi, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64)))
-        self.builder.insert(cf.ConditionalBranchOp(cond, body_block, [], exit_block, []))
+        self.builder.insert(CondBrOp(cond, body_block, [], exit_block, []))
 
         # body: emit loop body in a child symbol scope
         self.builder = Builder(insertion_point=InsertPoint.at_end(body_block))
@@ -422,7 +422,7 @@ class IRGenerator:
 
         # after body: increment IV and branch back to header
         next_iv = self._emit(llvm.AddOp(iv, step))
-        self.builder.insert(cf.BranchOp(header_block, next_iv))
+        self.builder.insert(BrOp(header_block, next_iv))
 
         self.symbol_table = parent_syms
 
@@ -562,8 +562,9 @@ def _context() -> Context:
     ctx.load_dialect(llvm.LLVM)
     ctx.load_op(FCmpOp)
     ctx.load_op(SelectOp)
+    ctx.load_op(BrOp)
+    ctx.load_op(CondBrOp)
     ctx.load_dialect(memref.MemRef)
-    ctx.load_dialect(cf.Cf)
     return ctx
 
 

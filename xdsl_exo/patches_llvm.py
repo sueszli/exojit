@@ -1,15 +1,16 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import ClassVar
 
 from xdsl.context import Context
 from xdsl.dialects import builtin, llvm, memref
-from xdsl.dialects.builtin import DYNAMIC_INDEX, I1, AnyFloatConstr, IntegerAttr, MemRefType, StringAttr, UnrealizedConversionCastOp, i1, i64
+from xdsl.dialects.builtin import DYNAMIC_INDEX, I1, AnyFloatConstr, IntegerAttr, IntegerType, MemRefType, StringAttr, UnrealizedConversionCastOp, i1, i64
 from xdsl.dialects.llvm import LLVMPointerType
-from xdsl.ir import BlockArgument, Operation, OpResult, SSAValue
-from xdsl.irdl import AnyAttr, IRDLOperation, VarConstraint, irdl_op_definition, operand_def, prop_def, result_def, traits_def
+from xdsl.ir import Block, BlockArgument, Operation, OpResult, SSAValue
+from xdsl.irdl import AnyAttr, AttrSizedOperandSegments, IRDLOperation, VarConstraint, irdl_op_definition, operand_def, prop_def, result_def, successor_def, traits_def, var_operand_def
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
-from xdsl.traits import Pure
+from xdsl.traits import IsTerminator, Pure
 from xdsl.transforms.convert_memref_to_ptr import ConvertCastOp
 from xdsl.utils.hints import isa
 
@@ -52,6 +53,44 @@ class SelectOp(IRDLOperation):
 
     def __init__(self, cond: Operation | SSAValue, lhs: Operation | SSAValue, rhs: Operation | SSAValue):
         super().__init__(operands=[cond, lhs, rhs], result_types=[SSAValue.get(lhs).type])
+
+
+@irdl_op_definition
+class BrOp(IRDLOperation):
+    name = "llvm.br"
+    arguments = var_operand_def()
+    successor = successor_def()
+    traits = traits_def(IsTerminator())
+    assembly_format = "$successor (`(` $arguments^ `:` type($arguments) `)`)? attr-dict"
+
+    def __init__(self, dest: Block, *ops: Operation | SSAValue):
+        super().__init__(operands=[[op for op in ops]], successors=[dest])
+
+
+@irdl_op_definition
+class CondBrOp(IRDLOperation):
+    name = "llvm.cond_br"
+    cond = operand_def(IntegerType(1))
+    then_arguments = var_operand_def()
+    else_arguments = var_operand_def()
+    irdl_options = (AttrSizedOperandSegments(as_property=True),)
+    then_block = successor_def()
+    else_block = successor_def()
+    traits = traits_def(IsTerminator())
+    assembly_format = "$cond `,` $then_block (`(` $then_arguments^ `:` type($then_arguments) `)`)? `,`" " $else_block (`(` $else_arguments^ `:` type($else_arguments) `)`)? attr-dict"
+
+    def __init__(
+        self,
+        cond: Operation | SSAValue,
+        then_block: Block,
+        then_ops: Sequence[Operation | SSAValue],
+        else_block: Block,
+        else_ops: Sequence[Operation | SSAValue],
+    ):
+        super().__init__(
+            operands=[cond, then_ops, else_ops],
+            successors=[then_block, else_block],
+        )
 
 
 #
