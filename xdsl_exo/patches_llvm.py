@@ -99,7 +99,8 @@ def _unwrap_i64(val: SSAValue) -> SSAValue:
 
 
 def _loop_ub_as_i64(index: SSAValue) -> SSAValue | None:
-    # trace index -> unwrap cast -> block arg -> llvm.icmp in header block -> extract upper bound
+    # index -> unwrap unrealized_cast -> block_arg#0 -> find llvm.icmp in header -> return the i64 bound operand
+    # returns None when the pattern does not match
     if isinstance(index, OpResult) and isinstance(index.op, UnrealizedConversionCastOp):
         inputs = list(index.op.operands)
         iv = inputs[0] if len(inputs) == 1 else index
