@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import os
 from argparse import ArgumentParser
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
-from functools import cache, reduce
+import math
+from functools import cache
 from pathlib import Path
 
 from exo.API import Procedure
@@ -240,13 +240,10 @@ class IRGenerator:
         idx = [self._expr(expr) for expr in read.idx]
         operand = self._syms[repr(read.name)]
 
-        if not isinstance(operand.type, MemRefType):
-            return operand
-        if isinstance(read.type, (T.Window, T.Tensor)):
-            return operand
-        if operand.type == self._type(read.type):
-            return operand
-        return self._memref_load(operand, idx)
+        # only emit a load when the operand is a memref holding scalar elements
+        # (not a window/tensor pass-through, and not a type-matched scalar already)
+        needs_load = isinstance(operand.type, MemRefType) and not isinstance(read.type, (T.Window, T.Tensor)) and operand.type != self._type(read.type)
+        return self._memref_load(operand, idx) if needs_load else operand
 
     def _expr_usub(self, usub: LoopIR.USub) -> SSAValue:
         # lower unary negation to llvm.fneg (float) or 0-x llvm.sub (int)
@@ -411,20 +408,19 @@ class IRGenerator:
         self.builder.insert(CondBrOp(cond, body_block, [], exit_block, []))
 
         # body: emit loop body in a child symbol scope
-        self.builder = Builder(insertion_point=InsertPoint.at_end(body_block))
-        parent_syms = self.symbol_table
-        self.symbol_table = ScopedDict(self._syms)
-        self._syms[repr(for_stmt.iter)] = iv
-        self._types[repr(for_stmt.iter)] = T.Index
+        with self._tmp_state():
+            self.builder = Builder(insertion_point=InsertPoint.at_end(body_block))
+            self.symbol_table = ScopedDict(self._syms)
+            self.type_table = ScopedDict(self._types)
+            self._syms[repr(for_stmt.iter)] = iv
+            self._types[repr(for_stmt.iter)] = T.Index
 
-        for stmt in for_stmt.body:
-            self._stmt(stmt)
+            for stmt in for_stmt.body:
+                self._stmt(stmt)
 
-        # after body: increment IV and branch back to header
-        next_iv = self._emit(llvm.AddOp(iv, step))
-        self.builder.insert(BrOp(header_block, next_iv))
-
-        self.symbol_table = parent_syms
+            # after body: increment IV and branch back to header
+            next_iv = self._emit(llvm.AddOp(iv, step))
+            self.builder.insert(BrOp(header_block, next_iv))
 
         # continue at exit block
         region.add_block(exit_block)
@@ -442,7 +438,7 @@ class IRGenerator:
 
         shape = mlir_type.get_shape()
         assert all(dim != memref.DYNAMIC_INDEX for dim in shape), "dynamic-sized allocs are not supported"
-        total_elements = reduce(lambda x, y: x * y, shape)
+        total_elements = math.prod(shape)
 
         if mem_name == "DRAM":
             elem_bytes = {f16: 2, f32: 4, f64: 8, i8: 1, i16: 2, i32: 4, i64: 8}[mlir_type.element_type]
@@ -596,8 +592,7 @@ def compile_procs(library: Procedure | Sequence[Procedure]) -> ModuleOp:
         library = [library]
     compilable = [proc._loopir_proc for proc in library if not proc.is_instr()]
     all_procs = sorted(find_all_subprocs(compilable), key=lambda proc: proc.name)
-    seen: set[str] = set()
-    unique_procs = [proc for proc in all_procs if proc.instr is None and not (proc.name in seen or seen.add(proc.name))]
+    unique_procs = list({proc.name: proc for proc in all_procs if proc.instr is None}.values())
 
     def exo_analyze(proc: LoopIR.proc) -> LoopIR.proc:
         proc = ParallelAnalysis().run(proc)
@@ -634,5 +629,5 @@ def main():
         return
 
     dst = Path(args.output)
-    os.makedirs(dst.parent, exist_ok=True)
+    dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(str(module))

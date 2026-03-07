@@ -24,6 +24,23 @@
 
 JIT-compile Exo language procedures to MLIR or native code.
 
+Exo is a hardware-oriented programming language that lets users write
+and optimize compute kernels with explicit control over scheduling and
+memory, but it only generates C code.
+
+xDSL is a Python-native compiler framework that provides MLIR-style
+intermediate representations and dialect lowering without depending on
+the full LLVM/MLIR C++ toolchain.
+
+llvmlite (from the Numba project) exposes a lightweight interface to
+LLVM's JIT engine for compiling LLVM IR to native machine code at
+runtime.
+
+This project connects all three: Exo kernels are lowered through
+xDSL's MLIR dialects and then JIT-compiled to native code via
+llvmlite, so you can go from a high-level Exo procedure to a callable
+function in a single Python process.
+
 usage:
 
     $ uv run xdsl-exo examples/demo.py  # mlir

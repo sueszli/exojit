@@ -11,6 +11,8 @@ dependencies = [
     "pytest-xdist",
     "pytest-forked",
     "llvmlite",
+    "plotnine",
+    "polars",
 ]
 
 [build-system]
