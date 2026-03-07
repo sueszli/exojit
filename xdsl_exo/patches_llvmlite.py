@@ -1,9 +1,9 @@
 import llvmlite.binding as llvm_binding
 import llvmlite.ir as ir
 from xdsl.backend.llvm.convert_op import convert_op as _xdsl_convert_op
-from xdsl.backend.llvm.convert_type import convert_type as _xdsl_convert_type
+from xdsl.backend.llvm.convert_type import convert_type
 from xdsl.dialects import llvm
-from xdsl.dialects.builtin import IndexType, ModuleOp
+from xdsl.dialects.builtin import ModuleOp
 from xdsl.dialects.llvm import FNegOp
 from xdsl.ir import Block, Operation, SSAValue
 
@@ -14,19 +14,10 @@ BlockMap = dict[Block, ir.Block]
 PhiMap = dict[SSAValue, ir.PhiInstr]
 
 
-def _convert_type(mlir_type) -> ir.Type:
-    match mlir_type:
-        case IndexType():
-            # https://github.com/xdslproject/xdsl/pull/5705
-            return ir.IntType(64)
-        case _:
-            return _xdsl_convert_type(mlir_type)
-
-
 def _convert_op(op: Operation, builder: ir.IRBuilder, block_map: BlockMap, phi_map: PhiMap, val_map: ValMap) -> None:
     match op:
         case llvm.ConstantOp():
-            val_map[op.result] = ir.Constant(_convert_type(op.result.type), op.value.value.data)
+            val_map[op.result] = ir.Constant(convert_type(op.result.type), op.value.value.data)
         case FNegOp():
             val_map[op.res] = builder.fneg(val_map[op.arg])
         case FCmpOp():
@@ -58,7 +49,7 @@ def _emit_func(func_op: llvm.FuncOp, llvm_module: ir.Module) -> None:
     mlir_blocks = list(func_op.body.blocks)
 
     block_map: BlockMap = {block: ir_func.append_basic_block() for block in mlir_blocks}
-    phi_map: PhiMap = {arg: ir.IRBuilder(block_map[blk]).phi(_convert_type(arg.type)) for blk in mlir_blocks[1:] for arg in blk.args}
+    phi_map: PhiMap = {arg: ir.IRBuilder(block_map[blk]).phi(convert_type(arg.type)) for blk in mlir_blocks[1:] for arg in blk.args}
     val_map: ValMap = dict(zip(mlir_blocks[0].args, ir_func.args)) | phi_map
 
     for mlir_block in mlir_blocks:
@@ -74,7 +65,7 @@ def jit_compile(module: ModuleOp) -> llvm_binding.ExecutionEngine:
     # forward-declare all functions so call sites can resolve them regardless of order
     for op in func_ops:
         assert isinstance(op, llvm.FuncOp)
-        ftype = ir.FunctionType(_convert_type(op.function_type.output), [_convert_type(t) for t in op.function_type.inputs])
+        ftype = ir.FunctionType(convert_type(op.function_type.output), [convert_type(t) for t in op.function_type.inputs])
         ir.Function(llvm_module, ftype, name=op.sym_name.data)
 
     # emit bodies

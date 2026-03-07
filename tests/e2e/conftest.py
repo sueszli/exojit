@@ -30,14 +30,6 @@ _TYPES: dict[str, tuple[type, type]] = {
     "i32": (np.int32, ctypes.c_int32),
 }
 
-_MLIR_SCRIPT = """\
-set -euo pipefail
-{llvm}/mlir-opt --convert-arith-to-llvm --convert-cf-to-llvm --convert-func-to-llvm --reconcile-unrealized-casts {mlir} \
-| {llvm}/mlir-translate --mlir-to-llvmir \
-| {llvm}/llc -filetype=obj -o {obj}
-clang -shared -o {so} {obj}
-"""
-
 
 @functools.cache
 def _find_llvm_bin() -> Path:
@@ -59,9 +51,10 @@ def _compile_exo_c(procs: list[Procedure]) -> ctypes.CDLL:
 def _compile_xdsl_mlir(procs: list[Procedure]) -> ctypes.CDLL:
     mlir_text = str(xdsl_compile_procs(procs))
     d = Path(tempfile.mkdtemp())
-    (d / "o.mlir").write_text(mlir_text)
-    subprocess.run(["bash", "-c", _MLIR_SCRIPT.format(llvm=_find_llvm_bin(), mlir=d / "o.mlir", obj=d / "o.o", so=d / "lib.so")], check=True)
-    return ctypes.CDLL(str(d / "lib.so"))
+    mlir, so = d / "o.mlir", d / "lib.so"
+    mlir.write_text(mlir_text)
+    subprocess.run(f"{_find_llvm_bin()}/mlir-translate --mlir-to-llvmir {mlir} | clang -shared -x ir -o {so} -", shell=True, check=True)
+    return ctypes.CDLL(str(so))
 
 
 def _call(lib: ctypes.CDLL, proc_ir: Any, kwargs: dict[str, Any], *, has_ctxt: bool) -> dict[str, np.ndarray]:
