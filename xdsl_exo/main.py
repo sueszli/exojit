@@ -17,22 +17,20 @@ from exo.core.LoopIR import LoopIR, T
 from exo.main import get_procs_from_module, load_user_code
 from xdsl.builder import Builder
 from xdsl.context import Context
-from xdsl.dialects import llvm, memref, scf
+from xdsl.dialects import cf, llvm, memref
 from xdsl.dialects.builtin import BoolAttr, Builtin, FloatAttr, IndexType, IntAttr, IntegerAttr, MemRefType, ModuleOp, NoneAttr, StringAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
 from xdsl.dialects.llvm import FNegOp
-from xdsl.dialects.scf import ForOp, IfOp, YieldOp
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
 from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriteWalker
 from xdsl.rewriter import InsertPoint
 from xdsl.transforms.canonicalize import CanonicalizePass
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
-from xdsl.transforms.convert_scf_to_cf import ConvertScfToCf
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.scoped_dict import ScopedDict
 
 from xdsl_exo.patches_intrinsics import ConvertVecIntrinsic
-from xdsl_exo.patches_llvm import ConvertArithAddiI64, ConvertCmpiPattern, ExtendedConvertMemRefToPtr, FCmpOp, LLVMIntrinsics, RewriteMemRefTypes, SelectOp
+from xdsl_exo.patches_llvm import ExtendedConvertMemRefToPtr, FCmpOp, LLVMIntrinsics, RewriteMemRefTypes, SelectOp
 from xdsl_exo.patches_llvmlite import jit_compile
 
 
@@ -361,44 +359,76 @@ class IRGenerator:
         self._memref_store(result, memref_val, idx)
 
     def _stmt_if(self, if_stmt: LoopIR.If) -> None:
-        # lower if/else to scf.if with true and false regions
+        # lower if/else to cf.cond_br with true, false, and merge blocks
         cond = self._expr(if_stmt.cond)
 
-        with self._tmp_state():
-            true_block = Block()
-            self.builder = Builder(insertion_point=InsertPoint.at_end(true_block))
-            for stmt in if_stmt.body:
-                self._stmt(stmt)
-            self.builder.insert(YieldOp())
+        region = self.builder.insertion_point.block.parent_region()
+        true_block = Block()
+        false_block = Block()
+        merge_block = Block()
+        region.add_block(true_block)
+        region.add_block(false_block)
 
-            false_block = Block()
-            self.builder = Builder(insertion_point=InsertPoint.at_end(false_block))
-            for stmt in if_stmt.orelse:
-                self._stmt(stmt)
-            self.builder.insert(YieldOp())
+        self.builder.insert(cf.ConditionalBranchOp(cond, true_block, [], false_block, []))
 
-        self.builder.insert(IfOp(cond, [], Region(true_block), Region(false_block)))
+        # true branch
+        self.builder = Builder(insertion_point=InsertPoint.at_end(true_block))
+        for stmt in if_stmt.body:
+            self._stmt(stmt)
+        self.builder.insert(cf.BranchOp(merge_block))
+
+        # false branch
+        self.builder = Builder(insertion_point=InsertPoint.at_end(false_block))
+        for stmt in if_stmt.orelse:
+            self._stmt(stmt)
+        self.builder.insert(cf.BranchOp(merge_block))
+
+        # continue at merge
+        region.add_block(merge_block)
+        self.builder = Builder(insertion_point=InsertPoint.at_end(merge_block))
 
     def _stmt_for(self, for_stmt: LoopIR.For) -> None:
-        # lower for loop to scf.for with lo/hi bounds and step inferred from bound types
+        # lower for loop to cf.br/cond_br with header, body, and exit blocks
         lo = self._expr(for_stmt.lo)
         hi = self._expr(for_stmt.hi)
         assert lo.type == hi.type
         step = self._emit(llvm.ConstantOp(IntegerAttr(1, lo.type), lo.type))
 
-        with self._tmp_state():
-            loop_block = Block(arg_types=[lo.type])
-            self.builder = Builder(insertion_point=InsertPoint.at_end(loop_block))
-            self.symbol_table = ScopedDict(self._syms)
+        region = self.builder.insertion_point.block.parent_region()
+        header_block = Block(arg_types=[lo.type])
+        body_block = Block()
+        exit_block = Block()
+        region.add_block(header_block)
+        region.add_block(body_block)
 
-            self._syms[repr(for_stmt.iter)] = loop_block.args[0]
-            self._types[repr(for_stmt.iter)] = T.Index
+        # branch from current block to header with initial IV
+        self.builder.insert(cf.BranchOp(header_block, lo))
 
-            for stmt in for_stmt.body:
-                self._stmt(stmt)
-            self.builder.insert(YieldOp())
+        # header: condition check
+        self.builder = Builder(insertion_point=InsertPoint.at_end(header_block))
+        iv = header_block.args[0]
+        cond = self._emit(llvm.ICmpOp(iv, hi, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64)))
+        self.builder.insert(cf.ConditionalBranchOp(cond, body_block, [], exit_block, []))
 
-        self.builder.insert(ForOp(lo, hi, step, [], Region(loop_block)))
+        # body: emit loop body in a child symbol scope
+        self.builder = Builder(insertion_point=InsertPoint.at_end(body_block))
+        parent_syms = self.symbol_table
+        self.symbol_table = ScopedDict(self._syms)
+        self._syms[repr(for_stmt.iter)] = iv
+        self._types[repr(for_stmt.iter)] = T.Index
+
+        for stmt in for_stmt.body:
+            self._stmt(stmt)
+
+        # after body: increment IV and branch back to header
+        next_iv = self._emit(llvm.AddOp(iv, step))
+        self.builder.insert(cf.BranchOp(header_block, next_iv))
+
+        self.symbol_table = parent_syms
+
+        # continue at exit block
+        region.add_block(exit_block)
+        self.builder = Builder(insertion_point=InsertPoint.at_end(exit_block))
 
     def _stmt_alloc(self, alloc: LoopIR.Alloc) -> None:
         # lower alloc to llvm.call @malloc (DRAM) or llvm.alloca (stack)
@@ -503,6 +533,7 @@ class IRGenerator:
 
         with self._tmp_state(inherit=False):
             block = Block(arg_types=input_types)
+            func_region = Region(block)
             self.builder = Builder(insertion_point=InsertPoint.at_end(block))
 
             self.symbol_table = ScopedDict(local_scope={repr(arg.name): val for arg, val in zip(procedure.args, block.args)})
@@ -513,7 +544,7 @@ class IRGenerator:
 
             self.builder.insert(llvm.ReturnOp())
 
-        self._insert_at_module(llvm.FuncOp(procedure.name, func_type, linkage=llvm.LinkageAttr("external"), body=Region(block)))
+        self._insert_at_module(llvm.FuncOp(procedure.name, func_type, linkage=llvm.LinkageAttr("external"), body=func_region))
 
     def generate(self, procs: list[LoopIR.proc]) -> ModuleOp:
         for proc in procs:
@@ -530,7 +561,7 @@ def _context() -> Context:
     ctx.load_dialect(Builtin)
     ctx.load_dialect(llvm.LLVM)
     ctx.load_dialect(memref.MemRef)
-    ctx.load_dialect(scf.Scf)
+    ctx.load_dialect(cf.Cf)
     ctx.load_dialect(LLVMIntrinsics)
     return ctx
 
@@ -550,8 +581,6 @@ def _transform(analyzed_procs: list) -> ModuleOp:
     ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
     _rewrite([RewriteMemRefTypes()])  # MemRefType -> llvm.ptr on all values
     _rewrite([ConvertVecIntrinsic()])  # vec_*/mm256_* calls -> llvm/vector ops
-    ConvertScfToCf().apply(ctx, module)  # scf -> cf
-    _rewrite([ConvertCmpiPattern(), ConvertArithAddiI64()])  # arith.{cmpi,addi} from scf-to-cf -> llvm
     ReconcileUnrealizedCastsPass().apply(ctx, module)  # fold paired unrealized casts
     module.verify()
 

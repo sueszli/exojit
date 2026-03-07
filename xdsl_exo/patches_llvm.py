@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from xdsl.context import Context
-from xdsl.dialects import arith, builtin, llvm, memref, scf
+from xdsl.dialects import builtin, llvm, memref
 from xdsl.dialects.builtin import DYNAMIC_INDEX, I1, AnyFloatConstr, IntegerAttr, MemRefType, StringAttr, UnrealizedConversionCastOp, i1, i64
 from xdsl.dialects.llvm import LLVMPointerType
 from xdsl.ir import BlockArgument, Dialect, Operation, OpResult, SSAValue
@@ -79,16 +79,21 @@ def _unwrap_i64(val: SSAValue) -> SSAValue:
 
 
 def _loop_ub_as_i64(index: SSAValue) -> SSAValue | None:
-    # exo emits unrealized_cast(iv:i64 -> index) before using a loop IV as a memref index; unwrap it
+    # trace index -> unwrap cast -> block arg -> llvm.icmp in header block -> extract upper bound
     if isinstance(index, OpResult) and isinstance(index.op, UnrealizedConversionCastOp):
         inputs = list(index.op.operands)
         iv = inputs[0] if len(inputs) == 1 else index
     else:
         iv = index
-    if not isinstance(iv, BlockArgument) or iv.index != 0 or not isinstance(for_op := iv.block.parent_op(), scf.ForOp):
+    if not isinstance(iv, BlockArgument) or iv.index != 0:
         return None
-    ub = for_op.ub
-    return ub if ub.type == i64 else None
+    for op in iv.block.ops:
+        if isinstance(op, llvm.ICmpOp):
+            if op.lhs == iv:
+                return op.rhs if op.rhs.type == i64 else None
+            if op.rhs == iv:
+                return op.lhs if op.lhs.type == i64 else None
+    return None
 
 
 def _get_target_ptr(memref_val: SSAValue, memref_type: builtin.MemRefType, indices: list[SSAValue], rewriter: PatternRewriter) -> SSAValue:
@@ -101,7 +106,7 @@ def _get_target_ptr(memref_val: SSAValue, memref_type: builtin.MemRefType, indic
         if shape[i] != DYNAMIC_INDEX:
             return iconst(shape[i])
         ub = _loop_ub_as_i64(indices[i])
-        assert ub is not None, f"dynamic dim {i}: index is not an scf.for induction variable"
+        assert ub is not None
         return ub
 
     # row-major strides: stride[rank-1]=1, stride[i]=stride[i+1]*dim[i+1]
@@ -195,14 +200,6 @@ class ConvertSubviewPattern(RewritePattern):
 
 
 @dataclass
-class ConvertCmpiPattern(RewritePattern):
-    # arith.cmpi uses predicate ints 0-9 identical to llvm.icmp's ICmpPredicateFlag ints
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: arith.CmpiOp, rewriter: PatternRewriter, /):
-        rewriter.replace_matched_op(llvm.ICmpOp(op.lhs, op.rhs, IntegerAttr(op.predicate.value.data, i64)))
-
-
-@dataclass
 class ConvertReinterpretCastOp(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: memref.ReinterpretCastOp, rewriter: PatternRewriter, /):
@@ -240,17 +237,3 @@ class RewriteMemRefTypes(TypeConversionPattern):
     @attr_type_rewrite_pattern
     def convert_type(self, type: MemRefType) -> llvm.LLVMPointerType:
         return llvm.LLVMPointerType()
-
-
-#
-# arith.addi:i64 -> llvm.add (loop increment emitted by ConvertScfToCf)
-#
-
-
-@dataclass
-class ConvertArithAddiI64(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: arith.AddiOp, rewriter: PatternRewriter, /):
-        if op.result.type != i64:
-            return
-        rewriter.replace_matched_op(llvm.AddOp(op.lhs, op.rhs))

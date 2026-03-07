@@ -33,6 +33,7 @@
 # CHECK-NEXT:   {{.*}} = llvm.icmp "slt" {{.*}}, {{.*}} : i64
 # CHECK-NEXT:   cf.cond_br {{.*}}, ^bb4, ^bb5
 # CHECK-NEXT: ^bb4:
+# CHECK-NEXT:   {{.*}} = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:   {{.*}} = llvm.mlir.constant(1) : i64
 # CHECK-NEXT:   {{.*}} = llvm.mlir.constant(4) : i64
 # CHECK-NEXT:   {{.*}} = llvm.mul {{.*}}, {{.*}} : i64

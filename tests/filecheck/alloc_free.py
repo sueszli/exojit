@@ -19,6 +19,7 @@
 # CHECK-NEXT:   {{.*}} = llvm.add {{.*}}, {{.*}} : i64
 # CHECK-NEXT:   {{.*}} = "llvm.inttoptr"({{.*}}) : (i64) -> !llvm.ptr
 # CHECK-NEXT:   {{.*}} = "llvm.load"({{.*}}) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+# CHECK-NEXT:   {{.*}} = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:   {{.*}} = llvm.mlir.constant(1) : i64
 # CHECK-NEXT:   {{.*}} = llvm.mul {{.*}}, {{.*}} : i64
 # CHECK-NEXT:   {{.*}} = llvm.mlir.constant(4) : i64
@@ -27,6 +28,7 @@
 # CHECK-NEXT:   {{.*}} = llvm.add {{.*}}, {{.*}} : i64
 # CHECK-NEXT:   {{.*}} = "llvm.inttoptr"({{.*}}) : (i64) -> !llvm.ptr
 # CHECK-NEXT:   "llvm.store"({{.*}}, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+# CHECK-NEXT:   {{.*}} = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:   {{.*}} = llvm.mlir.constant(1) : i64
 # CHECK-NEXT:   {{.*}} = llvm.mul {{.*}}, {{.*}} : i64
 # CHECK-NEXT:   {{.*}} = llvm.mlir.constant(4) : i64

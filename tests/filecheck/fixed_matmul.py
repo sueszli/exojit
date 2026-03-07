@@ -8,11 +8,16 @@
 # CHECK-NEXT:   cf.br ^bb0({{.*}} : i64)
 # CHECK-NEXT: ^bb0({{.*}} : i64):
 # CHECK-NEXT:   {{.*}} = llvm.icmp "slt" {{.*}}, {{.*}} : i64
-# CHECK-NEXT:   cf.cond_br {{.*}}, ^bb1({{.*}} : i64), ^bb2
-# CHECK-NEXT: ^bb1({{.*}} : i64):
+# CHECK-NEXT:   cf.cond_br {{.*}}, ^bb1, ^bb2
+# CHECK-NEXT: ^bb1:
+# CHECK-NEXT:   {{.*}} = llvm.mlir.constant(0) : i64
+# CHECK-NEXT:   {{.*}} = llvm.mlir.constant(16) : i64
+# CHECK-NEXT:   {{.*}} = llvm.mlir.constant(1) : i64
+# CHECK-NEXT:   cf.br ^bb3({{.*}} : i64)
+# CHECK-NEXT: ^bb3({{.*}} : i64):
 # CHECK-NEXT:   {{.*}} = llvm.icmp "slt" {{.*}}, {{.*}} : i64
-# CHECK-NEXT:   cf.cond_br {{.*}}, ^bb3, ^bb4
-# CHECK-NEXT: ^bb3:
+# CHECK-NEXT:   cf.cond_br {{.*}}, ^bb4, ^bb5
+# CHECK-NEXT: ^bb4:
 # CHECK-NEXT:   {{.*}} = llvm.mlir.constant(0.000000e+00 : f32) : f32
 # CHECK-NEXT:   {{.*}} = llvm.mlir.constant(1) : i64
 # CHECK-NEXT:   {{.*}} = llvm.mlir.constant(16) : i64
@@ -26,11 +31,14 @@
 # CHECK-NEXT:   {{.*}} = llvm.add {{.*}}, {{.*}} : i64
 # CHECK-NEXT:   {{.*}} = "llvm.inttoptr"({{.*}}) : (i64) -> !llvm.ptr
 # CHECK-NEXT:   "llvm.store"({{.*}}, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
-# CHECK-NEXT:   cf.br ^bb5({{.*}} : i64)
-# CHECK-NEXT: ^bb5({{.*}} : i64):
+# CHECK-NEXT:   {{.*}} = llvm.mlir.constant(0) : i64
+# CHECK-NEXT:   {{.*}} = llvm.mlir.constant(16) : i64
+# CHECK-NEXT:   {{.*}} = llvm.mlir.constant(1) : i64
+# CHECK-NEXT:   cf.br ^bb6({{.*}} : i64)
+# CHECK-NEXT: ^bb6({{.*}} : i64):
 # CHECK-NEXT:   {{.*}} = llvm.icmp "slt" {{.*}}, {{.*}} : i64
-# CHECK-NEXT:   cf.cond_br {{.*}}, ^bb6, ^bb7
-# CHECK-NEXT: ^bb6:
+# CHECK-NEXT:   cf.cond_br {{.*}}, ^bb7, ^bb8
+# CHECK-NEXT: ^bb7:
 # CHECK-NEXT:   {{.*}} = llvm.mlir.constant(1) : i64
 # CHECK-NEXT:   {{.*}} = llvm.mlir.constant(16) : i64
 # CHECK-NEXT:   {{.*}} = llvm.mul {{.*}}, {{.*}} : i64
@@ -82,11 +90,11 @@
 # CHECK-NEXT:   {{.*}} = "llvm.inttoptr"({{.*}}) : (i64) -> !llvm.ptr
 # CHECK-NEXT:   "llvm.store"({{.*}}, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
 # CHECK-NEXT:   {{.*}} = llvm.add {{.*}}, {{.*}} : i64
-# CHECK-NEXT:   cf.br ^bb5({{.*}} : i64)
-# CHECK-NEXT: ^bb7:
+# CHECK-NEXT:   cf.br ^bb6({{.*}} : i64)
+# CHECK-NEXT: ^bb8:
 # CHECK-NEXT:   {{.*}} = llvm.add {{.*}}, {{.*}} : i64
-# CHECK-NEXT:   cf.br ^bb1({{.*}} : i64)
-# CHECK-NEXT: ^bb4:
+# CHECK-NEXT:   cf.br ^bb3({{.*}} : i64)
+# CHECK-NEXT: ^bb5:
 # CHECK-NEXT:   {{.*}} = llvm.add {{.*}}, {{.*}} : i64
 # CHECK-NEXT:   cf.br ^bb0({{.*}} : i64)
 # CHECK-NEXT: ^bb2:

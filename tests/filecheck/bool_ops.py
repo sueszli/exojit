@@ -19,6 +19,8 @@
 # CHECK-NEXT:   "llvm.store"({{.*}}, {{.*}}) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
 # CHECK-NEXT:   cf.br ^bb1
 # CHECK-NEXT: ^bb1:
+# CHECK-NEXT:   {{.*}} = llvm.icmp "slt" {{.*}}, {{.*}} : i64
+# CHECK-NEXT:   {{.*}} = llvm.icmp "slt" {{.*}}, {{.*}} : i64
 # CHECK-NEXT:   {{.*}} = llvm.or {{.*}}, {{.*}} : i1
 # CHECK-NEXT:   cf.cond_br {{.*}}, ^bb2, ^bb3
 # CHECK-NEXT: ^bb2:
