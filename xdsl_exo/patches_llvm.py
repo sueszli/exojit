@@ -116,6 +116,39 @@ def _loop_ub_as_i64(index: SSAValue) -> SSAValue | None:
     return None
 
 
+def _offset_ptr(
+    base: SSAValue,
+    indices: Sequence[SSAValue],
+    rank: int,
+    dim_size_fn,
+    elem_size: int,
+    ins,
+) -> SSAValue:
+    # compute base_ptr + sum(index_i * stride_i) * elem_size using row-major strides
+    iconst = lambda n: ins(llvm.ConstantOp(IntegerAttr(n, i64), i64)).result
+
+    # row-major strides: stride[rank-1]=1, stride[i]=stride[i+1]*dim[i+1]
+    strides: list[SSAValue] = [iconst(1)] * rank
+    for i in range(rank - 2, -1, -1):
+        strides[i] = ins(llvm.MulOp(strides[i + 1], dim_size_fn(i + 1))).res
+
+    # flat element offset = sum(index_i * stride_i)
+    flat: SSAValue | None = None
+    for idx, stride in zip(indices, strides):
+        term = ins(llvm.MulOp(_unwrap_i64(idx), stride)).res
+        flat = term if flat is None else ins(llvm.AddOp(flat, term)).res
+
+    # cast base -> llvm.ptr
+    base_ptr = ins(UnrealizedConversionCastOp.get([base], [LLVMPointerType()])).results[0]
+    if flat is None:
+        return base_ptr
+
+    byte_offset = ins(llvm.MulOp(flat, iconst(elem_size))).res
+    ptr_int = ins(llvm.PtrToIntOp(base_ptr)).output
+    target_int = ins(llvm.AddOp(ptr_int, byte_offset)).res
+    return ins(llvm.IntToPtrOp(target_int)).output
+
+
 def _get_target_ptr(memref_val: SSAValue, memref_type: builtin.MemRefType, indices: list[SSAValue], rewriter: PatternRewriter) -> SSAValue:
     # compute an llvm.ptr to memref_val[indices]; emits pure llvm ops, no ptr/arith dialect
     shape = memref_type.get_shape()
@@ -129,26 +162,7 @@ def _get_target_ptr(memref_val: SSAValue, memref_type: builtin.MemRefType, indic
         assert ub is not None
         return ub
 
-    # row-major strides: stride[rank-1]=1, stride[i]=stride[i+1]*dim[i+1]
-    strides: list[SSAValue] = [iconst(1)] * len(shape)
-    for i in range(len(shape) - 2, -1, -1):
-        strides[i] = ins(llvm.MulOp(strides[i + 1], dim_size(i + 1))).res
-
-    # flat element offset = sum(index_i * stride_i)
-    flat: SSAValue | None = None
-    for idx, stride in zip(indices, strides):
-        term = ins(llvm.MulOp(_unwrap_i64(idx), stride)).res
-        flat = term if flat is None else ins(llvm.AddOp(flat, term)).res
-
-    # cast memref -> llvm.ptr; ReconcileUnrealizedCastsPass folds the pair after RewriteMemRefTypes
-    base_ptr = ins(UnrealizedConversionCastOp.get([memref_val], [LLVMPointerType()])).results[0]
-    if flat is None:
-        return base_ptr
-
-    byte_offset = ins(llvm.MulOp(flat, iconst(memref_type.element_type.size))).res
-    ptr_int = ins(llvm.PtrToIntOp(base_ptr)).output
-    target_int = ins(llvm.AddOp(ptr_int, byte_offset)).res
-    return ins(llvm.IntToPtrOp(target_int)).output
+    return _offset_ptr(memref_val, indices, len(shape), dim_size, memref_type.element_type.size, ins)
 
 
 @dataclass
@@ -195,25 +209,7 @@ class ConvertSubviewPattern(RewritePattern):
             else:
                 all_offsets.append(iconst(soff))
 
-        # row-major strides: stride[rank-1]=1, stride[i]=stride[i+1]*dim[i+1]
-        strides: list[SSAValue] = [iconst(1)] * len(src_shape)
-        for i in range(len(src_shape) - 2, -1, -1):
-            strides[i] = ins(llvm.MulOp(strides[i + 1], iconst(src_shape[i + 1]))).res
-
-        # flat element offset = sum(offset_i * stride_i)
-        flat: SSAValue | None = None
-        for offset, stride in zip(all_offsets, strides):
-            term = ins(llvm.MulOp(_unwrap_i64(offset), stride)).res
-            flat = term if flat is None else ins(llvm.AddOp(flat, term)).res
-
-        base_ptr = ins(UnrealizedConversionCastOp.get([op.source], [LLVMPointerType()])).results[0]
-        if flat is not None:
-            byte_offset = ins(llvm.MulOp(flat, iconst(src_type.element_type.size))).res
-            ptr_int = ins(llvm.PtrToIntOp(base_ptr)).output
-            target_int = ins(llvm.AddOp(ptr_int, byte_offset)).res
-            result_ptr = ins(llvm.IntToPtrOp(target_int)).output
-        else:
-            result_ptr = base_ptr
+        result_ptr = _offset_ptr(op.source, all_offsets, len(src_shape), lambda i: iconst(src_shape[i]), src_type.element_type.size, ins)
 
         # wrap as result MemRefType so downstream loads/stores see the correct shape for stride computation
         rewriter.replace_op(op, UnrealizedConversionCastOp.get([result_ptr], [op.result.type]))

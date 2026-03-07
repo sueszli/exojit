@@ -519,7 +519,7 @@ class IRGenerator:
         self.seen_proc_names.add(procedure.name)
 
         if procedure.instr is not None:
-            raise NotImplementedError()
+            return  # handled as extern declarations in _stmt_call
 
         # build func signature: map each arg to its mlir type, wrapping mutated scalars in memref<1x>
         input_types = []

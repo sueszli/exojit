@@ -1,24 +1,3 @@
-# Design Review: `xdsl_exo/patches_llvm.py`
-
-**Lines:** 259
-**Role:** Defines custom LLVM dialect ops (`FCmpOp`, `SelectOp`, `BrOp`, `CondBrOp`) missing from upstream xDSL, and provides the memref-to-LLVM lowering pass (`ExtendedConvertMemRefToPtr`) plus a type-erasure pass (`RewriteMemRefTypes`).
-
-## Summary
-
-The file has three sections:
-
-1. **Custom op definitions** (L18-83): `FCmpOp`, `SelectOp`, `BrOp`, `CondBrOp` — IRDL-defined ops that fill gaps in xDSL's LLVM dialect. Each has assembly format, traits, and a convenience `__init__`.
-2. **Memref lowering patterns** (L86-244): `_unwrap_i64`, `_loop_ub_as_i64`, `_get_target_ptr`, `ConvertLoadPattern`, `ConvertStorePattern`, `ConvertSubviewPattern`, `ConvertReinterpretCastOp`, and the `ExtendedConvertMemRefToPtr` pass that orchestrates them.
-3. **Type rewriting** (L247-259): `RewriteMemRefTypes` — erases all `MemRefType` to `LLVMPointerType` after load/store/subview patterns have consumed the shape info.
-
-## What's Good
-
-- **Op definitions are minimal and correct.** Each custom op has exactly the fields needed, proper traits (`IsTerminator`, `Pure`), and `assembly_format` for round-tripping. No unnecessary boilerplate.
-- **`_unwrap_i64`** (L91-97) is a clean one-purpose utility. Peeks through `unrealized_cast(i64 -> index)` without modifying anything.
-- **`_get_target_ptr`** (L118-150) encapsulates all the row-major stride computation + byte-offset + ptr arithmetic in one place. The comments on L131 and L136 clearly explain the algorithm.
-- **`ConvertReinterpretCastOp`** (L222-226) is 2 lines of logic. Uses `UnrealizedConversionCastOp` as a deferred identity — the Reconcile pass folds it later.
-- **`ExtendedConvertMemRefToPtr`** (L229-244) cleanly bundles all memref patterns into a single `ModulePass`. The pattern ordering is explicit.
-
 ## Issues
 
 ### Severity: High
