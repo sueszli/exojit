@@ -17,6 +17,7 @@ PhiMap = dict[SSAValue, ir.PhiInstr]
 def _convert_type(mlir_type) -> ir.Type:
     match mlir_type:
         case IndexType():
+            # https://github.com/xdslproject/xdsl/pull/5705
             return ir.IntType(64)
         case _:
             return _xdsl_convert_type(mlir_type)
