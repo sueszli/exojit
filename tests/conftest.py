@@ -15,11 +15,11 @@ _gc.collect = lambda *a, **kw: 0
 # benchmark e2e tests
 #
 
-_BENCH_DIR = Path(tempfile.gettempdir()) / "xdsl_exo_bench"
+_BENCH_DIR = Path(tempfile.gettempdir()) / "compiler_bench"
 _BENCH_JSONL = _BENCH_DIR / "timings.jsonl"
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_BENCH_CSV_OUT = _PROJECT_ROOT / "benchmark.csv"
-_BENCH_PDF_OUT = _PROJECT_ROOT / "benchmark.pdf"
+_E2E_DIR = Path(__file__).resolve().parent / "e2e"
+_BENCH_CSV_OUT = _E2E_DIR / "e2e_test_times.csv"
+_BENCH_PDF_OUT = _E2E_DIR / "e2e_test_times.pdf"
 
 
 def pytest_sessionstart(session):
@@ -63,5 +63,5 @@ def _generate_pdf(csv_path: Path, pdf_path: Path) -> None:
     colors = {"exo_c": "#4e79a7", "xdsl_mlir": "#f28e2b", "jit": "#e15759"}
     n_kernels = df.height
 
-    p = ggplot(pdf, aes(x="kernel", y="time_s", fill="backend")) + geom_col(position="dodge") + coord_flip() + scale_fill_manual(values=colors) + labs(x="", y="time (s)", fill="backend", title="kernel benchmark") + theme_minimal() + theme(figure_size=(10, max(6, n_kernels * 0.22))) + theme(axis_text_y=element_text(size=7))
+    p = ggplot(pdf, aes(x="kernel", y="time_s", fill="backend")) + geom_col(position="dodge") + coord_flip() + scale_fill_manual(values=colors) + labs(x="", y="time (s)", fill="backend", title="e2e test runtimes") + theme_minimal() + theme(figure_size=(10, max(6, n_kernels * 0.22))) + theme(axis_text_y=element_text(size=7)) + theme(legend_position="bottom")
     p.save(pdf_path, verbose=False)

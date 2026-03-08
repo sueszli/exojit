@@ -52,12 +52,12 @@ how it works:
           v
       Exo LoopIR
           v
-    - - - - - - - - - - - - - - - - - - - - - - - - xDSL
+    - - - - - - - - - - - - - - - - -  xDSL
       MLIR module
           v
       MLIR LLVM dialect
           v
-    - - - - - - - - - - - - - - - - - - - - - - - - llvmlite
+    - - - - - - - - - - - - - - - - - llvmlite
       Native code
 
 references:

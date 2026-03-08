@@ -14,15 +14,15 @@ from xdsl.pattern_rewriter import PatternRewriter, RewritePattern, op_type_rewri
 #     vec_<op>_<type>          - plain version. all lanes written
 #     vec_<op>_<type>_pfx      - prefix version. only lanes 0..n-1 written (loop tails)
 #
-#     <type> = f32x8 | f64x4
+#     <type> = f32x4 | f64x2 (NEON 128-bit)
 #     <op>  = add, mul, neg, abs, fmadd1, fmadd2, fmadd_red, zero, ...
 #
 # Plain variant:
 # --------------
-#     llvm.call @vec_add_f32x8(%dst, %a, %b)
+#     llvm.call @vec_add_f32x4(%dst, %a, %b)
 #     =>
-#     %v0  = llvm.load %a : vector<8xf32>
-#     %v1  = llvm.load %b : vector<8xf32>
+#     %v0  = llvm.load %a : vector<4xf32>
+#     %v1  = llvm.load %b : vector<4xf32>
 #     %r   = llvm.fadd %v0, %v1
 #            llvm.store %r, %dst
 #
@@ -30,13 +30,13 @@ from xdsl.pattern_rewriter import PatternRewriter, RewritePattern, op_type_rewri
 # ----------------------
 # First arg is a lane-count `n`. A boolean mask selects which lanes get written.
 #
-#     llvm.call @vec_add_f32x8_pfx(%n, %dst, %a, %b)      e.g. n=3
+#     llvm.call @vec_add_f32x4_pfx(%n, %dst, %a, %b)      e.g. n=3
 #     =>
-#     %idx  = arith.constant   [0, 1, 2, 3, 4, 5, 6, 7]
-#     %bc   = vector.broadcast [3, 3, 3, 3, 3, 3, 3, 3]   (n splatted to all lanes)
-#     %mask = llvm.icmp "slt"  [T, T, T, F, F, F, F, F]   (idx < bc)
-#     %v0   = llvm.load %a : vector<8xf32>
-#     %v1   = llvm.load %b : vector<8xf32>
+#     %idx  = arith.constant   [0, 1, 2, 3]
+#     %bc   = vector.broadcast [3, 3, 3, 3]   (n splatted to all lanes)
+#     %mask = llvm.icmp "slt"  [T, T, T, F]   (idx < bc)
+#     %v0   = llvm.load %a : vector<4xf32>
+#     %v1   = llvm.load %b : vector<4xf32>
 #     %r    = llvm.fadd %v0, %v1
 #             llvm.masked_store %r, %dst, %mask
 
@@ -62,16 +62,16 @@ def _make_mask(lane_count: SSAValue, n_lanes: int, *, extend_lane_count: bool = 
     return ops + [broadcast, mask], mask.res
 
 
-def _mask_f32x8(lane_count: SSAValue) -> MaskResult:
-    return _make_mask(lane_count, 8)  # AVX2: 256-bit / 32-bit = 8 lanes
+def _mask_f32x4(lane_count: SSAValue) -> MaskResult:
+    return _make_mask(lane_count, 4)  # NEON: 128-bit / 32-bit = 4 lanes
 
 
-def _mask_f64x4(lane_count: SSAValue) -> MaskResult:
-    return _make_mask(lane_count, 4)  # AVX2: 256-bit / 64-bit = 4 lanes
+def _mask_f64x2(lane_count: SSAValue) -> MaskResult:
+    return _make_mask(lane_count, 2)  # NEON: 128-bit / 64-bit = 2 lanes
 
 
-def _mask_f64x4_ext(lane_count: SSAValue) -> MaskResult:
-    return _make_mask(lane_count, 4, extend_lane_count=True)  # lane_count is i32; upcast to i64
+def _mask_f64x2_ext(lane_count: SSAValue) -> MaskResult:
+    return _make_mask(lane_count, 2, extend_lane_count=True)  # lane_count is i32; upcast to i64
 
 
 def _build_abs(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> BuildResult:
@@ -177,60 +177,71 @@ def _reduce_handler(vec_type: VectorType) -> Handler:
     return handle
 
 
-def _build_mm256_storeu_ps(dst: SSAValue, src: SSAValue) -> tuple[Operation, ...]:
+def _build_neon_storeu(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> tuple[Operation, ...]:
     # dst[:] = src[:]
-    load = llvm.LoadOp(src, VectorType(f32, [8]))
+    load = llvm.LoadOp(src, vec_type)
     return (load, llvm.StoreOp(load.dereferenced_value, dst))
 
 
-def _build_mm256_fmadd_ps(dst: SSAValue, src_a: SSAValue, src_b: SSAValue) -> tuple[Operation, ...]:
+def _build_neon_fmadd(dst: SSAValue, src_a: SSAValue, src_b: SSAValue, *, vec_type: VectorType) -> tuple[Operation, ...]:
     # dst[:] = dst[:] + src_a[:] * src_b[:]
-    load_acc = llvm.LoadOp(dst, VectorType(f32, [8]))
-    load_a = llvm.LoadOp(src_a, VectorType(f32, [8]))
-    load_b = llvm.LoadOp(src_b, VectorType(f32, [8]))
+    load_acc = llvm.LoadOp(dst, vec_type)
+    load_a = llvm.LoadOp(src_a, vec_type)
+    load_b = llvm.LoadOp(src_b, vec_type)
     fma = vector.FMAOp(load_a.dereferenced_value, load_b.dereferenced_value, load_acc.dereferenced_value)
     return (load_acc, load_a, load_b, fma, llvm.StoreOp(fma.res, dst))
 
 
-def _build_mm256_broadcast_ss(dst: SSAValue, scalar_ptr: SSAValue) -> tuple[Operation, ...]:
-    # dst[:] = [*scalar_ptr] * 8  (scalar_ptr is already !llvm.ptr at this stage of the pipeline)
-    load = llvm.LoadOp(scalar_ptr, f32)
-    broadcast = vector.BroadcastOp(load.dereferenced_value, VectorType(f32, [8]))
+def _build_neon_broadcast(dst: SSAValue, scalar_ptr: SSAValue, *, vec_type: VectorType) -> tuple[Operation, ...]:
+    # dst[:] = [*scalar_ptr] * n_lanes  (scalar_ptr is already !llvm.ptr at this stage of the pipeline)
+    elem_type = vec_type.element_type
+    load = llvm.LoadOp(scalar_ptr, elem_type)
+    broadcast = vector.BroadcastOp(load.dereferenced_value, vec_type)
     return (load, broadcast, llvm.StoreOp(broadcast.vector, dst))
 
 
 def _make_intrinsics() -> dict[str, Handler]:
     entries: dict[str, Handler] = {}
-    for name, builder, pfx_builder, f64_mask in [
-        ("abs", _build_abs, _build_abs_pfx, _mask_f64x4_ext),
-        ("add_red", _build_add_red, None, _mask_f64x4_ext),
-        ("copy", _build_copy, None, _mask_f64x4_ext),
-        ("load", _build_copy, None, _mask_f64x4_ext),
-        ("store", _build_copy, None, _mask_f64x4),
-        ("add", _build_add, None, _mask_f64x4),
-        ("mul", _build_mul, None, _mask_f64x4),
-        ("neg", _build_neg, None, _mask_f64x4),
-        ("brdcst_scl", _build_broadcast, None, _mask_f64x4),
-        ("fmadd2", _build_fma, None, _mask_f64x4),
-        ("fmadd1", _build_fma, None, _mask_f64x4),
-        ("fmadd_red", _build_fma_red, None, _mask_f64x4),
-        ("zero", _build_zero, None, _mask_f64x4),
-    ]:
+
+    _OPS: list[tuple[str, BuilderFn, BuilderFn | None, bool]] = [
+        ("abs", _build_abs, _build_abs_pfx, True),
+        ("add_red", _build_add_red, None, True),
+        ("copy", _build_copy, None, True),
+        ("load", _build_copy, None, True),
+        ("store", _build_copy, None, False),
+        ("add", _build_add, None, False),
+        ("mul", _build_mul, None, False),
+        ("neg", _build_neg, None, False),
+        ("brdcst_scl", _build_broadcast, None, False),
+        ("fmadd2", _build_fma, None, False),
+        ("fmadd1", _build_fma, None, False),
+        ("fmadd_red", _build_fma_red, None, False),
+        ("zero", _build_zero, None, False),
+    ]
+
+    _F32X4 = VectorType(f32, [4])
+    _F64X2 = VectorType(f64, [2])
+
+    for name, builder, pfx_builder, uses_ext in _OPS:
         actual_pfx_builder = pfx_builder if pfx_builder is not None else builder
-        for suffix, vec_type, mask_fn in [
-            ("f32x8", VectorType(f32, [8]), _mask_f32x8),
-            ("f64x4", VectorType(f64, [4]), f64_mask),
-        ]:
-            entries[f"vec_{name}_{suffix}"] = _plain_handler(builder, vec_type)
-            entries[f"vec_{name}_{suffix}_pfx"] = _pfx_handler(actual_pfx_builder, vec_type, mask_fn)
+        chosen_f64_mask = _mask_f64x2_ext if uses_ext else _mask_f64x2
 
-    entries["vec_reduce_add_scl_f32x8"] = _reduce_handler(VectorType(f32, [8]))
-    entries["vec_reduce_add_scl_f64x4"] = _reduce_handler(VectorType(f64, [4]))
+        entries[f"vec_{name}_f32x4"] = _plain_handler(builder, _F32X4)
+        entries[f"vec_{name}_f32x4_pfx"] = _pfx_handler(actual_pfx_builder, _F32X4, _mask_f32x4)
+        entries[f"vec_{name}_f64x2"] = _plain_handler(builder, _F64X2)
+        entries[f"vec_{name}_f64x2_pfx"] = _pfx_handler(actual_pfx_builder, _F64X2, chosen_f64_mask)
 
-    entries["mm256_storeu_ps"] = lambda args: _build_mm256_storeu_ps(*args)
-    entries["mm256_loadu_ps"] = lambda args: _build_mm256_storeu_ps(*args)  # same lowering in Exo's calling convention
-    entries["mm256_fmadd_ps"] = lambda args: _build_mm256_fmadd_ps(*args)
-    entries["mm256_broadcast_ss"] = lambda args: _build_mm256_broadcast_ss(*args)
+    entries["vec_reduce_add_scl_f32x4"] = _reduce_handler(_F32X4)
+    entries["vec_reduce_add_scl_f64x2"] = _reduce_handler(_F64X2)
+
+    entries["neon_storeu_f32x4"] = lambda args: _build_neon_storeu(*args, vec_type=_F32X4)
+    entries["neon_loadu_f32x4"] = lambda args: _build_neon_storeu(*args, vec_type=_F32X4)
+    entries["neon_fmadd_f32x4"] = lambda args: _build_neon_fmadd(*args, vec_type=_F32X4)
+    entries["neon_broadcast_f32x4"] = lambda args: _build_neon_broadcast(*args, vec_type=_F32X4)
+    entries["neon_storeu_f64x2"] = lambda args: _build_neon_storeu(*args, vec_type=_F64X2)
+    entries["neon_loadu_f64x2"] = lambda args: _build_neon_storeu(*args, vec_type=_F64X2)
+    entries["neon_fmadd_f64x2"] = lambda args: _build_neon_fmadd(*args, vec_type=_F64X2)
+    entries["neon_broadcast_f64x2"] = lambda args: _build_neon_broadcast(*args, vec_type=_F64X2)
 
     return entries
 

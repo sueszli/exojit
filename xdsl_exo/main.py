@@ -31,7 +31,7 @@ from xdsl.utils.scoped_dict import ScopedDict
 
 from xdsl_exo.patches_intrinsics import ConvertVecIntrinsic
 from xdsl_exo.patches_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, RewriteMemRefTypes, SelectOp
-from xdsl_exo.patches_llvmlite import jit_compile
+from xdsl_exo.patches_llvmlite import emit_assembly, jit_compile
 
 
 def _is_mutated(name: str, body: list) -> bool:
@@ -575,7 +575,7 @@ def _transform(analyzed_procs: list) -> ModuleOp:
     _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
     ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
     _rewrite([RewriteMemRefTypes()])  # MemRefType -> llvm.ptr on all values
-    _rewrite([ConvertVecIntrinsic()])  # vec_*/mm256_* calls -> llvm/vector ops
+    _rewrite([ConvertVecIntrinsic()])  # vec_*/neon_* calls -> llvm/vector ops
     ReconcileUnrealizedCastsPass().apply(ctx, module)  # fold paired unrealized casts
     module.verify()
 
@@ -606,9 +606,10 @@ def compile_procs(library: Procedure | Sequence[Procedure]) -> ModuleOp:
 
 def main():
     parser = ArgumentParser(description="Compile an Exo library to MLIR.")
-    parser.add_argument("source", type=str, help="Source file to compile")
-    parser.add_argument("-o", "--output", help="Output file. Defaults to stdout.")
-    parser.add_argument("--jit", action="store_true", help="JIT-compile to native code via llvmlite")
+    parser.add_argument("source", type=str, help="Exo source file (.py)")
+    parser.add_argument("-o", "--output", help="Output file (default: stdout)")
+    parser.add_argument("--jit", action="store_true", help="JIT-compile via llvmlite")
+    parser.add_argument("--asm", action="store_true", help="Emit assembly instead of MLIR")
     args = parser.parse_args()
 
     src = Path(args.source)
@@ -624,10 +625,12 @@ def main():
         jit_compile(module)
         return
 
+    output = str(emit_assembly(module) if args.asm else module)
+
     if not args.output or args.output == "-":
-        print(module)
+        print(output)
         return
 
     dst = Path(args.output)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(str(module))
+    dst.write_text(output)

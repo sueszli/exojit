@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import time
 
 import numpy as np
@@ -64,17 +63,14 @@ def v4_2d_tile(C: f32[256, 256] @ DRAM, A: f32[256, 256] @ DRAM, B: f32[256, 256
 
 KERNELS = [v0_naive, v1_reorder, v2_k_tile, v3_unroll, v4_2d_tile]
 
-_FN_TYPE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
-_cache: dict[str, ctypes.CFUNCTYPE] = {}
+_cache: dict = {}
 
 
 def _get_fn(p):
     name = p.name()
     if name not in _cache:
-        engine = jit_compile(compile_procs([p]))
-        fn = _FN_TYPE(engine.get_function_address(name))
-        fn._engine = engine
-        _cache[name] = fn
+        fns = jit_compile(compile_procs(p))
+        _cache[name] = fns[name]
     return _cache[name]
 
 

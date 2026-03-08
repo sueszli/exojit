@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import ctypes
-
 import numpy as np
 from exo import *
 
@@ -18,13 +16,11 @@ def matmul(C: f32[4, 4] @ DRAM, A: f32[4, 4] @ DRAM, B: f32[4, 4] @ DRAM):
                 C[i, j] += A[i, k] * B[k, j]
 
 
-engine = jit_compile(compile_procs([matmul]))
-fn = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(engine.get_function_address("matmul"))
+compiled_fns = jit_compile(compile_procs(matmul))
+input_matrix = np.arange(16, dtype=np.float32).reshape(4, 4)
+identity = np.eye(4, dtype=np.float32)
+result = np.zeros((4, 4), dtype=np.float32)
 
-A = np.arange(16, dtype=np.float32).reshape(4, 4)
-B = np.eye(4, dtype=np.float32)
-C = np.zeros((4, 4), dtype=np.float32)
-
-fn(C.ctypes.data, A.ctypes.data, B.ctypes.data)
-assert np.allclose(C, A @ B)
-print(C)
+compiled_fns["matmul"](result.ctypes.data, input_matrix.ctypes.data, identity.ctypes.data)
+assert np.allclose(result, input_matrix @ identity)
+print(result)

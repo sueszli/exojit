@@ -27,7 +27,7 @@ from xdsl_exo.patches_llvmlite import jit_compile
 #
 
 
-_BENCH_DIR = Path(tempfile.gettempdir()) / "xdsl_exo_bench"
+_BENCH_DIR = Path(tempfile.gettempdir()) / "compiler_bench"
 _BENCH_JSONL = _BENCH_DIR / "timings.jsonl"
 
 
@@ -118,9 +118,8 @@ def _call(lib: ctypes.CDLL, proc_ir: Any, kwargs: dict[str, Any], *, has_ctxt: b
     return bufs
 
 
-def _call_jit(engine, proc_ir: Any, kwargs: dict[str, Any]) -> dict[str, np.ndarray]:
-    addr = engine.get_function_address(proc_ir.name)
-    argtypes: list = []
+def _call_jit(fns: dict, proc_ir: Any, kwargs: dict[str, Any]) -> dict[str, np.ndarray]:
+    fn = fns[proc_ir.name]
     args: list = []
     bufs: dict[str, np.ndarray] = {}
 
@@ -129,17 +128,14 @@ def _call_jit(engine, proc_ir: Any, kwargs: dict[str, Any]) -> dict[str, np.ndar
         val = kwargs[name]
 
         if isinstance(arg.type, (LoopIR.Size, LoopIR.Index)):
-            argtypes += [ctypes.c_int64]
             args += [int(val)]
         elif isinstance(arg.type, LoopIR.Tensor):
             np_dtype, _ = _TYPES[str(arg.type.basetype())]
             arr = np.array(val, dtype=np_dtype)
             bufs[name] = arr
-            argtypes += [ctypes.c_void_p]
             args += [arr.ctypes.data]
 
-    cfunc = ctypes.CFUNCTYPE(None, *argtypes)(addr)
-    cfunc(*args)
+    fn(*args)
     return bufs
 
 
@@ -152,8 +148,8 @@ def assert_match(proc: Procedure, **kwargs: Any) -> None:
     xdsl_lib = _compile_xdsl_mlir([proc])
     xdsl_bufs, t_xdsl = _timed(_call, xdsl_lib, ir, deepcopy(kwargs), has_ctxt=False)
 
-    jit_engine = jit_compile(xdsl_compile_procs([proc]))
-    jit_bufs, t_jit = _timed(_call_jit, jit_engine, ir, deepcopy(kwargs))
+    jit_fns = jit_compile(xdsl_compile_procs(proc))
+    jit_bufs, t_jit = _timed(_call_jit, jit_fns, ir, deepcopy(kwargs))
 
     _record_timing(ir.name, t_exo, t_xdsl, t_jit)
 
