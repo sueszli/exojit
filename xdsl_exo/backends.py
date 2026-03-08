@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 import ctypes
-import fcntl
-import functools
-import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
-import time
 from copy import deepcopy
+from enum import Enum, auto
+from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from exo import compile_procs as exo_compile_procs
@@ -22,33 +20,11 @@ from exo.core.LoopIR import LoopIR
 from xdsl_exo.main import compile_procs as xdsl_compile_procs
 from xdsl_exo.patches_llvmlite import jit_compile
 
-#
-# benchmarking
-#
 
-
-_BENCH_DIR = Path(tempfile.gettempdir()) / "compiler_bench"
-_BENCH_JSONL = _BENCH_DIR / "timings.jsonl"
-
-
-def _timed(fn, *args, **kw):
-    t0 = time.perf_counter()
-    result = fn(*args, **kw)
-    return result, time.perf_counter() - t0
-
-
-def _record_timing(kernel: str, exo_c: float, xdsl_mlir: float, jit: float) -> None:
-    _BENCH_DIR.mkdir(exist_ok=True)
-    row = json.dumps({"kernel": kernel, "exo_c": exo_c, "xdsl_mlir": xdsl_mlir, "jit": jit})
-    with open(_BENCH_JSONL, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        f.write(row + "\n")
-        fcntl.flock(f, fcntl.LOCK_UN)
-
-
-#
-# testing
-#
+class Backend(Enum):
+    EXO_C = auto()  # exo's native C codegen -> clang -> .so (reference)
+    MLIR = auto()  # xdsl -> mlir-translate + clang -> .so
+    JIT = auto()  # xdsl -> llvmlite JIT (in-memory)
 
 
 _TYPES: dict[str, tuple[type, type]] = {
@@ -63,7 +39,7 @@ _TYPES: dict[str, tuple[type, type]] = {
 }
 
 
-@functools.cache
+@cache
 def _find_llvm_bin() -> Path:
     if env := os.environ.get("LLVM_BIN"):
         return Path(env)
@@ -103,15 +79,16 @@ def _call(lib: ctypes.CDLL, proc_ir: Any, kwargs: dict[str, Any], *, has_ctxt: b
         name = re.sub(r"_\d+$", "", str(arg.name))
         val = kwargs[name]
 
-        if isinstance(arg.type, (LoopIR.Size, LoopIR.Index)):
-            argtypes += [ctypes.c_long]
-            args += [int(val)]
-        elif isinstance(arg.type, LoopIR.Tensor):
-            np_dtype, c_type = _TYPES[str(arg.type.basetype())]
-            arr = np.array(val, dtype=np_dtype)
-            bufs[name] = arr
-            argtypes += [ctypes.POINTER(c_type)]
-            args += [arr.ctypes.data_as(ctypes.POINTER(c_type))]
+        match arg.type:
+            case LoopIR.Size() | LoopIR.Index():
+                argtypes += [ctypes.c_long]
+                args += [int(val)]
+            case LoopIR.Tensor():
+                np_dtype, c_type = _TYPES[str(arg.type.basetype())]
+                arr = np.array(val, dtype=np_dtype)
+                bufs[name] = arr
+                argtypes += [ctypes.POINTER(c_type)]
+                args += [arr.ctypes.data_as(ctypes.POINTER(c_type))]
 
     fn.argtypes, fn.restype = argtypes, None
     fn(*args)
@@ -127,33 +104,36 @@ def _call_jit(fns: dict, proc_ir: Any, kwargs: dict[str, Any]) -> dict[str, np.n
         name = re.sub(r"_\d+$", "", str(arg.name))
         val = kwargs[name]
 
-        if isinstance(arg.type, (LoopIR.Size, LoopIR.Index)):
-            args += [int(val)]
-        elif isinstance(arg.type, LoopIR.Tensor):
-            np_dtype, _ = _TYPES[str(arg.type.basetype())]
-            arr = np.array(val, dtype=np_dtype)
-            bufs[name] = arr
-            args += [arr.ctypes.data]
+        match arg.type:
+            case LoopIR.Size() | LoopIR.Index():
+                args += [int(val)]
+            case LoopIR.Tensor():
+                np_dtype, _ = _TYPES[str(arg.type.basetype())]
+                arr = np.array(val, dtype=np_dtype)
+                bufs[name] = arr
+                args += [arr.ctypes.data]
 
     fn(*args)
     return bufs
 
 
-def assert_match(proc: Procedure, **kwargs: Any) -> None:
+def compile_and_load(proc: Procedure, backend: Backend) -> Callable[..., dict[str, np.ndarray]]:
+    # compile a procedure and return a callable.
+    # fn(**kwargs) -> {buffer_name: np.ndarray} with mutated output buffers.
     ir = proc._loopir_proc
 
-    exo_lib = _compile_exo_c([proc])
-    exo_bufs, t_exo = _timed(_call, exo_lib, ir, deepcopy(kwargs), has_ctxt=True)
+    match backend:
+        case Backend.EXO_C:
+            lib = _compile_exo_c([proc])
+            return lambda **kwargs: _call(lib, ir, deepcopy(kwargs), has_ctxt=True)
 
-    xdsl_lib = _compile_xdsl_mlir([proc])
-    xdsl_bufs, t_xdsl = _timed(_call, xdsl_lib, ir, deepcopy(kwargs), has_ctxt=False)
+        case Backend.MLIR:
+            lib = _compile_xdsl_mlir([proc])
+            return lambda **kwargs: _call(lib, ir, deepcopy(kwargs), has_ctxt=False)
 
-    jit_fns = jit_compile(xdsl_compile_procs(proc))
-    jit_bufs, t_jit = _timed(_call_jit, jit_fns, ir, deepcopy(kwargs))
+        case Backend.JIT:
+            fns = jit_compile(xdsl_compile_procs(proc))
+            return lambda **kwargs: _call_jit(fns, ir, deepcopy(kwargs))
 
-    _record_timing(ir.name, t_exo, t_xdsl, t_jit)
-
-    for name in exo_bufs:
-        e, x, j = exo_bufs[name], xdsl_bufs[name], jit_bufs[name]
-        np.testing.assert_allclose(x, e, atol=1e-6, err_msg=f"xdsl mismatch on buffer '{name}'")
-        np.testing.assert_allclose(j, e, atol=1e-6, err_msg=f"jit mismatch on buffer '{name}'")
+        case _:
+            assert False

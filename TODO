@@ -1,11 +1,4 @@
-in the demo also do some optimizations
+improve backends.py
 
-improve readme and add a proper snippet to explains
-
-the benchmarking utils in @tests/e2e/conftest.py seem generally useful. can we move them to xdsl_exo/bench.py
-would be cool to have some wrappers that let us just pass the function and choose any backend with an enum.
-this would also be useful to have for the main. maybe bench.py is the wrong name but backends.py?
-
-rename project to xnumpy?
-
-write report
+rename project to xnumpy
+improve readme, report

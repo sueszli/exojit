@@ -8,8 +8,30 @@ output:
   pdf_document:
     latex_engine: pdflatex
     keep_tex: false
-    includes:
-      in_header: header.tex
+header-includes:
+  - \usepackage{flushend}
+  - \usepackage{titlesec}
+  - \usepackage{enumitem}
+  - \usepackage{fancyhdr}
+  - \usepackage{abstract}
+  - \usepackage{booktabs}
+  - \usepackage{float}
+  - \titleformat{\section}{\normalfont\large\bfseries}{\thesection.}{0.5em}{}
+  - \titleformat{\subsection}{\normalfont\normalsize\bfseries}{\thesubsection}{0.5em}{}
+  - \titlespacing*{\section}{0pt}{1.8ex plus 0.3ex minus 0.2ex}{0.8ex plus 0.1ex}
+  - \titlespacing*{\subsection}{0pt}{1.2ex plus 0.2ex minus 0.1ex}{0.5ex plus 0.1ex}
+  - \setlist{nosep, leftmargin=1.2em}
+  - \renewcommand{\abstractnamefont}{\normalfont\bfseries}
+  - \renewcommand{\abstracttextfont}{\normalfont\small}
+  - \setlength{\parskip}{0.5ex plus 0.1ex minus 0.1ex}
+  - \setlength{\parindent}{1em}
+  - \setlength{\columnsep}{0.3in}
+  - \setlength{\abovecaptionskip}{4pt}
+  - \setlength{\belowcaptionskip}{-2pt}
+  - \pagestyle{fancy}
+  - \fancyhf{}
+  - \renewcommand{\headrulewidth}{0pt}
+  - \fancyfoot[C]{\small\thepage}
 classoption: twocolumn
 fontsize: 10pt
 geometry: "left=0.7in,right=0.7in,top=0.75in,bottom=0.75in"
@@ -18,45 +40,27 @@ bibliography: []
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
-                      fig.width = 3.4, fig.height = 2.4, fig.align = "center",
-                      out.width = "\\columnwidth", fig.pos = "H")
-library(ggplot2)
-library(tibble)
-library(dplyr)
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE,
+                      fig.width=3.4, fig.height=2.4, fig.align="center",
+                      out.width="\\columnwidth", fig.pos="H")
+library(ggplot2); library(tibble); library(dplyr)
 
-theme_paper <- theme_minimal(base_size = 9) +
-  theme(
-    panel.grid.minor = element_blank(),
-    panel.grid.major.x = element_blank(),
-    plot.title = element_text(size = 9, face = "bold"),
-    axis.title = element_text(size = 8),
-    axis.text = element_text(size = 7),
-    plot.margin = margin(2, 2, 2, 2)
-  )
+theme_paper <- theme_minimal(base_size=9) +
+  theme(panel.grid.minor=element_blank(), panel.grid.major.x=element_blank(),
+        plot.title=element_text(size=9, face="bold"),
+        axis.title=element_text(size=8), axis.text=element_text(size=7),
+        plot.margin=margin(2,2,2,2))
 
-backends <- read.csv("../../benchmark.csv") %>%
-  tidyr::pivot_longer(-kernel, names_to = "backend", values_to = "time_s") %>%
-  mutate(
-    time_ms = time_s * 1000,
-    backend = factor(backend, levels = c("xdsl_mlir", "exo_c", "jit"),
-                     labels = c("xDSL+MLIR\ntools", "Exo C\n(clang)", "JIT\n(ours)"))
-  )
-
-N_saxpy <- 1024
+N <- 1024
+vlbl <- c("v0\nnaive","v1\nvectorized","v2\nunrolled 4x","v3\nunrolled 8x","numpy\n(y+=a*x)")
 saxpy <- tibble(
-  variant = factor(
-    c("v0\nnaive", "v1\nvectorized", "v2\nunrolled 4x", "v3\nunrolled 8x", "numpy\n(y+=a*x)"),
-    levels = c("v0\nnaive", "v1\nvectorized", "v2\nunrolled 4x", "v3\nunrolled 8x", "numpy\n(y+=a*x)")
-  ),
-  label = c("v0_naive", "v1_vectorized", "v2_unrolled_4x", "v3_unrolled_8x", "numpy (y+=a*x)"),
+  variant = factor(vlbl, levels=vlbl),
+  label = c("v0_naive","v1_vectorized","v2_unrolled_4x","v3_unrolled_8x","numpy (y+=a*x)"),
   time_ns = c(337.5, 83.0, 55.8, 55.4, 739.9),
   is_jit = c(TRUE, TRUE, TRUE, TRUE, FALSE)
-) %>% mutate(
-  gflops = 2 * N_saxpy / (time_ns / 1e9) / 1e9,
-  bw_gbs = 3 * N_saxpy * 4 / (time_ns / 1e9) / 1e9,
-  speedup_np = time_ns[variant == "numpy\n(y+=a*x)"] / time_ns
-)
+) %>% mutate(gflops = 2*N / (time_ns/1e9) / 1e9,
+             bw_gbs = 3*N*4 / (time_ns/1e9) / 1e9,
+             speedup_np = time_ns[variant == "numpy\n(y+=a*x)"] / time_ns)
 ```
 
 \begin{abstract}
@@ -68,11 +72,11 @@ Exo is a user-schedulable language for writing optimized hardware kernels, but i
 
 Writing fast numerical code in Python typically means writing C. The programmer implements a kernel, compiles it to a shared library, loads the result via \texttt{ctypes}, and hopes the pointer types are correct. Changing anything, such as reordering a loop or adjusting a tile size, requires repeating the entire cycle. This workflow is tolerable for production code but painful for exploration.
 
-Exo \cite{ikarashi2022exo} is a Python-embedded DSL for hardware kernels. The programmer writes a loop nest and transforms it through semantics-preserving scheduling primitives such as loop reordering, tiling, and unrolling. If the schedule typechecks, the kernel computes the same result. However, Exo only generates C. The programmer still needs a C compiler, a build system, and an FFI bridge.
+Exo [ikarashi2022exo] is a Python-embedded DSL for hardware kernels. The programmer writes a loop nest and transforms it through semantics-preserving scheduling primitives such as loop reordering, tiling, and unrolling. If the schedule typechecks, the kernel computes the same result. However, Exo only generates C. The programmer still needs a C compiler, a build system, and an FFI bridge.
 
 We ask whether we can skip C entirely. Instead of going from Exo to C to clang to a shared object to ctypes, we want to go from Exo directly to native code in one Python process.
 
-We use xDSL \cite{fehr2025xdsl} (Python-native MLIR) to lower Exo's IR to the LLVM dialect, then llvmlite \cite{llvmlite} (from Numba) to JIT-compile via MCJIT. The result is a callable function pointer, usable with NumPy arrays through \texttt{ctypes}. No files are written to disk and no external compiler is invoked.
+We use xDSL [fehr2025xdsl] (Python-native MLIR) to lower Exo's IR to the LLVM dialect, then llvmlite [llvmlite] (from Numba) to JIT-compile via MCJIT. The result is a callable function pointer, usable with NumPy arrays through \texttt{ctypes}. No files are written to disk and no external compiler is invoked.
 
 We evaluate on SAXPY ($y \mathrel{+}= a \cdot x$), a BLAS Level-1 operation, at $N{=}1024$ single-precision floats using ARM NEON 128-bit SIMD. Four progressively optimized kernel variants demonstrate the pipeline from scalar code through vectorized and unrolled NEON. The best variant runs in 55.4\,ns per call, achieving $13.4\times$ speedup over NumPy and 88\% of the theoretical hardware peak.
 
@@ -80,15 +84,15 @@ We evaluate on SAXPY ($y \mathrel{+}= a \cdot x$), a BLAS Level-1 operation, at 
 
 ## Exo
 
-Exo \cite{ikarashi2022exo} is a language for exocompilation. Instead of hiding hardware-specific optimizations inside the compiler, it exposes them as user-level scheduling operations. The programmer writes a loop nest (the algorithm) and transforms it through rewrites (the schedule). Transforms include \texttt{fission} (splitting a loop body into two loops), \texttt{reorder\_loops} (swapping two nested loops), \texttt{divide\_loop} (replacing a loop with outer and inner loops for tiling), and \texttt{unroll\_loop} (fully unrolling a constant-bound loop). Each transform preserves semantics. Exo's \texttt{@instr} decorator allows declaring custom hardware intrinsics with scheduling-visible semantics. Exo currently emits C only.
+Exo [ikarashi2022exo] is a language for exocompilation. Instead of hiding hardware-specific optimizations inside the compiler, it exposes them as user-level scheduling operations. The programmer writes a loop nest (the algorithm) and transforms it through rewrites (the schedule). Transforms include \texttt{fission} (splitting a loop body into two loops), \texttt{reorder\_loops} (swapping two nested loops), \texttt{divide\_loop} (replacing a loop with outer and inner loops for tiling), and \texttt{unroll\_loop} (fully unrolling a constant-bound loop). Each transform preserves semantics. Exo's \texttt{@instr} decorator allows declaring custom hardware intrinsics with scheduling-visible semantics. Exo currently emits C only.
 
 ## xDSL
 
-xDSL \cite{fehr2025xdsl} reimplements MLIR's core infrastructure in pure Python, including SSA-based IRs, dialects, regions, and pattern rewriting. It provides the same \texttt{memref}, \texttt{llvm}, and \texttt{builtin} dialect operations as upstream MLIR without requiring a C++ LLVM build.
+xDSL [fehr2025xdsl] reimplements MLIR's core infrastructure in pure Python, including SSA-based IRs, dialects, regions, and pattern rewriting. It provides the same \texttt{memref}, \texttt{llvm}, and \texttt{builtin} dialect operations as upstream MLIR without requiring a C++ LLVM build.
 
 ## llvmlite
 
-llvmlite \cite{llvmlite} provides a Python API for constructing LLVM IR and JIT-compiling via MCJIT. Developed for Numba, it can be used independently. The programmer constructs an \texttt{ir.Module}, parses it into MCJIT, finalizes the compilation, and retrieves a function pointer by name.
+llvmlite [llvmlite] provides a Python API for constructing LLVM IR and JIT-compiling via MCJIT. Developed for Numba, it can be used independently. The programmer constructs an \texttt{ir.Module}, parses it into MCJIT, finalizes the compilation, and retrieves a function pointer by name.
 
 # System Design
 
@@ -173,33 +177,29 @@ Each vectorized variant loads chunks of \texttt{x} and \texttt{y}, performs the 
 ## Results
 
 ```{r saxpy-results, fig.cap="SAXPY time per call (ns). The dashed line indicates the theoretical peak of 48.8\\,ns, limited by load port throughput. Blue bars are JIT kernels; coral is NumPy.", fig.height=2.6}
-ggplot(saxpy, aes(x = variant, y = time_ns, fill = is_jit)) +
-  geom_col(width = 0.6) +
-  geom_hline(yintercept = 48.8, linetype = "dashed", color = "red", linewidth = 0.4) +
-  annotate("text", x = 4.7, y = 48.8, label = "theoretical\npeak (48.8 ns)",
-           vjust = -0.3, hjust = 0.95, size = 2, color = "red", lineheight = 0.85) +
-  geom_text(aes(label = sprintf("%.0f", time_ns)), vjust = -0.5, size = 2.2) +
-  scale_fill_manual(values = c("TRUE" = "#5a9fd4", "FALSE" = "#e8a882"), guide = "none") +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
-  labs(x = NULL, y = "Time per SAXPY call (ns)") +
-  theme_paper +
-  theme(axis.text.x = element_text(size = 6.5, lineheight = 0.9))
+ggplot(saxpy, aes(variant, time_ns, fill=is_jit)) +
+  geom_col(width=0.6) +
+  geom_hline(aes(yintercept=48.8, linetype="theoretical peak (48.8 ns)"), color="red", linewidth=0.4) +
+  geom_text(aes(label=sprintf("%.0f", time_ns)), vjust=-0.5, size=2.2) +
+  scale_fill_manual(values=c("TRUE"="#5a9fd4","FALSE"="#e8a882"),
+                    labels=c("TRUE"="JIT kernel","FALSE"="NumPy"), name=NULL) +
+  scale_linetype_manual(values="dashed", name=NULL) +
+  scale_y_continuous(expand=expansion(mult=c(0, 0.15))) +
+  labs(x=NULL, y="Time per SAXPY call (ns)") + theme_paper +
+  theme(axis.text.x=element_text(size=6.5, lineheight=0.9),
+        legend.position="top", legend.key.size=unit(0.4,"cm"),
+        legend.text=element_text(size=6.5), legend.margin=margin(0,0,-5,0))
 ```
 
 \vspace{-0.5em}
 
 ```{r saxpy-table, results='asis'}
-stab <- saxpy %>%
-  transmute(
-    Variant = label,
-    `ns` = sprintf("%.1f", time_ns),
-    `GFLOP/s` = sprintf("%.1f", gflops),
-    `GB/s` = sprintf("%.1f", bw_gbs),
-    `vs NumPy` = sprintf("%.1fx", speedup_np)
-  )
-knitr::kable(stab, format = "latex", booktabs = TRUE,
-             align = c("l", "r", "r", "r", "r"),
-             caption = "SAXPY performance ($N{=}1024$, \\texttt{float32}, Apple Silicon).")
+stab <- saxpy %>% transmute(
+  Variant=label, `ns`=sprintf("%.1f",time_ns), `GFLOP/s`=sprintf("%.1f",gflops),
+  `GB/s`=sprintf("%.1f",bw_gbs), `vs NumPy`=sprintf("%.1fx",speedup_np))
+cat("\\begin{table}[H]\n\\centering\n\\resizebox{\\columnwidth}{!}{")
+knitr::kable(stab, format="latex", booktabs=TRUE, align=c("l","r","r","r","r")) %>% cat()
+cat("}\n\\caption{SAXPY performance ($N{=}1024$, \\texttt{float32}, Apple Silicon).}\n\\end{table}")
 ```
 
 Table 1 and Figure 1 show the results. The scalar \texttt{v0\_naive} kernel already achieves $2.2\times$ speedup over NumPy because the native repeat wrapper eliminates Python dispatch overhead. Vectorization (\texttt{v1}) brings a further $4\times$ improvement by processing 4 elements per NEON FMA instruction. Unrolling to 4 independent FMAs per iteration (\texttt{v2}) saturates the load ports and reaches 55.8\,ns per call. The 8-way unrolled variant (\texttt{v3}) provides no further improvement (55.4\,ns), confirming that the bottleneck is memory throughput rather than compute.
@@ -230,14 +230,11 @@ Several optimizations are applied automatically by LLVM. Adjacent loads and stor
 SAXPY performs 2 FLOPs per element (multiply and add) and transfers 12 bytes per element (read $x$, read $y$, write $y$, all f32). Table 2 shows the Apple Silicon P-core NEON resource constraints.
 
 ```{r peak-table, results='asis'}
-peak <- tibble(
-  Resource = c("NEON execution units", "Load ports", "Store ports"),
-  `Per cycle` = c(4, 3, 2),
-  `SAXPY (per 4 elems)` = c("1 FMA", "2 loads", "1 store")
-)
-knitr::kable(peak, format = "latex", booktabs = TRUE,
-             align = c("l", "c", "c"),
-             caption = "Apple Silicon P-core NEON resource constraints per cycle.")
+peak <- tibble(Resource=c("NEON exec units","Load ports","Store ports"),
+               `Per cycle`=c(4,3,2), `SAXPY (per 4 elems)`=c("1 FMA","2 loads","1 store"))
+cat("\\begin{table}[H]\n\\centering\n\\resizebox{\\columnwidth}{!}{")
+knitr::kable(peak, format="latex", booktabs=TRUE, align=c("l","c","c")) %>% cat()
+cat("}\n\\caption{Apple Silicon P-core NEON resource constraints per cycle.}\n\\end{table}")
 ```
 
 The bottleneck is load ports. Each FMA consumes 2 of the 3 available load ports, limiting throughput to 1.5 FMA operations per cycle, which corresponds to 6 elements per cycle. The theoretical minimum execution time is:
@@ -260,21 +257,6 @@ Third, the JIT kernel avoids temporary array allocation. NumPy allocates a tempo
 
 At $N{=}1024$ (4\,KB per array), all data fits in L1 cache. The advantage is therefore dominated by dispatch and allocation overhead rather than memory bandwidth.
 
-## Backend Comparison
-
-```{r backends, fig.cap="End-to-end compilation time for 16$\\times$16 matmul across three compilation backends.", fig.height=1.5, fig.width=3.4}
-ggplot(backends, aes(x = backend, y = time_ms, fill = backend)) +
-  geom_col(width = 0.55, show.legend = FALSE) +
-  geom_text(aes(label = sprintf("%.2f", time_ms)), vjust = -0.5, size = 2.2) +
-  scale_fill_manual(values = c("xDSL+MLIR\ntools" = "#e8a882", "Exo C\n(clang)" = "#82b5e8", "JIT\n(ours)" = "#5a9fd4")) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
-  labs(x = NULL, y = "ms") +
-  theme_paper +
-  theme(axis.text.x = element_text(size = 6.5, lineheight = 0.9))
-```
-
-Figure 2 compares end-to-end compilation time for a $16 \times 16$ matmul across three compilation paths: Exo's default C path (emit C, invoke clang, load shared object), xDSL lowering with external MLIR tools, and our JIT path via llvmlite. The JIT path runs in 0.47\,ms, which is $4.5\times$ faster than the C path (2.1\,ms) and $6.5\times$ faster than the MLIR toolchain (3.1\,ms). The difference is subprocess and disk I/O overhead; the JIT path stays entirely in-process.
-
 # Discussion
 
 The pipeline demonstrates that Exo kernels with custom NEON intrinsics can be JIT-compiled to near-optimal native code without leaving Python. The programmer defines a kernel, schedules it, JIT-compiles, and benchmarks, all in a single script with no Makefile and no external compiler. Scheduling guarantees correctness: the programmer changes how the kernel computes, not what it computes. The whole pipeline is approximately 1,250 lines of Python, small enough to read and modify in an afternoon.
@@ -289,7 +271,7 @@ Adding a new Exo operation requires one pattern match in the IR generator and on
 
 # Related Work
 
-Halide \cite{ragan2013halide} pioneered the algorithm/schedule separation for image processing pipelines. Exo builds on this idea but externalizes hardware knowledge to user-defined libraries rather than embedding it in the compiler. TVM \cite{chen2018tvm} extends the Halide model with learning-based auto-tuning for deep learning workloads. JAX \cite{jax} provides trace-based JIT compilation via XLA with a NumPy-like interface but without user-directed scheduling control. Numba \cite{numba} JIT-compiles Python via llvmlite through type inference but does not provide scheduling transforms. Our work is complementary: a JIT backend for a scheduling language (Exo), using a Python-native compiler stack (xDSL and llvmlite) rather than C++ LLVM.
+Halide [ragan2013halide] pioneered the algorithm/schedule separation for image processing pipelines. Exo builds on this idea but externalizes hardware knowledge to user-defined libraries rather than embedding it in the compiler. TVM [chen2018tvm] extends the Halide model with learning-based auto-tuning for deep learning workloads. JAX [jax] provides trace-based JIT compilation via XLA with a NumPy-like interface but without user-directed scheduling control. Numba [numba] JIT-compiles Python via llvmlite through type inference but does not provide scheduling transforms. Our work is complementary: a JIT backend for a scheduling language (Exo), using a Python-native compiler stack (xDSL and llvmlite) rather than C++ LLVM.
 
 # Conclusion
 
@@ -301,16 +283,16 @@ Exo kernels with NEON vector intrinsics can be JIT-compiled to native ARM64 code
 
 # References {-}
 
-\cite{ikarashi2022exo} Y. Ikarashi, G. L. Bernstein, A. Reinking, H. Genc, and J. Ragan-Kelley. Exo: Exocompilation for productive programming of hardware accelerators. In *PLDI*, 2022.
+[ikarashi2022exo] Y. Ikarashi, G. L. Bernstein, A. Reinking, H. Genc, and J. Ragan-Kelley. Exo: Exocompilation for productive programming of hardware accelerators. In *PLDI*, 2022.
 
-\cite{fehr2025xdsl} M. Fehr et al. xDSL: A common compiler ecosystem for languages that target dedicated accelerators. In *CGO*, 2025.
+[fehr2025xdsl] M. Fehr et al. xDSL: A common compiler ecosystem for languages that target dedicated accelerators. In *CGO*, 2025.
 
-\cite{llvmlite} Numba Development Team. llvmlite: A lightweight LLVM Python binding. \url{https://github.com/numba/llvmlite}.
+[llvmlite] Numba Development Team. llvmlite: A lightweight LLVM Python binding. \url{https://github.com/numba/llvmlite}.
 
-\cite{numba} S. K. Lam, A. Pitrou, and S. Seibert. Numba: A LLVM-based Python JIT compiler. In *LLVM-HPC Workshop*, 2015.
+[numba] S. K. Lam, A. Pitrou, and S. Seibert. Numba: A LLVM-based Python JIT compiler. In *LLVM-HPC Workshop*, 2015.
 
-\cite{ragan2013halide} J. Ragan-Kelley et al. Halide: A language and compiler for optimizing parallelism, locality, and recomputation in image processing pipelines. In *PLDI*, 2013.
+[ragan2013halide] J. Ragan-Kelley et al. Halide: A language and compiler for optimizing parallelism, locality, and recomputation in image processing pipelines. In *PLDI*, 2013.
 
-\cite{chen2018tvm} T. Chen et al. TVM: An automated end-to-end optimizing compiler for deep learning. In *OSDI*, 2018.
+[chen2018tvm] T. Chen et al. TVM: An automated end-to-end optimizing compiler for deep learning. In *OSDI*, 2018.
 
-\cite{jax} J. Bradbury et al. JAX: Composable transformations of Python+NumPy programs. \url{https://github.com/jax-ml/jax}.
+[jax] J. Bradbury et al. JAX: Composable transformations of Python+NumPy programs. \url{https://github.com/jax-ml/jax}.

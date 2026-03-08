@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import math
+import tempfile
 from argparse import ArgumentParser
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
 
+from exo import compile_procs as exo_compile_procs
 from exo.API import Procedure
 from exo.backend.LoopIR_compiler import find_all_subprocs
 from exo.backend.mem_analysis import MemoryAnalysis
@@ -31,7 +33,7 @@ from xdsl.utils.scoped_dict import ScopedDict
 
 from xdsl_exo.patches_intrinsics import ConvertVecIntrinsic
 from xdsl_exo.patches_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, RewriteMemRefTypes, SelectOp
-from xdsl_exo.patches_llvmlite import emit_assembly, jit_compile
+from xdsl_exo.patches_llvmlite import emit_assembly
 
 
 def _is_mutated(name: str, body: list) -> bool:
@@ -608,8 +610,10 @@ def main():
     parser = ArgumentParser(description="Compile an Exo library to MLIR.")
     parser.add_argument("source", type=str, help="Exo source file (.py)")
     parser.add_argument("-o", "--output", help="Output file (default: stdout)")
-    parser.add_argument("--jit", action="store_true", help="JIT-compile via llvmlite")
-    parser.add_argument("--asm", action="store_true", help="Emit assembly instead of MLIR")
+    fmt = parser.add_mutually_exclusive_group(required=True)
+    fmt.add_argument("--mlir", action="store_const", dest="fmt", const="mlir", help="Emit xDSL MLIR text")
+    fmt.add_argument("--asm", action="store_const", dest="fmt", const="asm", help="Emit assembly via llvmlite")
+    fmt.add_argument("--c", action="store_const", dest="fmt", const="c", help="Emit Exo's native C codegen")
     args = parser.parse_args()
 
     src = Path(args.source)
@@ -619,13 +623,17 @@ def main():
     assert isinstance(library, list)
     assert all(isinstance(proc, Procedure) for proc in library)
 
-    module = compile_procs(library)
-
-    if args.jit:
-        jit_compile(module)
-        return
-
-    output = str(emit_assembly(module) if args.asm else module)
+    match args.fmt:
+        case "c":
+            d = Path(tempfile.mkdtemp())
+            exo_compile_procs(library, d, "o.c", "o.h")
+            output = (d / "o.c").read_text()
+        case "mlir":
+            output = str(compile_procs(library))
+        case "asm":
+            output = str(emit_assembly(compile_procs(library)))
+        case _:
+            assert False
 
     if not args.output or args.output == "-":
         print(output)
