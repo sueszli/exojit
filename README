@@ -41,14 +41,7 @@ The programmer writes a kernel, applies scheduling transforms
 (e.g. tiling, vectorization, unrolling), and gets a callable
 function pointer usable with NumPy arrays through ctypes.
 
-writing your own kernels:
-
-    $ uv run xnumpy examples/demo.py --mlir
-    $ uv run xnumpy examples/demo.py --asm
-    $ uv run xnumpy examples/demo.py --c
-    $ uv run python examples/demo.py
-
-how it works:
+How it works:
 
       Exo Python source
           v
@@ -62,7 +55,18 @@ how it works:
     - - - - - - - - - - - - - - - - - llvmlite
       Native code
 
-references:
+Write your own kernels:
+
+    $ uv run xnumpy examples/demo.py --mlir
+    $ uv run xnumpy examples/demo.py --asm
+    $ uv run xnumpy examples/demo.py --c
+    $ uv run python examples/demo.py
+
+Use optimized kernels:
+
+    ... work in progress
+
+References:
 
 - https://github.com/xdslproject/xdsl/blob/main/README.md
 - https://github.com/exo-lang/exo/blob/main/docs/README.md
