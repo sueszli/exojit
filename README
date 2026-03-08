@@ -1,10 +1,10 @@
- ▄   ▄  ▄ ▄▄   ▄   ▄  ▄▄▄▄▄  ▄▄▄▄   ▄   ▄ 
-  █▄█   █▀  █  █   █  █ █ █  █▀ ▀█  ▀▄ ▄▀ 
-  ▄█▄   █   █  █   █  █ █ █  █   █   █▄█  
- ▄▀ ▀▄  █   █  ▀▄▄▀█  █ █ █  ██▄█▀   ▀█   
-                             █       ▄▀   
+▄   ▄  ▄ ▄▄   ▄   ▄  ▄▄▄▄▄  ▄▄▄▄   ▄   ▄ 
+ █▄█   █▀  █  █   █  █ █ █  █▀ ▀█  ▀▄ ▄▀ 
+ ▄█▄   █   █  █   █  █ █ █  █   █   █▄█  
+▄▀ ▀▄  █   █  ▀▄▄▀█  █ █ █  ██▄█▀   ▀█   
+                            █       ▄▀   
 
-User-scheduled SIMD kernels, JIT-compiled from pure Python.
+Vectorized scientific compute for everyone.
 
 
               \
@@ -32,14 +32,14 @@ User-scheduled SIMD kernels, JIT-compiled from pure Python.
                        <'
 
 
-xnumpy is a proof-of-concept JIT compiler that lowers
-Exo scheduling-language kernels through xDSL (Python-native
-MLIR) to native vector code via llvmlite's MCJIT — entirely
-in-process, without a C compilation step.
+xnumpy allows writing user-scheduled SIMD kernels in pure Python.
+It lowers Exo scheduling-language kernels through xDSL (Python-
+native MLIR) and JIT-compiles them to native vector code via
+llvmlite's MCJIT entirely in-process, without a C compilation step.
 
 The programmer writes a kernel, applies scheduling transforms
-(e.g. tiling, vectorization, unrolling), and gets a callable
-function pointer usable with NumPy arrays through ctypes.
+(e.g. tiling, vectorization, unrolling), and obtains a callable
+native function pointer usable with NumPy arrays via ctypes.
 
 How it works:
 
