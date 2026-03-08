@@ -15,4 +15,4 @@ fmt:
 	uvx ruff check --fix --ignore F403,F405,F821,E731 .
 
 .PHONY: precommit
-precommit: tests
+precommit: fmt tests
