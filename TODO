@@ -10,6 +10,10 @@ A few approaches, from simple to ambitious. try them all out!
 
   For this project, kernel fusion (1) is probably the most natural fit since Exo already has the scheduling machinery to compose operations.
 
+
+drop unnecessary kernels like add/sub etc. -> focus on matmul and more complex ones
+
+
 write report
 
 improve readme
