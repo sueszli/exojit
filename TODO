@@ -1,5 +1,3 @@
-rename project to xnumpy
-
 write an api that mimics numpy, try to outperform it
 
 improve readme
