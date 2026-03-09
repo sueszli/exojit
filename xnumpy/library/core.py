@@ -11,16 +11,18 @@ float32 = np.float32
 
 
 class ndarray:
-    _data: np.ndarray[Any, np.dtype[np.float32]]
+    __slots__ = ("_data", "shape", "ndim", "dtype", "size")
 
     def __init__(self, data: npt.ArrayLike) -> None:
-        self._data = np.ascontiguousarray(data, dtype=np.float32)
-        self._ptr = self._data.ctypes.data
+        if isinstance(data, np.ndarray) and data.dtype == np.float32 and data.flags["C_CONTIGUOUS"]:
+            self._data = data
+        else:
+            self._data = np.ascontiguousarray(data, dtype=np.float32)
+        self.shape = self._data.shape
+        self.ndim = self._data.ndim
+        self.dtype = self._data.dtype
+        self.size = self._data.size
 
-    shape = property(lambda self: self._data.shape)
-    dtype = property(lambda self: self._data.dtype)
-    ndim = property(lambda self: self._data.ndim)
-    size = property(lambda self: self._data.size)
     T = property(lambda self: ndarray(self._data.T))
 
     def __repr__(self) -> str:
@@ -82,9 +84,9 @@ class ndarray:
         m, k = self.shape
         k2, n = other.shape
         assert k == k2
-        out = zeros((m, n))
-        matmul(m, k, n)(out._ptr, self._ptr, other._ptr)
-        return out
+        out = np.empty((m, n), dtype=np.float32)
+        matmul(m, k, n)(out, self._data, other._data)
+        return ndarray(out)
 
     def sum(self) -> float:
         return float(self._data.sum())

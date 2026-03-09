@@ -1,6 +1,7 @@
 .PHONY: venv
 venv:
 	uv sync
+	uv pip install -e .
 
 .PHONY: tests
 tests:
@@ -13,6 +14,7 @@ fmt:
 	uvx autoflake --remove-all-unused-imports --recursive --in-place .
 	uvx black --line-length 5000 .
 	uvx ruff check --fix --ignore F403,F405,F821,E731 .
+	find . -not -path './.venv/*' \( -name "*.c" -o -name "*.h" \) | xargs clang-format -i
 
 .PHONY: benchmark
 benchmark:

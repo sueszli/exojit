@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ctypes
 import math
 import tempfile
 from collections.abc import Callable, Sequence
@@ -36,6 +35,7 @@ from xdsl.transforms.common_subexpression_elimination import CommonSubexpression
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.scoped_dict import ScopedDict
 
+from xnumpy.jitcall import JitFunc
 from xnumpy.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from xnumpy.patches_xdsl_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, RewriteMemRefTypes, SelectOp
 
@@ -57,9 +57,9 @@ _FCMP_PREDICATES: dict[str, tuple[str, bool]] = {  # mlir predicate -> (op, orde
 }
 
 
-# ===----------------------------------------------------------------------=== #
+#
 # generate xDSL MLIR
-# ===----------------------------------------------------------------------=== #
+#
 
 
 class IRGenerator:
@@ -618,9 +618,9 @@ def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
     return _lower([exo_analyze(proc) for proc in unique_procs])
 
 
-# ===----------------------------------------------------------------------=== #
+#
 # generate llvmlite IR, then JIT compile
-# ===----------------------------------------------------------------------=== #
+#
 
 
 class LLVMLiteGenerator:
@@ -750,37 +750,26 @@ def to_asm(module: ModuleOp) -> str:
     return tm.emit_assembly(mod_ref)
 
 
-_MLIR_TO_CTYPE: dict[Attribute, type] = {
-    i8: ctypes.c_int8,
-    i16: ctypes.c_int16,
-    i32: ctypes.c_int32,
-    i64: ctypes.c_int64,
-}
-
-
 @cache
-def _extract_jit_funcs(module: ModuleOp, engine: llvmlite.binding.ExecutionEngine) -> dict[str, ctypes._CFuncPtr]:
-    fns: dict[str, ctypes._CFuncPtr] = {}
+def _extract_jit_funcs(module: ModuleOp, engine: llvmlite.binding.ExecutionEngine) -> dict[str, object]:
+    fns: dict[str, object] = {}
     for op in module.ops:
         if not isinstance(op, llvm.FuncOp) or not op.body.blocks:
             continue
         name = op.sym_name.data
-        argtypes = [_MLIR_TO_CTYPE.get(t, ctypes.c_void_p) for t in op.function_type.inputs]
-        fn = ctypes.CFUNCTYPE(None, *argtypes)(engine.get_function_address(name))
-        fn._engine = engine
-        fns[name] = fn
+        fns[name] = JitFunc(engine.get_function_address(name), engine)
     return fns
 
 
-def compile_jit(proc: Procedure) -> dict[str, ctypes._CFuncPtr]:
+def compile_jit(proc: Procedure) -> dict[str, object]:
     module = to_mlir(proc)
     engine = _to_jit_engine(module)
     return _extract_jit_funcs(module, engine)
 
 
-# ===----------------------------------------------------------------------=== #
+#
 # cli entry point
-# ===----------------------------------------------------------------------=== #
+#
 
 
 @click.command()
