@@ -19,7 +19,7 @@ Path A: Direct ctypes call (fast path)
     fn(out._ptr, self._ptr, other._ptr)
   Overhead per call: ~0.5-1us (ctypes ABI crossing)
 
-Path B: _call_jit wrapper (slow path)
+Path B: _call_jit wrapper (slow path) ------> we dont care about this!
   Used by compile(proc, Backend.JIT) at main.py:828:
     return lambda **kw: _call_jit(fn, proc_ir, deepcopy(kw))
   Overhead per call: ~5-50us due to:

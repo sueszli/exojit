@@ -63,7 +63,7 @@ def _disk_cache(fn: Callable[..., Path]) -> Callable[..., Path]:
 
 @_disk_cache
 def _build_exo_so(_source: str, build_dir: Path) -> Path:
-    subprocess.run(["clang", "-shared", "-fPIC", "-O2", "-I", str(build_dir), "-o", str(build_dir / "lib.so"), str(build_dir / "o.c")], check=True)
+    subprocess.run(["clang", "-shared", "-fPIC", "-O0", "-I", str(build_dir), "-o", str(build_dir / "lib.so"), str(build_dir / "o.c")], check=True)
     return build_dir / "lib.so"
 
 
