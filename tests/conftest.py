@@ -100,10 +100,11 @@ def _timed(fn):
 def assert_match(proc: Procedure, **kwargs: Any) -> None:
     # compile proc on all backends, verify outputs match exo_c (reference), log timings
     ir = proc._loopir_proc
+    module = to_mlir(proc)
     jit_fn = compile_jit(proc)[ir.name]
     backends = {
         "exo_c": _timed(compile_exo(proc)),
-        "xdsl_mlir": _timed(compile_mlir(proc, to_mlir(proc))),
+        "xdsl_mlir": _timed(compile_mlir(proc, module)),
         "jit": _timed(lambda **kw: _call(jit_fn, ir, deepcopy(kw))),
     }
     results = {k: fn(**kwargs) for k, fn in backends.items()}

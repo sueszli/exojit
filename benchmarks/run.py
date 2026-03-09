@@ -30,7 +30,7 @@ for n in tqdm(matmul_sizes, desc="matmul"):
 
     t_np = bench(lambda A=A_np, B=B_np: A @ B)
     t_xnp = bench(lambda A=A_xnp, B=B_xnp: A @ B)
-    rows.append({"op": "matmul", "n": n, "numpy_us": t_np * 1e6, "xnumpy_us": t_xnp * 1e6, "speedup": t_np / t_xnp})
+    rows.append({"op": "matmul", "n": n, "numpy_us": t_np * 1e6, "xnumpy_us": t_xnp * 1e6, "speedup": t_xnp / t_np})
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import os
 import re
 import shutil
@@ -40,27 +41,48 @@ def llvm_bin_path() -> Path:
     return Path(subprocess.run(["brew", "--prefix", "llvm"], capture_output=True, text=True, check=True).stdout.strip()) / "bin"
 
 
+def _disk_cache(fn: Callable[..., Path]) -> Callable[..., Path]:
+    # like @cache but persists .so to disk across forked processes
+    # first arg must be source text (used as cache key)
+    cache_dir = Path(tempfile.gettempdir()) / "so_cache"
+
+    def wrapper(source: str, *args, **kwargs) -> Path:
+        cache_dir.mkdir(exist_ok=True)
+        h = hashlib.sha256(source.encode()).hexdigest()[:16]
+        cached = cache_dir / f"{h}.so"
+        if cached.exists():
+            return cached
+        so_path = fn(source, *args, **kwargs)
+        tmp = cache_dir / f"{h}.{os.getpid()}.tmp"
+        shutil.copy2(so_path, tmp)
+        os.replace(str(tmp), str(cached))  # atomic on POSIX
+        return cached
+
+    return wrapper
+
+
+@_disk_cache
+def _build_exo_so(_source: str, build_dir: Path) -> Path:
+    subprocess.run(["clang", "-shared", "-fPIC", "-O2", "-I", str(build_dir), "-o", str(build_dir / "lib.so"), str(build_dir / "o.c")], check=True)
+    return build_dir / "lib.so"
+
+
+@_disk_cache
+def _build_mlir_so(source: str) -> Path:
+    d = Path(tempfile.mkdtemp())
+    (d / "o.mlir").write_text(source)
+    subprocess.run(f"{llvm_bin_path()}/mlir-translate --mlir-to-llvmir {d / 'o.mlir'} | clang -shared -x ir -o {d / 'lib.so'} -", shell=True, check=True)
+    return d / "lib.so"
+
+
 def _exo_bin_path(proc: Procedure) -> Path:
-    # exo C codegen -> clang shared lib
     d = Path(tempfile.mkdtemp())
     exo_compile_procs([proc], d, "o.c", "o.h")
-    subprocess.run(
-        ["clang", "-shared", "-fPIC", "-O2", "-I", str(d), "-o", str(d / "lib.so"), str(d / "o.c")],
-        check=True,
-    )
-    return d / "lib.so"
+    return _build_exo_so((d / "o.c").read_text(), d)
 
 
 def _mlir_bin_path(module: ModuleOp) -> Path:
-    # MLIR -> LLVM IR -> clang shared lib
-    d = Path(tempfile.mkdtemp())
-    (d / "o.mlir").write_text(str(module))
-    subprocess.run(
-        f"{llvm_bin_path()}/mlir-translate --mlir-to-llvmir {d / 'o.mlir'} | clang -shared -x ir -o {d / 'lib.so'} -",
-        shell=True,
-        check=True,
-    )
-    return d / "lib.so"
+    return _build_mlir_so(str(module))
 
 
 def _call(fn: Callable, proc_ir: Any, kwargs: dict[str, Any], *, ctx: bool = False) -> dict[str, np.ndarray]:
