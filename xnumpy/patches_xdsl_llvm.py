@@ -178,6 +178,7 @@ def _offset_ptr_raw(base: SSAValue, indices: Sequence[SSAValue], rank: int, dim_
 
 
 def _dim_size_fn(shape: tuple[int, ...], indices: Sequence[SSAValue], ins: Callable) -> Callable[[int], SSAValue]:
+    # return a closure that resolves dimension i to its runtime SSA size (static constant or dynamic loop bound)
     def dim_size(i: int) -> SSAValue:
         if shape[i] != DYNAMIC_INDEX:
             return _iconst(ins, shape[i])
