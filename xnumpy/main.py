@@ -739,9 +739,19 @@ def _to_llvmlite_moduleref(llvmlite_module: llvmlite.ir.Module) -> tuple[llvmlit
     return mod_ref, tm
 
 
-def to_asm(library: Procedure | Sequence[Procedure] | ModuleOp) -> str:
-    # exo procedures | xDSL MLIR -> native assembly text
-    module = library if isinstance(library, ModuleOp) else to_mlir(library)
+@cache
+def to_jit_engine(module: ModuleOp) -> llvmlite.binding.ExecutionEngine:
+    # xDSL MLIR -> MCJIT execution engine (in-memory)
+    mod_ref, tm = _to_llvmlite_moduleref(LLVMLiteGenerator.generate(module))
+    engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
+    engine.finalize_object()
+    engine.run_static_constructors()
+    return engine
+
+
+@cache
+def to_asm(module: ModuleOp) -> str:
+    # xDSL MLIR -> native assembly text
     mod_ref, tm = _to_llvmlite_moduleref(LLVMLiteGenerator.generate(module))
     return tm.emit_assembly(mod_ref)
 
@@ -751,62 +761,73 @@ def to_asm(library: Procedure | Sequence[Procedure] | ModuleOp) -> str:
 # ===----------------------------------------------------------------------=== #
 
 
-_DTYPE_MAP: dict[str, tuple[type, type]] = {
-    "f16": (np.float16, ctypes.c_uint16),
-    "f32": (np.float32, ctypes.c_float),
-    "f64": (np.float64, ctypes.c_double),
-    "i8": (np.int8, ctypes.c_int8),
-    "ui8": (np.uint8, ctypes.c_uint8),
-    "i16": (np.int16, ctypes.c_int16),
-    "ui16": (np.uint16, ctypes.c_uint16),
-    "i32": (np.int32, ctypes.c_int32),
-}
+def _call_jit(fn: Callable, proc_ir: Any, kwargs: dict[str, Any]) -> dict[str, np.ndarray]:
+    dypes: dict[str, tuple[type, type]] = {  # will find a better to do this later
+        "f16": (np.float16, ctypes.c_uint16),
+        "f32": (np.float32, ctypes.c_float),
+        "f64": (np.float64, ctypes.c_double),
+        "i8": (np.int8, ctypes.c_int8),
+        "ui8": (np.uint8, ctypes.c_uint8),
+        "i16": (np.int16, ctypes.c_int16),
+        "ui16": (np.uint16, ctypes.c_uint16),
+        "i32": (np.int32, ctypes.c_int32),
+    }
 
-
-def _marshal_call(fn: Callable, proc_ir: Any, kwargs: dict[str, Any], *, mode: str) -> dict[str, np.ndarray]:
-    # marshal numpy/python kwargs into ctypes args and call fn
-    # mode: 'jit' (raw ptrs) | 'cdll' (typed) | 'cdll_ctxt' (typed + leading NULL context)
     args: list = []
-    argtypes: list = []
     bufs: dict[str, np.ndarray] = {}
-
-    if mode == "cdll_ctxt":
-        argtypes.append(ctypes.c_void_p)
-        args.append(None)
-
     for arg in proc_ir.args:
         name = re.sub(r"_\d+$", "", str(arg.name))
         val = kwargs[name]
         match arg.type:
             case LoopIR.Size() | LoopIR.Index():
                 args.append(int(val))
-                if mode != "jit":
-                    argtypes.append(ctypes.c_long)
             case LoopIR.Tensor():
-                np_dtype, c_type = _DTYPE_MAP[str(arg.type.basetype())]
+                np_dtype, _ = dypes[str(arg.type.basetype())]
                 arr = np.array(val, dtype=np_dtype)
                 bufs[name] = arr
-                if mode == "jit":
-                    args.append(arr.ctypes.data)
-                else:
-                    argtypes.append(ctypes.POINTER(c_type))
-                    args.append(arr.ctypes.data_as(ctypes.POINTER(c_type)))
-
-    if mode != "jit":
-        fn.argtypes, fn.restype = argtypes, None
+                args.append(arr.ctypes.data)
     fn(*args)
     return bufs
 
 
-def compile_jit(proc: Procedure) -> dict[str, ctypes._CFuncPtr]:
-    # exo procs -> xdsl -> llvmlite JIT. returns {name: cfunc} for each func with a body
-    module = to_mlir(proc)
-    mod_ref, tm = _to_llvmlite_moduleref(LLVMLiteGenerator.generate(module))
+def _call_cdll(fn: Callable, proc_ir: Any, kwargs: dict[str, Any], *, ctx: bool = False) -> dict[str, np.ndarray]:
+    dypes: dict[str, tuple[type, type]] = {
+        "f16": (np.float16, ctypes.c_uint16),
+        "f32": (np.float32, ctypes.c_float),
+        "f64": (np.float64, ctypes.c_double),
+        "i8": (np.int8, ctypes.c_int8),
+        "ui8": (np.uint8, ctypes.c_uint8),
+        "i16": (np.int16, ctypes.c_int16),
+        "ui16": (np.uint16, ctypes.c_uint16),
+        "i32": (np.int32, ctypes.c_int32),
+    }
 
-    engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
-    engine.finalize_object()
-    engine.run_static_constructors()
+    args: list = []
+    argtypes: list = []
+    bufs: dict[str, np.ndarray] = {}
 
+    if ctx:
+        argtypes.append(ctypes.c_void_p)
+        args.append(None)
+    for arg in proc_ir.args:
+        name = re.sub(r"_\d+$", "", str(arg.name))
+        val = kwargs[name]
+        match arg.type:
+            case LoopIR.Size() | LoopIR.Index():
+                args.append(int(val))
+                argtypes.append(ctypes.c_long)
+            case LoopIR.Tensor():
+                np_dtype, c_type = dypes[str(arg.type.basetype())]
+                arr = np.array(val, dtype=np_dtype)
+                bufs[name] = arr
+                argtypes.append(ctypes.POINTER(c_type))
+                args.append(arr.ctypes.data_as(ctypes.POINTER(c_type)))
+    fn.argtypes, fn.restype = argtypes, None
+    fn(*args)
+    return bufs
+
+
+def _extract_jit_funcs(module: ModuleOp, engine: llvmlite.binding.ExecutionEngine) -> dict[str, ctypes._CFuncPtr]:
     fns: dict[str, ctypes._CFuncPtr] = {}
     for op in module.ops:
         if not isinstance(op, llvm.FuncOp) or not op.body.blocks:
@@ -817,6 +838,12 @@ def compile_jit(proc: Procedure) -> dict[str, ctypes._CFuncPtr]:
         fn._engine = engine
         fns[name] = fn
     return fns
+
+
+def compile_jit(proc: Procedure) -> dict[str, ctypes._CFuncPtr]:
+    module = to_mlir(proc)
+    engine = to_jit_engine(module)
+    return _extract_jit_funcs(module, engine)
 
 
 class Backend(Enum):
@@ -839,18 +866,18 @@ def compile(proc: Procedure, backend: Backend) -> tuple[Callable[..., dict[str, 
             so_path = exo_bin_path(proc)
             text = (so_path.parent / "o.c").read_text()
             lib_fn = getattr(ctypes.CDLL(str(so_path)), proc_ir.name)
-            return lambda **kw: _marshal_call(lib_fn, proc_ir, deepcopy(kw), mode="cdll_ctxt"), text
+            return lambda **kw: _call_cdll(lib_fn, proc_ir, deepcopy(kw), ctx=True), text
 
         case Backend.MLIR:
             module = to_mlir(proc)
             so_path = mlir_bin_path(module)
             lib_fn = getattr(ctypes.CDLL(str(so_path)), proc_ir.name)
-            return lambda **kw: _marshal_call(lib_fn, proc_ir, deepcopy(kw), mode="cdll"), str(module)
+            return lambda **kw: _call_cdll(lib_fn, proc_ir, deepcopy(kw)), str(module)
 
         case Backend.JIT:
             fn = compile_jit(proc)[proc_ir.name]
-            text = to_asm(proc)
-            return lambda **kw: _marshal_call(fn, proc_ir, deepcopy(kw), mode="jit"), text
+            text = to_asm(to_mlir(proc))
+            return lambda **kw: _call_jit(fn, proc_ir, deepcopy(kw)), text
 
         case _:
             assert False
@@ -864,16 +891,16 @@ def compile(proc: Procedure, backend: Backend) -> tuple[Callable[..., dict[str, 
 def cli(source: Path, fmt: str | None):
     if not fmt:
         raise click.UsageError("Specify one of --c, --mlir, or --asm")
-    library = get_procs_from_module(load_user_code(source))
+    source = get_procs_from_module(load_user_code(source))
 
     match fmt:
         case "c":
             tmpdir = Path(tempfile.mkdtemp())
-            exo_compile_procs(library, tmpdir, "o.c", "o.h")
+            exo_compile_procs(source, tmpdir, "o.c", "o.h")
             text = (tmpdir / "o.c").read_text()
         case "mlir":
-            text = to_mlir(library)
+            text = to_mlir(source)
         case "asm":
-            text = to_asm(library)
+            text = to_asm(to_mlir(source))
 
     click.echo(text)

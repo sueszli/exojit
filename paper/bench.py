@@ -14,7 +14,7 @@ import numpy as np
 from exo import *
 from exo.stdlib.scheduling import *
 
-from xnumpy.main import compile_jit, to_asm
+from xnumpy.main import compile_jit, to_asm, to_mlir
 from xnumpy.patches_exo import NEON
 
 WARMUP = 5
@@ -276,7 +276,7 @@ t_np = bench(_np_saxpy)
 saxpy_results.append(("numpy (y+=a*x)", t_np / BATCH))
 
 if platform.machine() in ("aarch64", "arm64"):
-    asm = to_asm(v1_vectorized)
+    asm = to_asm(to_mlir(v1_vectorized))
     assert any(p in asm for p in ["fmla.4s", ".4s", "ldp\tq", "stp\tq"])
 
 np_time = saxpy_results[-1][1]
