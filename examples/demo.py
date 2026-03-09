@@ -6,8 +6,7 @@ import numpy as np
 from exo import *
 from exo.stdlib.scheduling import divide_loop, fission, rename, reorder_loops, simplify, unroll_loop
 
-from xnumpy.backends import jit_compile
-from xnumpy.main import compile_procs
+from xnumpy.main import compile_jit
 
 
 @proc
@@ -36,7 +35,7 @@ if __name__ == "__main__":
     compiled = []
     naive_ms = None
     for label, p in [("naive", matmul), ("optimized", opt)]:
-        fns = jit_compile(compile_procs(p))
+        fns = compile_jit(p)
         compiled.append(fns)
         fn = fns[p.name()]
 

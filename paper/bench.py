@@ -14,8 +14,7 @@ import numpy as np
 from exo import *
 from exo.stdlib.scheduling import *
 
-from xnumpy.backends import emit_assembly, jit_compile
-from xnumpy.main import compile_procs
+from xnumpy.main import compile_jit, to_asm
 from xnumpy.patches_exo import NEON
 
 WARMUP = 5
@@ -28,7 +27,7 @@ _cache: dict = {}
 def jit(p):
     name = p.name()
     if name not in _cache:
-        _cache[name] = jit_compile(compile_procs(p))
+        _cache[name] = compile_jit(p)
     return _cache[name]
 
 
@@ -277,7 +276,7 @@ t_np = bench(_np_saxpy)
 saxpy_results.append(("numpy (y+=a*x)", t_np / BATCH))
 
 if platform.machine() in ("aarch64", "arm64"):
-    asm = emit_assembly(compile_procs(v1_vectorized))
+    asm = to_asm(v1_vectorized)
     assert any(p in asm for p in ["fmla.4s", ".4s", "ldp\tq", "stp\tq"])
 
 np_time = saxpy_results[-1][1]

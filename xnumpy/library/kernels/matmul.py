@@ -4,9 +4,9 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import divide_loop, fission, reorder_loops, simplify, unroll_loop
+from exo.stdlib.scheduling import divide_loop, fission, rename, reorder_loops, simplify, unroll_loop
 
-from xnumpy.backends import compile_jit
+from xnumpy.main import compile_jit
 
 
 @proc
@@ -31,4 +31,5 @@ def matmul(m: int, k: int, n: int) -> Callable[..., None]:
         p = divide_loop(p, "j #1", 4, ["jo", "ji"], perfect=True)
         p = unroll_loop(p, "ji")
     p = simplify(p)
-    return compile_jit(p, f"_matmul_{m}_{k}_{n}")
+    name = f"_matmul_{m}_{k}_{n}"
+    return compile_jit(rename(p, name))[name]

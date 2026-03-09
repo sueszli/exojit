@@ -14,7 +14,7 @@ import polars as pl
 from exo.API import Procedure
 from plotnine import aes, coord_flip, element_text, geom_col, ggplot, labs, scale_fill_manual, theme, theme_minimal
 
-from xnumpy.backends import Backend, compile_and_load
+from xnumpy.main import Backend, compile
 
 # xDSL IRDL holds raw ctypes pointers. GC finalizer ordering -> dangling ptr -> segfault
 _gc.disable()
@@ -62,7 +62,7 @@ def assert_match(proc: Procedure, **kwargs: Any) -> None:
     times: dict[Backend, float] = {}
 
     for backend in Backend:
-        fn = compile_and_load(proc, backend)
+        fn, _ = compile(proc, backend)
         t0 = time.perf_counter()
         results[backend] = fn(**kwargs)
         times[backend] = time.perf_counter() - t0

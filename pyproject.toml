@@ -5,6 +5,7 @@ requires-python = ">=3.11"
 dependencies = [
     "exo-lang==1.0.0",
     "xdsl==0.57.2",
+    "click",
     "lit",
     "numpy",
     "pytest",

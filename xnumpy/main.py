@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import ctypes
 import math
+import re
+import subprocess
 import tempfile
-from argparse import ArgumentParser
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
+from copy import deepcopy
+from enum import Enum, auto
 from functools import cache
 from pathlib import Path
+from typing import Any
 
-import llvmlite.ir as ir
+import click
+import llvmlite.binding
+import llvmlite.ir
+import numpy as np
 from exo import compile_procs as exo_compile_procs
 from exo.API import Procedure
 from exo.backend.LoopIR_compiler import find_all_subprocs
@@ -36,6 +44,7 @@ from xdsl.utils.scoped_dict import ScopedDict
 
 from xnumpy.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from xnumpy.patches_xdsl_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, RewriteMemRefTypes, SelectOp
+from xnumpy.utils import llvm_bin_path
 
 _FCMP_PREDICATES: dict[str, tuple[str, bool]] = {  # mlir predicate -> (op, ordered?)
     "oeq": ("==", True),
@@ -54,8 +63,9 @@ _FCMP_PREDICATES: dict[str, tuple[str, bool]] = {  # mlir predicate -> (op, orde
     "uno": ("uno", False),
 }
 
+
 # ===----------------------------------------------------------------------=== #
-# Exo LoopIR -> xDSL MLIR (LLVM dialect)
+# generate xDSL MLIR
 # ===----------------------------------------------------------------------=== #
 
 
@@ -94,7 +104,7 @@ class IRGenerator:
         Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0])).insert(op)
 
     @contextmanager
-    def _tmp_state(self, *, inherit: bool = True):
+    def _scoped_state(self, *, inherit: bool = True):
         # save and restore builder/symbol/type state across nested scopes
         parent_builder = self.builder
         parent_symbol_table = self.symbol_table
@@ -109,7 +119,7 @@ class IRGenerator:
             self.symbol_table = parent_symbol_table
             self.type_table = parent_type_table
 
-    def _type(self, exo_type: object, mem_space: StringAttr | None = None) -> Attribute:
+    def _to_mlir_type(self, exo_type: object, mem_space: StringAttr | None = None) -> Attribute:
         # map exo type (t.f32, t.tensor, etc.) to mlir type (f32, memref, etc.)
         match exo_type:
             case SSAValue():
@@ -132,7 +142,7 @@ class IRGenerator:
                 return i1
             case T.Tensor():
                 assert mem_space is not None
-                inner = self._type(exo_type.type)
+                inner = self._to_mlir_type(exo_type.type)
                 assert inner in {f16, f32, f64, i8, i16, i32}
                 shape = self._shape(exo_type)
                 return MemRefType(inner, shape, NoneAttr(), mem_space)
@@ -188,7 +198,7 @@ class IRGenerator:
 
     def _expr_const(self, const: LoopIR.Const) -> SSAValue:
         # lower loopir literal to llvm.mlir.constant op
-        mlir_type = self._type(const.type)
+        mlir_type = self._to_mlir_type(const.type)
 
         if mlir_type in [f16, f32, f64]:
             attr = FloatAttr(const.val, mlir_type)
@@ -208,13 +218,13 @@ class IRGenerator:
 
         # only emit a load when the operand is a memref holding scalar elements
         # (not a window/tensor pass-through, and not a type-matched scalar already)
-        needs_load = isinstance(operand.type, MemRefType) and not isinstance(read.type, (T.Window, T.Tensor)) and operand.type != self._type(read.type)
+        needs_load = isinstance(operand.type, MemRefType) and not isinstance(read.type, (T.Window, T.Tensor)) and operand.type != self._to_mlir_type(read.type)
         return self._memref_load(operand, idx) if needs_load else operand
 
     def _expr_usub(self, usub: LoopIR.USub) -> SSAValue:
         # lower unary negation to llvm.fneg (float) or 0-x llvm.sub (int)
         expr = self._expr(usub.arg)
-        mlir_type = self._type(usub.type)
+        mlir_type = self._to_mlir_type(usub.type)
 
         if mlir_type in [f16, f32, f64]:
             return self._emit(FNegOp(expr))
@@ -238,7 +248,7 @@ class IRGenerator:
 
     def _expr_binop(self, binop: LoopIR.BinOp) -> SSAValue:
         # lower binary op to typed llvm op
-        mlir_type = self._type(binop.type)
+        mlir_type = self._to_mlir_type(binop.type)
         lhs = self._expr(binop.lhs)
         rhs = self._expr(binop.rhs)
 
@@ -274,7 +284,7 @@ class IRGenerator:
         # lower window expression to memref.subview
         indices = [self._window_access(access, self._expr) for access in window.idx]
         source = self._syms[repr(window.name)]
-        dest_type = self._type(window.type.as_tensor, source.type.memory_space)
+        dest_type = self._to_mlir_type(window.type.as_tensor, source.type.memory_space)
         output_sizes = self._shape(window.type.as_tensor, emit=True)
 
         offsets_idx = self._to_index_list(indices, self._emit)
@@ -293,7 +303,7 @@ class IRGenerator:
             cmp = self._emit(FCmpOp(args[0], args[1], "olt"))
             return self._emit(SelectOp(cmp, args[2], args[3]))
 
-        output_type = self._type(extern.f.typecheck(extern.args))
+        output_type = self._to_mlir_type(extern.f.typecheck(extern.args))
         return self._emit(llvm.CallOp(extern.f.name(), *args, return_type=output_type))
 
     def _expr(self, expr: object) -> OpResult | SSAValue:
@@ -387,7 +397,7 @@ class IRGenerator:
         self.builder.insert(CondBrOp(cond, body_block, [], exit_block, []))
 
         # body: emit loop body in a child symbol scope
-        with self._tmp_state():
+        with self._scoped_state():
             self.builder = Builder(insertion_point=InsertPoint.at_end(body_block))
             self.symbol_table = ScopedDict(self._syms)
             self.type_table = ScopedDict(self._types)
@@ -409,7 +419,7 @@ class IRGenerator:
         # lower alloc to llvm.call @malloc (DRAM) or llvm.alloca (stack)
         mem_name = alloc.mem.name()
         mem_space = StringAttr(mem_name)
-        mlir_type = self._type(alloc.type, mem_space)
+        mlir_type = self._to_mlir_type(alloc.type, mem_space)
 
         # scalar allocs: wrap as memref<1x...>
         if not isinstance(mlir_type, MemRefType):
@@ -483,9 +493,9 @@ class IRGenerator:
         args = [self._expr(arg) for arg in call.args]
 
         if call.f.instr is None:
-            self._procedure(call.f)
+            self._generate_procedure(call.f)
             assert len(call.args) == len(call.f.args)
-            args = [self._coerce_arg(arg_val, callee_arg, call.f.body, self._type, self._emit) for arg_val, callee_arg in zip(args, call.f.args)]
+            args = [self._coerce_arg(arg_val, callee_arg, call.f.body, self._to_mlir_type, self._emit) for arg_val, callee_arg in zip(args, call.f.args)]
         elif call.f.name not in self.seen_extern_decls:
             self.seen_extern_decls.add(call.f.name)
             input_types = [SSAValue.get(arg).type for arg in args]
@@ -519,7 +529,7 @@ class IRGenerator:
             case _:
                 assert False
 
-    def _procedure(self, procedure: LoopIR.proc) -> None:
+    def _generate_procedure(self, procedure: LoopIR.proc) -> None:
         # lower loopir proc to llvm.func
         if procedure.name in self.seen_proc_names:
             return
@@ -529,13 +539,13 @@ class IRGenerator:
         input_types = []
         for arg in procedure.args:
             mem = StringAttr(arg.mem.name()) if hasattr(arg, "mem") else None
-            mlir_type = self._type(arg.type, mem)
+            mlir_type = self._to_mlir_type(arg.type, mem)
             if not isinstance(mlir_type, MemRefType) and self._is_mutated(repr(arg.name), procedure.body):
                 mlir_type = MemRefType(mlir_type, [1], NoneAttr())
             input_types.append(mlir_type)
         func_type = llvm.LLVMFunctionType(input_types, llvm.LLVMVoidType())
 
-        with self._tmp_state(inherit=False):
+        with self._scoped_state(inherit=False):
             block = Block(arg_types=input_types)
             func_region = Region(block)
             self.builder = Builder(insertion_point=InsertPoint.at_end(block))
@@ -552,7 +562,7 @@ class IRGenerator:
 
     def generate(self, procs: list[LoopIR.proc]) -> ModuleOp:
         for proc in procs:
-            self._procedure(proc)
+            self._generate_procedure(proc)
         # declare external malloc/free for DRAM alloc/free lowering
         self._insert_at_module(llvm.FuncOp("malloc", llvm.LLVMFunctionType([i64], llvm.LLVMPointerType()), llvm.LinkageAttr("external")))
         self._insert_at_module(llvm.FuncOp("free", llvm.LLVMFunctionType([llvm.LLVMPointerType()]), llvm.LinkageAttr("external")))
@@ -598,105 +608,8 @@ def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
     return module
 
 
-# ===----------------------------------------------------------------------=== #
-# xDSL MLIR (LLVM dialect) -> llvmlite IR
-# ===----------------------------------------------------------------------=== #
-
-
-class JITEmitter:
-
-    @staticmethod
-    def _add_phis(phi_map: dict[SSAValue, ir.PhiInstr], val_map: dict[SSAValue, ir.Value], block_args, operands, cur_block):
-        # wire block operands into phi nodes for the target block
-        for a, v in zip(block_args, operands):
-            if a in phi_map:
-                phi_map[a].add_incoming(val_map[v], cur_block)
-
-    @staticmethod
-    def _convert_op(op: Operation, builder: ir.IRBuilder, block_map: dict[Block, ir.Block], phi_map: dict[SSAValue, ir.PhiInstr], val_map: dict[SSAValue, ir.Value]) -> None:
-        # translate one xdsl op to llvmlite ir. unmatched ops fall back to xdsl's convert_op
-        match op:
-            case llvm.ConstantOp():
-                val_map[op.result] = ir.Constant(convert_type(op.result.type), op.value.value.data)
-            case FNegOp():
-                val_map[op.res] = builder.fneg(val_map[op.arg])
-            case FCmpOp():
-                pred, is_ordered = _FCMP_PREDICATES[op.predicate.data]
-                val_map[op.res] = (builder.fcmp_ordered if is_ordered else builder.fcmp_unordered)(pred, val_map[op.lhs], val_map[op.rhs])
-            case SelectOp():
-                val_map[op.res] = builder.select(val_map[op.cond], val_map[op.lhs], val_map[op.rhs])
-            case BrOp():
-                JITEmitter._add_phis(phi_map, val_map, op.successor.args, op.operands, builder.block)
-                builder.branch(block_map[op.successor])
-            case CondBrOp():
-                JITEmitter._add_phis(phi_map, val_map, op.successors[0].args, op.then_arguments, builder.block)
-                JITEmitter._add_phis(phi_map, val_map, op.successors[1].args, op.else_arguments, builder.block)
-                builder.cbranch(val_map[op.cond], block_map[op.successors[0]], block_map[op.successors[1]])
-            case vector.BroadcastOp():
-                source_val = val_map[op.source]
-                vec_type = convert_type(op.vector.type)
-                n_lanes = op.vector.type.get_shape()[0]
-                undef = ir.Constant(vec_type, ir.Undefined)
-                inserted = builder.insert_element(undef, source_val, ir.Constant(ir.IntType(32), 0))
-                mask = ir.Constant(ir.VectorType(ir.IntType(32), n_lanes), [0] * n_lanes)
-                val_map[op.vector] = builder.shuffle_vector(inserted, undef, mask)
-            case vector.FMAOp():
-                lhs = val_map[op.lhs]
-                rhs = val_map[op.rhs]
-                acc = val_map[op.acc]
-                vec_type = convert_type(op.res.type)
-                n = vec_type.count
-                elem = "f32" if vec_type.element == ir.FloatType() else "f64"
-                intrinsic_name = f"llvm.fma.v{n}{elem}"
-                try:
-                    fma_fn = builder.module.get_global(intrinsic_name)
-                except KeyError:
-                    fma_type = ir.FunctionType(vec_type, [vec_type, vec_type, vec_type])
-                    fma_fn = ir.Function(builder.module, fma_type, name=intrinsic_name)
-                val_map[op.res] = builder.call(fma_fn, [lhs, rhs, acc])
-            case _:
-                _xdsl_convert_op(op, builder, val_map)
-
-    @staticmethod
-    def emit_func(func_op: llvm.FuncOp, llvm_module: ir.Module) -> None:
-        # emit one xdsl func: create blocks, insert phis, translate ops
-        ir_func = llvm_module.get_global(func_op.sym_name.data)
-        mlir_blocks = list(func_op.body.blocks)
-
-        block_map: dict[Block, ir.Block] = {block: ir_func.append_basic_block() for block in mlir_blocks}
-        phi_map: dict[SSAValue, ir.PhiInstr] = {arg: ir.IRBuilder(block_map[blk]).phi(convert_type(arg.type)) for blk in mlir_blocks[1:] for arg in blk.args}
-        val_map: dict[SSAValue, ir.Value] = dict(zip(mlir_blocks[0].args, ir_func.args)) | phi_map
-
-        for mlir_block in mlir_blocks:
-            builder = ir.IRBuilder(block_map[mlir_block])
-            for op in mlir_block.ops:
-                JITEmitter._convert_op(op, builder, block_map, phi_map, val_map)
-
-    @staticmethod
-    def emit(module: ModuleOp) -> ir.Module:
-        # convert xdsl module to llvmlite ir module
-        llvm_module = ir.Module()
-        func_ops = list(module.ops)
-
-        for op in func_ops:
-            assert isinstance(op, llvm.FuncOp)
-            ftype = ir.FunctionType(convert_type(op.function_type.output), [convert_type(t) for t in op.function_type.inputs])
-            ir.Function(llvm_module, ftype, name=op.sym_name.data)
-
-        for op in func_ops:
-            if op.body.blocks:
-                JITEmitter.emit_func(op, llvm_module)
-
-        return llvm_module
-
-
-# ===----------------------------------------------------------------------=== #
-# API
-# ===----------------------------------------------------------------------=== #
-
-
-def compile_procs(library: Procedure | Sequence[Procedure], jit: bool = False) -> ModuleOp | ir.Module:
-    # compile Exo procedures to xDSL MLIR or llvmlite IR
+def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
+    # exo procedures -> xDSL MLIR (LLVM dialect)
     if isinstance(library, Procedure):
         library = [library]
     compilable = [proc._loopir_proc for proc in library if not proc.is_instr()]
@@ -709,52 +622,263 @@ def compile_procs(library: Procedure | Sequence[Procedure], jit: bool = False) -
         proc = WindowAnalysis().apply_proc(proc)
         return MemoryAnalysis().run(proc)
 
-    analyzed_procs = [exo_analyze(proc) for proc in unique_procs]
-    module = _lower(analyzed_procs)
-
-    if jit:
-        return JITEmitter.emit(module)
-    return module
+    return _lower([exo_analyze(proc) for proc in unique_procs])
 
 
-def cli():
-    parser = ArgumentParser(description="Compile an Exo library to MLIR.")
-    parser.add_argument("source", type=str, help="Exo source file (.py)")
-    parser.add_argument("-o", "--output", help="Output file (default: stdout)")
-    fmt = parser.add_mutually_exclusive_group(required=True)
-    fmt.add_argument("--mlir", action="store_const", dest="fmt", const="mlir", help="Emit xDSL MLIR text")
-    fmt.add_argument("--asm", action="store_const", dest="fmt", const="asm", help="Emit assembly via llvmlite")
-    fmt.add_argument("--c", action="store_const", dest="fmt", const="c", help="Emit Exo's native C codegen")
-    args = parser.parse_args()
+# ===----------------------------------------------------------------------=== #
+# generate llvmlite IR
+# ===----------------------------------------------------------------------=== #
 
-    src = Path(args.source)
-    assert src.is_file() and src.suffix == ".py"
 
-    library = get_procs_from_module(load_user_code(src))
-    assert isinstance(library, list)
-    assert all(isinstance(proc, Procedure) for proc in library)
+class LLVMLiteGenerator:
+    @staticmethod
+    def _add_phis(phi_map: dict[SSAValue, llvmlite.ir.PhiInstr], val_map: dict[SSAValue, llvmlite.ir.Value], block_args, operands, cur_block):
+        # wire block operands into phi nodes for the target block
+        for a, v in zip(block_args, operands):
+            if a in phi_map:
+                phi_map[a].add_incoming(val_map[v], cur_block)
 
-    match args.fmt:
-        case "c":
+    @staticmethod
+    def _convert_op(op: Operation, builder: llvmlite.ir.IRBuilder, block_map: dict[Block, llvmlite.ir.Block], phi_map: dict[SSAValue, llvmlite.ir.PhiInstr], val_map: dict[SSAValue, llvmlite.ir.Value]) -> None:
+        # translate one xdsl op to llvmlite ir. unmatched ops fall back to xdsl's convert_op
+        match op:
+            case llvm.ConstantOp():
+                val_map[op.result] = llvmlite.ir.Constant(convert_type(op.result.type), op.value.value.data)
+            case FNegOp():
+                val_map[op.res] = builder.fneg(val_map[op.arg])
+            case FCmpOp():
+                pred, is_ordered = _FCMP_PREDICATES[op.predicate.data]
+                val_map[op.res] = (builder.fcmp_ordered if is_ordered else builder.fcmp_unordered)(pred, val_map[op.lhs], val_map[op.rhs])
+            case SelectOp():
+                val_map[op.res] = builder.select(val_map[op.cond], val_map[op.lhs], val_map[op.rhs])
+            case BrOp():
+                LLVMLiteGenerator._add_phis(phi_map, val_map, op.successor.args, op.operands, builder.block)
+                builder.branch(block_map[op.successor])
+            case CondBrOp():
+                LLVMLiteGenerator._add_phis(phi_map, val_map, op.successors[0].args, op.then_arguments, builder.block)
+                LLVMLiteGenerator._add_phis(phi_map, val_map, op.successors[1].args, op.else_arguments, builder.block)
+                builder.cbranch(val_map[op.cond], block_map[op.successors[0]], block_map[op.successors[1]])
+            case vector.BroadcastOp():
+                source_val = val_map[op.source]
+                vec_type = convert_type(op.vector.type)
+                n_lanes = op.vector.type.get_shape()[0]
+                undef = llvmlite.ir.Constant(vec_type, llvmlite.ir.Undefined)
+                inserted = builder.insert_element(undef, source_val, llvmlite.ir.Constant(llvmlite.ir.IntType(32), 0))
+                mask = llvmlite.ir.Constant(llvmlite.ir.VectorType(llvmlite.ir.IntType(32), n_lanes), [0] * n_lanes)
+                val_map[op.vector] = builder.shuffle_vector(inserted, undef, mask)
+            case vector.FMAOp():
+                lhs = val_map[op.lhs]
+                rhs = val_map[op.rhs]
+                acc = val_map[op.acc]
+                vec_type = convert_type(op.res.type)
+                n = vec_type.count
+                elem = "f32" if vec_type.element == llvmlite.ir.FloatType() else "f64"
+                intrinsic_name = f"llvm.fma.v{n}{elem}"
+                try:
+                    fma_fn = builder.module.get_global(intrinsic_name)
+                except KeyError:
+                    fma_type = llvmlite.ir.FunctionType(vec_type, [vec_type, vec_type, vec_type])
+                    fma_fn = llvmlite.ir.Function(builder.module, fma_type, name=intrinsic_name)
+                val_map[op.res] = builder.call(fma_fn, [lhs, rhs, acc])
+            case _:
+                _xdsl_convert_op(op, builder, val_map)
+
+    @staticmethod
+    def _generate_func(func_op: llvm.FuncOp, llvm_module: llvmlite.ir.Module) -> None:
+        # generate one xdsl func: create blocks, insert phis, translate ops
+        ir_func = llvm_module.get_global(func_op.sym_name.data)
+        mlir_blocks = list(func_op.body.blocks)
+
+        block_map: dict[Block, llvmlite.ir.Block] = {block: ir_func.append_basic_block() for block in mlir_blocks}
+        phi_map: dict[SSAValue, llvmlite.ir.PhiInstr] = {arg: llvmlite.ir.IRBuilder(block_map[blk]).phi(convert_type(arg.type)) for blk in mlir_blocks[1:] for arg in blk.args}
+        val_map: dict[SSAValue, llvmlite.ir.Value] = dict(zip(mlir_blocks[0].args, ir_func.args)) | phi_map
+
+        for mlir_block in mlir_blocks:
+            builder = llvmlite.ir.IRBuilder(block_map[mlir_block])
+            for op in mlir_block.ops:
+                LLVMLiteGenerator._convert_op(op, builder, block_map, phi_map, val_map)
+
+    @staticmethod
+    @cache
+    def generate(module: ModuleOp) -> llvmlite.ir.Module:
+        llvm_module = llvmlite.ir.Module()
+        func_ops = list(module.ops)
+
+        for op in func_ops:
+            assert isinstance(op, llvm.FuncOp)
+            ftype = llvmlite.ir.FunctionType(convert_type(op.function_type.output), [convert_type(t) for t in op.function_type.inputs])
+            llvmlite.ir.Function(llvm_module, ftype, name=op.sym_name.data)
+
+        for op in func_ops:
+            if op.body.blocks:
+                LLVMLiteGenerator._generate_func(op, llvm_module)
+
+        return llvm_module
+
+
+llvmlite.binding.initialize_native_target()
+llvmlite.binding.initialize_native_asmprinter()
+
+
+@cache
+def _target_machine() -> llvmlite.binding.TargetMachine:
+    target = llvmlite.binding.Target.from_default_triple()
+    cpu = llvmlite.binding.get_host_cpu_name()
+    features = llvmlite.binding.get_host_cpu_features().flatten()
+    return target.create_target_machine(cpu=cpu, features=features, opt=2)
+
+
+@cache
+def _to_llvmlite_moduleref(llvmlite_module: llvmlite.ir.Module) -> tuple[llvmlite.binding.ModuleRef, llvmlite.binding.TargetMachine]:
+    # llvmlite IR -> parsed + optimized LLVM module ref
+    mod_ref = llvmlite.binding.parse_assembly(str(llvmlite_module))
+    tm = _target_machine()
+    pto = llvmlite.binding.PipelineTuningOptions()
+    pto.speed_level = 2  # O2 optimization
+    pb = llvmlite.binding.create_pass_builder(tm, pto)
+    pb.getModulePassManager().run(mod_ref, pb)
+    return mod_ref, tm
+
+
+def to_asm(library: Procedure | Sequence[Procedure] | ModuleOp) -> str:
+    # exo procedures | xDSL MLIR -> native assembly text
+    module = library if isinstance(library, ModuleOp) else to_mlir(library)
+    mod_ref, tm = _to_llvmlite_moduleref(LLVMLiteGenerator.generate(module))
+    return tm.emit_assembly(mod_ref)
+
+
+# ===----------------------------------------------------------------------=== #
+# work in progress .......
+# ===----------------------------------------------------------------------=== #
+
+
+_DTYPE_MAP: dict[str, tuple[type, type]] = {
+    "f16": (np.float16, ctypes.c_uint16),
+    "f32": (np.float32, ctypes.c_float),
+    "f64": (np.float64, ctypes.c_double),
+    "i8": (np.int8, ctypes.c_int8),
+    "ui8": (np.uint8, ctypes.c_uint8),
+    "i16": (np.int16, ctypes.c_int16),
+    "ui16": (np.uint16, ctypes.c_uint16),
+    "i32": (np.int32, ctypes.c_int32),
+}
+
+
+def _marshal_call(fn: Callable, proc_ir: Any, kwargs: dict[str, Any], *, mode: str) -> dict[str, np.ndarray]:
+    # marshal numpy/python kwargs into ctypes args and call fn
+    # mode: 'jit' (raw ptrs) | 'cdll' (typed) | 'cdll_ctxt' (typed + leading NULL context)
+    args: list = []
+    argtypes: list = []
+    bufs: dict[str, np.ndarray] = {}
+
+    if mode == "cdll_ctxt":
+        argtypes.append(ctypes.c_void_p)
+        args.append(None)
+
+    for arg in proc_ir.args:
+        name = re.sub(r"_\d+$", "", str(arg.name))
+        val = kwargs[name]
+        match arg.type:
+            case LoopIR.Size() | LoopIR.Index():
+                args.append(int(val))
+                if mode != "jit":
+                    argtypes.append(ctypes.c_long)
+            case LoopIR.Tensor():
+                np_dtype, c_type = _DTYPE_MAP[str(arg.type.basetype())]
+                arr = np.array(val, dtype=np_dtype)
+                bufs[name] = arr
+                if mode == "jit":
+                    args.append(arr.ctypes.data)
+                else:
+                    argtypes.append(ctypes.POINTER(c_type))
+                    args.append(arr.ctypes.data_as(ctypes.POINTER(c_type)))
+
+    if mode != "jit":
+        fn.argtypes, fn.restype = argtypes, None
+    fn(*args)
+    return bufs
+
+
+def compile_jit(proc: Procedure) -> dict[str, ctypes._CFuncPtr]:
+    # exo procs -> xdsl -> llvmlite JIT. returns {name: cfunc} for each func with a body
+    module = to_mlir(proc)
+    mod_ref, tm = _to_llvmlite_moduleref(LLVMLiteGenerator.generate(module))
+
+    engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
+    engine.finalize_object()
+    engine.run_static_constructors()
+
+    fns: dict[str, ctypes._CFuncPtr] = {}
+    for op in module.ops:
+        if not isinstance(op, llvm.FuncOp) or not op.body.blocks:
+            continue
+        name = op.sym_name.data
+        n = len(op.function_type.inputs)
+        fn = ctypes.CFUNCTYPE(None, *([ctypes.c_void_p] * n))(engine.get_function_address(name))
+        fn._engine = engine
+        fns[name] = fn
+    return fns
+
+
+class Backend(Enum):
+    EXO_C = auto()  # exo C codegen -> clang -> .so
+    MLIR = auto()  # xdsl -> mlir-translate + clang -> .so
+    JIT = auto()  # xdsl -> llvmlite JIT (in-memory)
+
+
+def compile(proc: Procedure, backend: Backend) -> tuple[Callable[..., dict[str, np.ndarray]], str]:
+    # compile a procedure -> (callable, intermediate_text)
+    # callable(**kwargs) -> {buffer_name: np.ndarray} with mutated output buffers
+    #
+    # EXO_C: text = C source      | procs -> clang .so -> callable
+    # MLIR:  text = MLIR string   | procs -> mlir-translate + clang .so -> callable
+    # JIT:   text = assembly      | procs -> llvmlite JIT -> callable
+    proc_ir = proc._loopir_proc
+
+    match backend:
+        case Backend.EXO_C:
             d = Path(tempfile.mkdtemp())
-            exo_compile_procs(library, d, "o.c", "o.h")
-            output = (d / "o.c").read_text()
+            exo_compile_procs([proc], d, "o.c", "o.h")
+            text = (d / "o.c").read_text()
+            subprocess.run(["clang", "-shared", "-fPIC", "-O2", "-I", str(d), "-o", str(d / "lib.so"), str(d / "o.c")], check=True)
+            lib_fn = getattr(ctypes.CDLL(str(d / "lib.so")), proc_ir.name)
+            return lambda **kw: _marshal_call(lib_fn, proc_ir, deepcopy(kw), mode="cdll_ctxt"), text
 
-        case "mlir":
-            output = str(compile_procs(library))
+        case Backend.MLIR:
+            text = str(to_mlir(proc))
+            d = Path(tempfile.mkdtemp())
+            (d / "o.mlir").write_text(text)
+            subprocess.run(f"{llvm_bin_path()}/mlir-translate --mlir-to-llvmir {d / 'o.mlir'} | clang -shared -x ir -o {d / 'lib.so'} -", shell=True, check=True)
+            lib_fn = getattr(ctypes.CDLL(str(d / "lib.so")), proc_ir.name)
+            return lambda **kw: _marshal_call(lib_fn, proc_ir, deepcopy(kw), mode="cdll"), text
 
-        case "asm":
-            from xnumpy.backends import emit_assembly
-
-            output = str(emit_assembly(compile_procs(library)))
+        case Backend.JIT:
+            fn = compile_jit(proc)[proc_ir.name]
+            text = to_asm(proc)
+            return lambda **kw: _marshal_call(fn, proc_ir, deepcopy(kw), mode="jit"), text
 
         case _:
             assert False
 
-    if not args.output or args.output == "-":
-        print(output)
-        return
 
-    dst = Path(args.output)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(output)
+@click.command()
+@click.argument("source", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--c", "fmt", flag_value="c", help="Output C source")
+@click.option("--mlir", "fmt", flag_value="mlir", help="Output MLIR")
+@click.option("--asm", "fmt", flag_value="asm", help="Output assembly")
+def cli(source: Path, fmt: str | None):
+    if not fmt:
+        raise click.UsageError("Specify one of --c, --mlir, or --asm")
+    library = get_procs_from_module(load_user_code(source))
+
+    match fmt:
+        case "c":
+            tmpdir = Path(tempfile.mkdtemp())
+            exo_compile_procs(library, tmpdir, "o.c", "o.h")
+            text = (tmpdir / "o.c").read_text()
+        case "mlir":
+            text = to_mlir(library)
+        case "asm":
+            text = to_asm(library)
+
+    click.echo(text)
