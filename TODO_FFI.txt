@@ -1,0 +1,125 @@
+FFI Overhead Reduction Ideas
+=============================
+
+CONSTRAINT: No repeat wrappers (looping inside native code to amortize FFI cost).
+Every xnumpy op must pay the same per-call FFI overhead that numpy pays.
+
+NOTE: xnumpy already has a legitimate advantage from kernel fusion — numpy's
+y += a * x requires 2 FFI crossings (multiply ufunc + add ufunc + temp alloc),
+while xnumpy's fused saxpy kernel requires 1. That's a real algorithmic win,
+not a benchmarking trick. The constraint above is about not artificially
+amortizing FFI cost via native-code looping, which numpy cannot do.
+
+
+Current State — Two Call Paths
+------------------------------
+
+Path A: Direct ctypes call (fast path)
+  Used by matmul() in library/kernels/matmul.py and bench.py:
+    fn(out._data.ctypes.data, self._data.ctypes.data, other._data.ctypes.data)
+  Overhead per call: ~0.5-1us (ctypes ABI crossing + .ctypes.data extraction)
+
+Path B: _call_jit wrapper (slow path)
+  Used by compile(proc, Backend.JIT) at main.py:828:
+    return lambda **kw: _call_jit(fn, proc_ir, deepcopy(kw))
+  Overhead per call: ~5-50us due to:
+    - deepcopy(kw) copies the entire kwargs dict every call
+    - re.sub(r"_\d+$", ...) regex per argument
+    - np.array(val, dtype=...) re-wraps arrays even if already correct dtype
+    - dypes dict rebuilt every call
+    - match/case dispatch per argument
+
+
+Ideas (ranked by impact)
+------------------------
+
+1. Generate specialized wrapper — eliminate _call_jit
+   Savings: ~5-50us per call | Effort: Medium
+
+   Instead of the generic _call_jit that introspects proc_ir.args on every call,
+   generate a bespoke Python function at compile_jit time that does exactly the
+   right thing with zero introspection:
+
+     # At compile time, generate something like:
+     def _wrapper_matmul_256_256_256(C, A, B):
+         fn(C.ctypes.data, A.ctypes.data, B.ctypes.data)
+
+   Eliminates: deepcopy, regex, np.array re-wrapping, dtype lookup, match/case.
+   The argument types are known at compile time so you can bake them in.
+   Single biggest win for Path B.
+
+
+2. Replace ctypes with cffi (ABI mode)
+   Savings: ~200-300ns per call | Effort: Low
+
+   ctypes call overhead is ~0.5us. cffi ABI-mode calls are ~0.2-0.3us.
+   Already have the raw function address from engine.get_function_address(name):
+
+     import cffi
+     ffi = cffi.FFI()
+     addr = engine.get_function_address(name)
+     fn = ffi.cast("void(*)(void*, void*, void*)", addr)
+
+   cffi's ABI mode skips the type-checking layer that ctypes does, and its
+   C-level dispatch is faster. ~40-50% reduction in per-call crossing overhead.
+
+
+3. CPython C extension trampoline
+   Savings: ~400ns per call | Effort: Medium
+
+   Tiny C extension (~50 lines) that takes a function pointer (as a Python int)
+   + a tuple of pointer-sized args and calls it directly:
+
+     static PyObject* call_jit(PyObject* self, PyObject* args) {
+         void (*fn)();
+         // parse fn address + void* args from tuple
+         fn(a0, a1, a2);
+         Py_RETURN_NONE;
+     }
+
+   Reduces per-call overhead to ~50-100ns (just CPython function dispatch +
+   argument unpacking). Same approach Numba uses internally. Downside: requires
+   compiling a C file, but it would be tiny and stable.
+
+
+4. Cache .ctypes.data in ndarray
+   Savings: ~30-100ns per call | Effort: Low
+
+   In library/core.py, .ctypes.data is called on every operator invocation.
+   This property does work each time (~10-50ns). Cache it:
+
+     class ndarray:
+         def __init__(self, data):
+             self._data = np.ascontiguousarray(data, dtype=np.float32)
+             self._ptr = self._data.ctypes.data  # cache once
+
+   Then __matmul__ becomes:
+     matmul(m, k, n)(out._ptr, self._ptr, other._ptr)
+
+   Caveat: pointer must be invalidated if _data is ever reassigned (e.g. in
+   __iadd__). Update _ptr in those methods too.
+
+
+5. Pre-specialize the CFUNCTYPE signature
+   Savings: ~20-50ns per call | Effort: Low
+
+   Currently in _extract_jit_funcs (main.py:795) all args are c_void_p.
+   When passing a Python int for Size/Index args, ctypes has to figure out
+   the conversion. Use actual types instead:
+
+     # Instead of:
+     fn = ctypes.CFUNCTYPE(None, *([ctypes.c_void_p] * n))(addr)
+
+     # Use:
+     fn = ctypes.CFUNCTYPE(None, c_void_p, c_void_p, c_void_p, c_int64)(addr)
+
+   Avoids ctypes' runtime type coercion. Arg types are known from proc_ir.args.
+
+
+6. Cache compile_jit result (not just the engine)
+   Savings: avoids redundant work on repeated compile_jit calls | Effort: Low
+
+   _extract_jit_funcs is called every time compile_jit is called, even on
+   cached engines. It iterates module.ops and rebuilds the dict. The @cache
+   on _to_jit_engine caches the engine, but function pointer extraction +
+   CFUNCTYPE wrapping happens every time. Cache the full compile_jit result.

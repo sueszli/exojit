@@ -2,20 +2,15 @@ from __future__ import annotations
 
 import ctypes
 import math
-import re
 import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
-from copy import deepcopy
-from enum import Enum, auto
 from functools import cache
 from pathlib import Path
-from typing import Any
 
 import click
 import llvmlite.binding
 import llvmlite.ir
-import numpy as np
 from exo import compile_procs as exo_compile_procs
 from exo.API import Procedure
 from exo.backend.LoopIR_compiler import find_all_subprocs
@@ -43,7 +38,6 @@ from xdsl.utils.scoped_dict import ScopedDict
 
 from xnumpy.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from xnumpy.patches_xdsl_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, RewriteMemRefTypes, SelectOp
-from xnumpy.utils import compile_exo, compile_mlir
 
 _FCMP_PREDICATES: dict[str, tuple[str, bool]] = {  # mlir predicate -> (op, ordered?)
     "oeq": ("==", True),
@@ -625,7 +619,7 @@ def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
 
 
 # ===----------------------------------------------------------------------=== #
-# generate llvmlite IR
+# generate llvmlite IR, then JIT compile
 # ===----------------------------------------------------------------------=== #
 
 
@@ -756,35 +750,6 @@ def to_asm(module: ModuleOp) -> str:
     return tm.emit_assembly(mod_ref)
 
 
-def _call_jit(fn: Callable, proc_ir: Any, kwargs: dict[str, Any]) -> dict[str, np.ndarray]:
-    dypes: dict[str, tuple[type, type]] = {  # will find a better to do this later
-        "f16": (np.float16, ctypes.c_uint16),
-        "f32": (np.float32, ctypes.c_float),
-        "f64": (np.float64, ctypes.c_double),
-        "i8": (np.int8, ctypes.c_int8),
-        "ui8": (np.uint8, ctypes.c_uint8),
-        "i16": (np.int16, ctypes.c_int16),
-        "ui16": (np.uint16, ctypes.c_uint16),
-        "i32": (np.int32, ctypes.c_int32),
-    }
-
-    args: list = []
-    bufs: dict[str, np.ndarray] = {}
-    for arg in proc_ir.args:
-        name = re.sub(r"_\d+$", "", str(arg.name))
-        val = kwargs[name]
-        match arg.type:
-            case LoopIR.Size() | LoopIR.Index():
-                args.append(int(val))
-            case LoopIR.Tensor():
-                np_dtype, _ = dypes[str(arg.type.basetype())]
-                arr = np.array(val, dtype=np_dtype)
-                bufs[name] = arr
-                args.append(arr.ctypes.data)
-    fn(*args)
-    return bufs
-
-
 def _extract_jit_funcs(module: ModuleOp, engine: llvmlite.binding.ExecutionEngine) -> dict[str, ctypes._CFuncPtr]:
     fns: dict[str, ctypes._CFuncPtr] = {}
     for op in module.ops:
@@ -805,30 +770,8 @@ def compile_jit(proc: Procedure) -> dict[str, ctypes._CFuncPtr]:
 
 
 # ===----------------------------------------------------------------------=== #
-# API
+# api
 # ===----------------------------------------------------------------------=== #
-
-
-class Backend(Enum):
-    EXO_C = auto()  # exo C codegen -> clang -> .so
-    MLIR = auto()  # xdsl -> mlir-translate + clang -> .so
-    JIT = auto()  # xdsl -> llvmlite JIT (in-memory)
-
-
-def compile(proc: Procedure, backend: Backend) -> Callable[..., dict[str, np.ndarray]]:
-    # compile a procedure -> callable(**kwargs) -> {buffer_name: np.ndarray}
-    # note: used to e2e sanity check all backends
-    match backend:
-        case Backend.EXO_C:
-            return compile_exo(proc)
-        case Backend.MLIR:
-            return compile_mlir(proc, to_mlir(proc))
-        case Backend.JIT:
-            proc_ir = proc._loopir_proc
-            fn = compile_jit(proc)[proc_ir.name]
-            return lambda **kw: _call_jit(fn, proc_ir, deepcopy(kw))
-        case _:
-            assert False
 
 
 @click.command()

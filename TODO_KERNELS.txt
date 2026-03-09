@@ -1,14 +1,3 @@
-IMPORTANT: do NOT use repeat wrappers (looping inside native code to amortize FFI cost).
-this is an unfair trick — numpy can't do it, so it's not an apples-to-apples comparison.
-every xnumpy op must pay the same per-call FFI overhead that numpy pays.
-
-minimize ffi latency
-
-- Faster calling convention — ctypes has relatively high call overhead (~0.5μs). A CPython C extension or cffi would be cheaper. Pybind11/nanobind even cheaper.                   
-- Reduce marshaling — _call_jit re-extracts .ctypes.data pointers every call. If your array wrapper cached the raw pointer, you'd skip that work on repeated calls.                  
-
----
-
 # benchmarking game
 
 the experiments/ SAXPY benchmark hits 13.4x over numpy because it uses NEON intrinsics,

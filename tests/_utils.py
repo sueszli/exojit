@@ -32,6 +32,7 @@ _DTYPES: dict[str, tuple[type, type]] = {
 
 @cache
 def llvm_bin_path() -> Path:
+    # resolve LLVM bin dir from env, PATH, or homebrew
     if env := os.environ.get("LLVM_BIN"):
         return Path(env)
     if mlir_opt := shutil.which("mlir-opt"):
@@ -40,6 +41,7 @@ def llvm_bin_path() -> Path:
 
 
 def _exo_bin_path(proc: Procedure) -> Path:
+    # exo C codegen -> clang shared lib
     d = Path(tempfile.mkdtemp())
     exo_compile_procs([proc], d, "o.c", "o.h")
     subprocess.run(
@@ -50,6 +52,7 @@ def _exo_bin_path(proc: Procedure) -> Path:
 
 
 def _mlir_bin_path(module: ModuleOp) -> Path:
+    # MLIR -> LLVM IR -> clang shared lib
     d = Path(tempfile.mkdtemp())
     (d / "o.mlir").write_text(str(module))
     subprocess.run(
@@ -60,40 +63,40 @@ def _mlir_bin_path(module: ModuleOp) -> Path:
     return d / "lib.so"
 
 
-def _call_cdll(fn: Callable, proc_ir: Any, kwargs: dict[str, Any], *, ctx: bool = False) -> dict[str, np.ndarray]:
-    args: list = []
-    argtypes: list = []
+def _call(fn: Callable, proc_ir: Any, kwargs: dict[str, Any], *, ctx: bool = False) -> dict[str, np.ndarray]:
+    # marshal args and invoke a ctypes function (argtypes must be set at load time)
+    args: list = [None] if ctx else []
     bufs: dict[str, np.ndarray] = {}
-    if ctx:
-        argtypes.append(ctypes.c_void_p)
-        args.append(None)
     for arg in proc_ir.args:
         name = re.sub(r"_\d+$", "", str(arg.name))
         val = kwargs[name]
         match arg.type:
             case LoopIR.Size() | LoopIR.Index():
                 args.append(int(val))
-                argtypes.append(ctypes.c_long)
             case LoopIR.Tensor():
-                np_dtype, c_type = _DTYPES[str(arg.type.basetype())]
+                np_dtype, _ = _DTYPES[str(arg.type.basetype())]
                 arr = np.array(val, dtype=np_dtype)
                 bufs[name] = arr
-                argtypes.append(ctypes.POINTER(c_type))
-                args.append(arr.ctypes.data_as(ctypes.POINTER(c_type)))
-    fn.argtypes, fn.restype = argtypes, None
+                args.append(arr.ctypes.data)
     fn(*args)
     return bufs
 
 
 def compile_exo(proc: Procedure) -> Callable[..., dict[str, np.ndarray]]:
+    # proc -> exo C shared lib -> callable
     proc_ir = proc._loopir_proc
     so_path = _exo_bin_path(proc)
     lib_fn = getattr(ctypes.CDLL(str(so_path)), proc_ir.name)
-    return lambda **kw: _call_cdll(lib_fn, proc_ir, deepcopy(kw), ctx=True)
+    lib_fn.argtypes = [ctypes.c_void_p] * (len(proc_ir.args) + 1)  # +1 for exo ctx
+    lib_fn.restype = None
+    return lambda **kw: _call(lib_fn, proc_ir, deepcopy(kw), ctx=True)
 
 
 def compile_mlir(proc: Procedure, module: ModuleOp) -> Callable[..., dict[str, np.ndarray]]:
+    # proc + MLIR module -> shared lib -> callable
     proc_ir = proc._loopir_proc
     so_path = _mlir_bin_path(module)
     lib_fn = getattr(ctypes.CDLL(str(so_path)), proc_ir.name)
-    return lambda **kw: _call_cdll(lib_fn, proc_ir, deepcopy(kw))
+    lib_fn.argtypes = [ctypes.c_void_p] * len(proc_ir.args)
+    lib_fn.restype = None
+    return lambda **kw: _call(lib_fn, proc_ir, deepcopy(kw))
