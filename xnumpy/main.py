@@ -3,7 +3,6 @@ from __future__ import annotations
 import ctypes
 import math
 import re
-import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
@@ -44,7 +43,7 @@ from xdsl.utils.scoped_dict import ScopedDict
 
 from xnumpy.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from xnumpy.patches_xdsl_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, RewriteMemRefTypes, SelectOp
-from xnumpy.utils import llvm_bin_path
+from xnumpy.utils import exo_bin_path, mlir_bin_path
 
 _FCMP_PREDICATES: dict[str, tuple[str, bool]] = {  # mlir predicate -> (op, ordered?)
     "oeq": ("==", True),
@@ -837,20 +836,16 @@ def compile(proc: Procedure, backend: Backend) -> tuple[Callable[..., dict[str, 
 
     match backend:
         case Backend.EXO_C:
-            d = Path(tempfile.mkdtemp())
-            exo_compile_procs([proc], d, "o.c", "o.h")
-            text = (d / "o.c").read_text()
-            subprocess.run(["clang", "-shared", "-fPIC", "-O2", "-I", str(d), "-o", str(d / "lib.so"), str(d / "o.c")], check=True)
-            lib_fn = getattr(ctypes.CDLL(str(d / "lib.so")), proc_ir.name)
+            so_path = exo_bin_path(proc)
+            text = (so_path.parent / "o.c").read_text()
+            lib_fn = getattr(ctypes.CDLL(str(so_path)), proc_ir.name)
             return lambda **kw: _marshal_call(lib_fn, proc_ir, deepcopy(kw), mode="cdll_ctxt"), text
 
         case Backend.MLIR:
-            text = str(to_mlir(proc))
-            d = Path(tempfile.mkdtemp())
-            (d / "o.mlir").write_text(text)
-            subprocess.run(f"{llvm_bin_path()}/mlir-translate --mlir-to-llvmir {d / 'o.mlir'} | clang -shared -x ir -o {d / 'lib.so'} -", shell=True, check=True)
-            lib_fn = getattr(ctypes.CDLL(str(d / "lib.so")), proc_ir.name)
-            return lambda **kw: _marshal_call(lib_fn, proc_ir, deepcopy(kw), mode="cdll"), text
+            module = to_mlir(proc)
+            so_path = mlir_bin_path(module)
+            lib_fn = getattr(ctypes.CDLL(str(so_path)), proc_ir.name)
+            return lambda **kw: _marshal_call(lib_fn, proc_ir, deepcopy(kw), mode="cdll"), str(module)
 
         case Backend.JIT:
             fn = compile_jit(proc)[proc_ir.name]
