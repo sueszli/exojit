@@ -458,8 +458,8 @@ for n in tqdm(rmsnorm_sizes, desc="rmsnorm"):
 #
 
 
-embed_dims = [64, 128, 256, 512, 1024, 4096]
-VOCAB_SIZE = 32000
+embed_dims = [1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18]
+VOCAB_SIZE = 256  # only one row is accessed; small vocab keeps memory reasonable
 
 
 for d in tqdm(embed_dims, desc="embedding"):
@@ -585,6 +585,9 @@ for t_size, d_size in tqdm(ws_sizes, desc="weighted_sum"):
 
 
 if __name__ == "__main__":
+    import pandas as pd
+    from plotnine import aes, element_line, element_rect, element_text, expand_limits, facet_wrap, geom_hline, geom_line, geom_point, ggplot, labs, scale_color_manual, scale_linetype_manual, scale_shape_manual, theme, theme_minimal
+
     df = pl.DataFrame(rows)
     df = df.with_columns(
         (pl.col("exo_gflops") / pl.col("numpy_gflops")).round(2).alias("exo_speedup"),
@@ -593,3 +596,51 @@ if __name__ == "__main__":
     with pl.Config(tbl_rows=-1):
         print(df)
     df.write_csv(Path(__file__).parent / "results.csv")
+
+    # fmt: off
+    pdf = df.unpivot(on=["exo_speedup", "neon_speedup"], index=["kernel", "n"], variable_name="variant", value_name="speedup").with_columns(pl.col("variant").replace({"exo_speedup": "Auto-vectorized", "neon_speedup": "NEON intrinsics"}), pl.col("speedup").clip(lower_bound=1.0)).to_pandas()
+
+    # ordered categorical x-axis: evenly spaced, no log scale needed
+    seen = []
+    for v in pdf["n"]:
+        if v not in seen:
+            seen.append(v)
+    pdf["n"] = pd.Categorical(pdf["n"], categories=seen, ordered=True)
+
+    out = Path(__file__).parent / "plots"
+    out.mkdir(exist_ok=True)
+    p = (
+        ggplot(pdf, aes("n", "speedup", color="variant", linetype="variant", group="variant"))
+        + geom_hline(yintercept=1, linetype="solid", color="#bbbbbb", size=0.8)
+        + geom_line(size=1.4)
+        + geom_point(aes(shape="variant"), size=2.8)
+        + facet_wrap("~kernel", scales="free")
+        + scale_color_manual(values=["#4C72B0", "#DD8452"])
+        + scale_linetype_manual(values=["solid", "dashed"])
+        + scale_shape_manual(values=["o", "^"])
+        + expand_limits(y=1)
+        + theme_minimal()
+        + theme(
+            figure_size=(20, 13),
+            legend_position="top",
+            legend_title=element_text(size=0),
+            legend_text=element_text(size=11),
+            plot_title=element_text(size=15, weight="bold"),
+            plot_subtitle=element_text(size=11, color="#555555"),
+            axis_title=element_text(size=10),
+            axis_text_x=element_text(rotation=45, ha="right", size=8),
+            strip_text=element_text(size=11, weight="bold"),
+            panel_grid_minor=element_line(color="#eeeeee", size=0.3),
+            panel_grid_major=element_line(color="#dddddd", size=0.5),
+            panel_border=element_rect(color="#cccccc", size=0.5),
+        )
+        + labs(
+            title="xnumpy Kernel Performance vs NumPy",
+            subtitle="Speedup over NumPy. Baseline = 1x (same as NumPy). Values below 1x are clamped to the baseline.",
+            x="Problem Size (number of elements)",
+            y="Speedup over NumPy (1x = baseline)",
+            color="", linetype="", shape="",
+        )
+    )
+    p.save(str(out / "convergence.pdf"))
+    # fmt: on
