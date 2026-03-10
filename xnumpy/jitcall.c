@@ -9,7 +9,7 @@ typedef struct {
     vectorcallfunc vectorcall;
 } JitFuncObject;
 
-typedef intptr_t T; // shorthand for the cast signatures in dispatch()
+typedef intptr_t T;
 
 static int arg_to_intptr(PyObject *obj, intptr_t *out, Py_buffer *view, int *is_view) {
     // helper function. convert a python object to intptr_t: buffer objects -> data pointer, ints -> value
@@ -34,52 +34,19 @@ static int arg_to_intptr(PyObject *obj, intptr_t *out, Py_buffer *view, int *is_
     return -1;
 }
 
-static void dispatch(void (*fn)(void), intptr_t *a, Py_ssize_t n) {
-    // helper function. cast fn to the right arity and call it. C requires exact signature match
-    switch (n) {
-    case 0:
-        ((void (*)(void))fn)();
-        break;
-    case 1:
-        ((void (*)(T))fn)(a[0]);
-        break;
-    case 2:
-        ((void (*)(T, T))fn)(a[0], a[1]);
-        break;
-    case 3:
-        ((void (*)(T, T, T))fn)(a[0], a[1], a[2]);
-        break;
-    case 4:
-        ((void (*)(T, T, T, T))fn)(a[0], a[1], a[2], a[3]);
-        break;
-    case 5:
-        ((void (*)(T, T, T, T, T))fn)(a[0], a[1], a[2], a[3], a[4]);
-        break;
-    case 6:
-        ((void (*)(T, T, T, T, T, T))fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
-        break;
-    case 7:
-        ((void (*)(T, T, T, T, T, T, T))fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
-        break;
-    case 8:
-        ((void (*)(T, T, T, T, T, T, T, T))fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
-        break;
-    }
-}
-
 static PyObject *JitFunc_vectorcall(PyObject *callable, PyObject *const *args, size_t nargsf, PyObject *kwnames) {
     // cpython vectorcall entry point. marshal args, call JIT fn, release buffers
 
     JitFuncObject *self = (JitFuncObject *)callable;
     Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
-    if (nargs > 8) {
-        PyErr_SetString(PyExc_TypeError, "JitFunc: too many arguments (max 8)");
+    if (nargs > 16) {
+        PyErr_SetString(PyExc_TypeError, "JitFunc: too many arguments (max 16)");
         return NULL;
     }
 
     // marshal python args into a flat intptr_t array
-    intptr_t a[8];
-    Py_buffer views[8];
+    intptr_t a[16];
+    Py_buffer views[16];
     Py_ssize_t n_views = 0;
     int ok = 1;
     for (Py_ssize_t i = 0; i < nargs && ok; i++) {
@@ -88,8 +55,9 @@ static PyObject *JitFunc_vectorcall(PyObject *callable, PyObject *const *args, s
         n_views += is_view;
     }
 
+    // always pass 16 args — callee ignores extras per ARM64/x86-64 calling convention
     if (ok) {
-        dispatch(self->fn, a, nargs);
+        ((void (*)(T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15]);
     }
 
     // release any buffer views we acquired
