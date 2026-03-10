@@ -22,44 +22,111 @@ microgpt architecture:
   - Trains 1000 steps on character names, then generates samples
 
 
-Already Done (Compute Kernels)
-------------------------------
+Already Done (Forward Compute Kernels)
+--------------------------------------
 
-All individual kernels for microgpt are now implemented. 
-All of the following have auto-vectorized versions and explicit NEON intrinsic variants (*_neon.py).
+All individual forward kernels for microgpt are implemented.
+All have auto-vectorized versions and explicit NEON intrinsic variants (*_neon.py).
 
-[x] softmax        -- exp(x - max) / sum(exp(x - max)) (fused single-pass)
-[x] matmul         -- C = A @ B (tiled, cache-optimized)
-[x] saxpy          -- y[i] += a * x[i]
-[x] relu           -- y[i] = max(0, x[i])
-[x] elementwise add-- z[i] = x[i] + y[i]
-[x] rmsnorm        -- sum-of-squares + scaling (split kernels)
-[x] matvec         -- y[j] = sum_i(W[j][i] * x[i]) (tiled rows)
-[x] embedding      -- row copy from lookup table
-[x] cross-entropy  -- loss = -log(softmax(logits)[target]) (fused sum-exp)
-[x] dot product    -- score = sum_j(q[j] * k[j]) / sqrt(d) (fused multiply/sum/scale)
-[x] weighted sum   -- attention output aggregation
-[x] fused attention-- softmax(Q @ K^T / sqrt(d)) @ V (FlashAttention style streaming)
+[x] embedding      -- row copy from lookup table (wte[token_id], wpe[pos_id])
+[x] elementwise add-- z[i] = x[i] + y[i] (tok_emb + pos_emb, residual connections)
+[x] rmsnorm        -- sum-of-squares + scaling (split into sumsq + scale kernels)
+[x] matvec         -- y[j] = sum_i(W[j][i] * x[i]) (linear projections: Wq/Wk/Wv/Wo/fc1/fc2/lm_head)
+[x] dot product    -- score = sum_j(q[j] * k[j]) / sqrt(d) (attention logit computation)
+[x] softmax        -- exp(x - max) / sum(exp(x - max)) (attention weights + output probs)
+[x] weighted sum   -- out[j] = sum_t(weights[t] * V[t,j]) (attention output aggregation)
+[x] relu           -- y[i] = max(0, x[i]) (MLP activation)
+[x] cross-entropy  -- loss = -log(softmax(logits)[target]) (fused max + sum-exp)
 [x] adam optimizer -- parameter update fusing m, v, m_hat, v_hat, param updates
+[x] saxpy          -- y[i] += a * x[i] (general utility)
+[x] matmul         -- C = A @ B (tiled, cache-optimized — not directly used in microgpt but available)
 
 
 Missing — backward pass kernels
 -------------------------------
 
-microgpt.py uses scalar autograd (Value.backward()). To replace that with vectorized kernels, you'd need backward variants for every differentiable operation:
+microgpt.py uses scalar autograd (Value.backward()). To replace that with
+vectorized kernels, we need backward variants for every differentiable op.
 
-1. linear_backward — two parts:
-   - dx = dout @ W^T (matvec with transposed weight matrix — current matvec.py only does y = W @ x, not transposed)
-   - dW = outer(dout, x) (rank-1 outer product update — no kernel exists)
-2. softmax_backward — dx_i = softmax_i * (dout_i - sum(dout * softmax))
-3. rmsnorm_backward — backward through the RMS normalization (involves recomputing the scale and a reduction)
-4. relu_backward — dx = dout * (x > 0) (masked passthrough)
-5. cross_entropy_backward — dlogits[i] = softmax[i] - 1{i == target} (softmax gradient combined with log-loss)
-6. embedding_backward — scatter-add: dW_emb[token_id] += dout (gradient accumulation into specific embedding rows)
-7. attention_backward — backward through Q·K^T scaling, softmax, and V weighting (or compose from the above primitives)
+These are listed in the order they'd execute during backpropagation (loss → inputs):
 
-Missing — minor forward utilities
----------------------------------
+[ ] 1. cross_entropy_backward
+     dlogits[i] = softmax[i] - 1{i == target}
+     Softmax gradient fused with log-loss derivative. Single vector op.
 
-- Scalar multiply / divide on vectors (for / head_dim**0.5 scaling and / temperature) — trivial, could be a variant of saxpy
-- Transposed matvec (y = W^T @ x) — needed in both forward (attention projection gather) and backward
+[ ] 2. linear_backward — two parts:
+     dx = dout @ W^T   (transposed matvec — needs new "matvec_t" kernel, see utilities below)
+     dW = outer(dout, x)   (rank-1 outer product — no kernel exists)
+     Called for every linear() in the model: lm_head, Wo, fc2, fc1, Wv, Wk, Wq.
+
+[ ] 3. relu_backward
+     dx = dout * (x > 0)
+     Masked passthrough. Trivial — select or multiply by 0/1 mask.
+
+[ ] 4. rmsnorm_backward
+     Backward through RMS normalization. Involves recomputing the scale factor
+     and a dot-product reduction: dx = (dout - x * dot(dout, x) / sumsq) * scale
+
+[ ] 5. add_backward
+     dx = dout, dresidual = dout
+     Gradient just copies to both inputs. Trivial (memcpy or no-op if aliased).
+
+[ ] 6. softmax_backward
+     dx_i = softmax_i * (dout_i - sum(dout * softmax))
+     Needed for attention weight gradients.
+
+[ ] 7. attention_backward
+     Backward through dot-product attention: Q·K^T scaling, softmax, V weighting.
+     Can be composed from softmax_backward + linear_backward primitives, or fused.
+
+[ ] 8. embedding_backward
+     scatter-add: dW_emb[token_id] += dout
+     Gradient accumulation into specific embedding rows (wte and wpe).
+
+
+Missing — forward utilities
+----------------------------
+
+[ ] scalar_mul (vector scaling)
+     out[i] = x[i] * scalar
+     Needed for: logits / temperature (inference), 1/sqrt(head_dim) scaling,
+     loss averaging (1/n * sum(losses)).
+     Trivial — variant of saxpy with y=0, or standalone kernel.
+
+[ ] matvec_t (transposed matrix-vector multiply)
+     y[j] = sum_i(W[i][j] * x[i])   i.e.  y = W^T @ x
+     Current matvec.py only does y = W @ x. Transposed variant needed for:
+     - Backward pass: dx = dout @ W^T in every linear_backward
+     - Could also be used in forward to avoid transposing weight matrices
+
+[ ] outer (rank-1 outer product)
+     dW[i][j] = a[i] * b[j]   (or +=)
+     Needed for dW = outer(dout, x) in linear_backward.
+     Not a standard forward kernel, but essential for training.
+
+
+Missing — wiring (microgpt.py integration)
+-------------------------------------------
+
+[ ] gpt() forward function
+     Wire all forward kernels into the transformer forward pass:
+     embedding → add → rmsnorm → [attn block → residual add → MLP block → residual add] → linear
+     Manage KV cache (append keys/values per position).
+     Handle multi-head attention: slice Q/K/V by head, run dot/softmax/weighted_sum per head, concat.
+
+[ ] Training loop
+     For each step:
+       - Tokenize document
+       - Run gpt() forward for each position (autoregressive)
+       - Compute cross-entropy loss
+       - Run backward pass through all kernels
+       - Run Adam optimizer update
+       - Zero gradients
+     Linear LR decay: lr_t = lr * (1 - step/num_steps)
+
+[ ] Inference loop
+     - Run gpt() forward
+     - Apply temperature scaling (scalar_mul on logits)
+     - Softmax to get probs
+     - Sample from distribution (random.choices in Python)
+     - Repeat until BOS or max length
