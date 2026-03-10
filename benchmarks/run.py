@@ -54,7 +54,7 @@ rows: list[dict[str, object]] = []
 #
 
 
-matmul_sizes = [1 << 5, 1 << 6, 1 << 7, 1 << 8]
+matmul_sizes = [1 << 4, 1 << 5, 1 << 6, 1 << 7, 1 << 8, 1 << 9]
 
 
 for n in tqdm(matmul_sizes, desc="matmul"):
@@ -96,7 +96,7 @@ for n in tqdm(matmul_sizes, desc="matmul"):
 #
 
 
-matvec_sizes = [1 << 6, 1 << 7, 1 << 8, 1 << 9, 1 << 10]
+matvec_sizes = [1 << 5, 1 << 6, 1 << 7, 1 << 8, 1 << 9, 1 << 10, 1 << 11]
 
 
 for n in tqdm(matvec_sizes, desc="matvec"):
@@ -139,7 +139,7 @@ for n in tqdm(matvec_sizes, desc="matvec"):
 #
 
 
-saxpy_sizes = [1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18]
+saxpy_sizes = [1 << 6, 1 << 7, 1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18, 1 << 20, 1 << 22]
 
 
 for n in tqdm(saxpy_sizes, desc="saxpy"):
@@ -183,7 +183,7 @@ for n in tqdm(saxpy_sizes, desc="saxpy"):
 #
 
 
-softmax_sizes = [1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18]
+softmax_sizes = [1 << 6, 1 << 7, 1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18, 1 << 20, 1 << 22]
 
 
 for n in tqdm(softmax_sizes, desc="softmax"):
@@ -249,7 +249,7 @@ for n in tqdm(softmax_sizes, desc="softmax"):
 #
 
 
-relu_sizes = [1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18]
+relu_sizes = [1 << 6, 1 << 7, 1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18, 1 << 20, 1 << 22]
 
 
 for n in tqdm(relu_sizes, desc="relu"):
@@ -290,7 +290,7 @@ for n in tqdm(relu_sizes, desc="relu"):
 #
 
 
-add_sizes = [1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18]
+add_sizes = [1 << 6, 1 << 7, 1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18, 1 << 20, 1 << 22]
 
 
 for n in tqdm(add_sizes, desc="add"):
@@ -333,7 +333,7 @@ for n in tqdm(add_sizes, desc="add"):
 #
 
 
-ce_sizes = [1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18]
+ce_sizes = [1 << 6, 1 << 7, 1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18, 1 << 20, 1 << 22]
 
 
 for n in tqdm(ce_sizes, desc="cross_entropy"):
@@ -397,7 +397,7 @@ for n in tqdm(ce_sizes, desc="cross_entropy"):
 #
 
 
-rmsnorm_sizes = [1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18]
+rmsnorm_sizes = [1 << 6, 1 << 7, 1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18, 1 << 20, 1 << 22]
 EPS = np.float32(1e-5)
 
 
@@ -461,8 +461,8 @@ for n in tqdm(rmsnorm_sizes, desc="rmsnorm"):
 #
 
 
-embed_dims = [1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18]
-VOCAB_SIZE = 256  # only one row is accessed; small vocab keeps memory reasonable
+embed_dims = [1 << 6, 1 << 7, 1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18, 1 << 20, 1 << 22]
+VOCAB_SIZE = 16  # only one row is accessed; small vocab keeps memory reasonable at large d
 
 
 for d in tqdm(embed_dims, desc="embedding"):
@@ -505,7 +505,7 @@ for d in tqdm(embed_dims, desc="embedding"):
 #
 
 
-dot_sizes = [1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18]
+dot_sizes = [1 << 6, 1 << 7, 1 << 8, 1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18, 1 << 20, 1 << 22]
 
 
 for n in tqdm(dot_sizes, desc="dot"):
@@ -550,7 +550,7 @@ for n in tqdm(dot_sizes, desc="dot"):
 #
 
 
-ws_sizes = [(64, 64), (64, 128), (128, 128), (128, 256), (256, 256)]
+ws_sizes = [(32, 32), (32, 64), (64, 64), (64, 128), (128, 128), (128, 256), (256, 256), (256, 512), (512, 512)]
 
 
 for t_size, d_size in tqdm(ws_sizes, desc="weighted_sum"):
@@ -626,7 +626,7 @@ def _plot(df: pl.DataFrame) -> None:
         )
         + labs(
             title="xnumpy Kernel Performance vs NumPy",
-            subtitle="Speedup over NumPy. Baseline = 1x (same as NumPy). Values below 1x are clamped to the baseline.",
+            subtitle="Speedup over NumPy (baseline = 1x, values below 1x clamped). Converges at large N as memory bandwidth becomes the bottleneck.",
             x="Problem Size (number of elements)",
             y="Speedup over NumPy (1x = baseline)",
             color="", linetype="", shape="",
