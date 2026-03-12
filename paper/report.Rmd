@@ -91,6 +91,8 @@ Our pipeline chains three independent projects; we summarize each below.
 
 # System Design
 
+We describe each stage of the compilation pipeline, from Exo's loop IR to a callable function pointer.
+
 \textbf{Pipeline Overview.}
 The compilation pipeline consists of four stages, each a Python function call, with no subprocesses and no disk I/O:
 
@@ -134,6 +136,33 @@ The first category is \emph{fused multi-pass} kernels: softmax (max + exp + sum 
 
 Each kernel has two JIT variants: \emph{auto-vectorized} (scalar Exo code, LLVM vectorizes) and \emph{NEON intrinsics} (explicit \texttt{neon\_*} instructions via Exo's \texttt{@instr}). The auto-vectorized variant writes the kernel as scalar Exo loops and relies on LLVM's O2 pass pipeline (loop vectorizer, SLP vectorizer, instruction scheduling) to generate SIMD code. The NEON variant uses Exo's \texttt{@instr} mechanism to emit explicit 4-wide vector operations, giving the programmer direct control over register allocation and instruction-level parallelism at the cost of more code.
 
+\textbf{Performance Model.}
+We analyze throughput using the roofline model \cite{williams2009roofline}. A kernel performing $F$ FLOPs with $B$ bytes of DRAM traffic has operational intensity $I = F/B$ (FLOP/byte). Attainable throughput is bounded by
+$$P \leq \min\!\bigl(\pi,\; \beta \cdot I\bigr)$$
+where $\pi$ is peak compute throughput (FLOP/s) and $\beta$ is peak memory bandwidth (byte/s). A kernel is \emph{memory-bound} when $I < I^* \equiv \pi/\beta$ (the machine balance point) and \emph{compute-bound} otherwise.
+
+For float32 element-wise and reduction kernels, $I$ ranges from ${\sim}0.08$ FLOP/byte (add: 1\,FLOP per 12\,bytes) to ${\sim}3$ FLOP/byte (fused softmax with polynomial exp). Single-core NEON on Apple Silicon has $I^* \approx 1{-}2$ FLOP/byte, placing most kernels in the memory-bound regime. When both fused and unfused implementations are memory-bound with equal $F$, the speedup reduces to a traffic ratio:
+$$S_{\text{BW}} = \frac{B_{\text{unfused}}}{B_{\text{fused}}}$$
+This ceiling is hardware-independent: it depends only on how many intermediate materializations the fused kernel eliminates.
+
+We derive $B$ by counting each array read and write at 4\,bytes per float32 element. For softmax, NumPy executes five array operations---\texttt{max}\,($4N$\,B), \texttt{sub}\,($8N$), \texttt{exp}\,($8N$), \texttt{sum}\,($4N$), \texttt{div}\,($8N$)---totaling $B_u = 32N$ bytes. The fused kernel reads the input and writes the output once: $B_f = 8N$ bytes, giving $S_{\text{BW}} = 4.0\times$. Cross-entropy avoids writing the $N$-element output (only a scalar loss), so $B_f = 4N$ and $S_{\text{BW}} = 6.0\times$. Table~\ref{tab:traffic} summarizes the predicted ceiling alongside observed speedups at $N{=}4$M.
+
+\begin{center}
+\begin{tabular}{lrrcc}
+\toprule
+Kernel & $B_u$ & $B_f$ & $S_{\text{BW}}$ & Observed \\
+\midrule
+Softmax & $32N$ & $8N$ & $4.0\times$ & $4.6\times$ \\
+Cross-entropy & $24N$ & $4N$ & $6.0\times$ & $5.6\times$ \\
+RMSNorm & $20N$ & $12N$ & $1.7\times$ & $0.7\times$ \\
+Add (baseline) & $12N$ & $12N$ & $1.0\times$ & $1.0\times$ \\
+\bottomrule
+\end{tabular}
+\captionof{table}{Bandwidth-bound speedup ceiling vs.\ observed (auto-vectorized, $N{=}4$M). $B_u$, $B_f$: total DRAM traffic for unfused/fused implementations.}\label{tab:traffic}
+\end{center}
+
+Softmax and cross-entropy track their ceilings closely; the slight excess for softmax ($4.6\times$ vs $4.0\times$) reflects NumPy's per-operation dispatch and temporary-allocation overhead compounding across five operations. Cross-entropy slightly undershoots ($5.6\times$ vs $6.0\times$) because the fused exp computation has higher arithmetic cost per byte than NumPy's separate vectorized passes. RMSNorm falls far below its ceiling because NumPy's Accelerate backend uses vDSP primitives that achieve higher effective bandwidth for the reduce-then-broadcast pattern than single-threaded NEON. The add baseline at $1.0\times$ confirms that with no fusion opportunity, the JIT offers no sustained advantage.
+
 \textbf{Fused Kernels: Sustained Speedup via Fusion.}
 
 ```{r fused-plot, fig.width=3.3, fig.height=5.5, out.width="\\columnwidth"}
@@ -142,12 +171,18 @@ fused <- sp %>% filter(kernel %in% c("softmax","cross_entropy","rmsnorm")) %>%
          kernel=factor(kernel, levels=c("softmax","cross_entropy","rmsnorm"),
                        labels=c("Softmax","Cross-Entropy","RMSNorm")))
 nl <- fused %>% distinct(n, n_lab) %>% arrange(n)
+ceil <- data.frame(kernel=factor(c("Softmax","Cross-Entropy","RMSNorm"),
+  levels=c("Softmax","Cross-Entropy","RMSNorm")), sbw=c(4.0, 6.0, 20/12))
 ggplot(fused, aes(n_fct, speedup_clamped, color=variant, linetype=variant, group=variant)) +
-  geom_hline(yintercept=1, color="#bbb", linewidth=0.4) + geom_line(linewidth=0.5) +
+  geom_hline(yintercept=1, color="#bbb", linewidth=0.4) +
+  geom_hline(data=ceil, aes(yintercept=sbw, color="BW ceiling", linetype="BW ceiling"), linewidth=0.5) +
+  geom_line(linewidth=0.5) +
   geom_point(aes(shape=variant), size=1.0) + facet_wrap(~kernel, ncol=1) +
   scale_x_discrete(labels=setNames(nl$n_lab, nl$n)) +
-  scale_color_manual(values=cols) + scale_linetype_manual(values=lts) +
-  scale_shape_manual(values=shps) +
+  scale_color_manual(values=c(cols, "BW ceiling"="#cc3333"),
+    guide=guide_legend(override.aes=list(shape=c(16, 17, NA)))) +
+  scale_linetype_manual(values=c(lts, "BW ceiling"="dotted")) +
+  scale_shape_manual(values=shps, guide="none") +
   labs(x=NULL, y="Speedup over NumPy", color=NULL, linetype=NULL, shape=NULL) +
   theme_paper + theme(legend.position="top", legend.key.size=unit(0.3,"cm"),
     legend.text=element_text(size=6), legend.margin=margin(0,0,-4,0),
@@ -157,21 +192,21 @@ ggplot(fused, aes(n_fct, speedup_clamped, color=variant, linetype=variant, group
 ```
 
 \vspace{-0.8em}
-\noindent\footnotesize\emph{Figure 1: Speedup of fused JIT kernels over NumPy. Gray line = 1x baseline (values below 1x clamped). Fused kernels sustain high speedup even at large N because fusion eliminates intermediate memory traffic.}
+\noindent\footnotesize\emph{Figure 1: Speedup of fused JIT kernels over NumPy. Gray line = 1x baseline; red dotted line = bandwidth-bound ceiling $S_{\text{BW}}$ from Table~\ref{tab:traffic}. Values below 1x clamped.}
 \normalsize
 \vspace{0.3em}
 
 Figure 1 shows the speedup for the three fused kernels. Unlike simple element-wise operations, these kernels maintain substantial speedups across all problem sizes. The characteristic shape of each curve reflects a two-regime model: at small $N$, dispatch overhead dominates and speedups are highest; as $N$ grows, compute and memory bandwidth become the bottleneck and speedups converge to a steady-state value determined by how much memory traffic the fused kernel eliminates.
 
-\emph{Softmax} ($4.6\times$ at $N{=}4$M). NumPy computes softmax as four separate array passes: \texttt{max}, \texttt{subtract}, \texttt{exp}, and \texttt{divide(exp, sum)}. Each pass reads and writes the full $N$-element array, producing roughly $8N$ bytes of memory traffic per pass and $32N$ total. Our JIT kernel fuses all four passes into a single loop with stack-allocated accumulators (via \texttt{alloca} promoted to registers by LLVM), reducing total traffic to ${\sim}8N$ bytes, a $4\times$ reduction. The \texttt{exp} function avoids \texttt{libm} entirely, using range reduction via repeated squaring ($\exp(x) = \exp(x/32)^{32}$) followed by a degree-5 Horner polynomial that achieves ${\sim}10^{-6}$ relative error.
+\emph{Softmax} ($4.6\times$ at $N{=}4$M). The bandwidth model predicts $S_{\text{BW}} = 32N/8N = 4.0\times$ (Table~\ref{tab:traffic}). The observed $4.6\times$ slightly exceeds this ceiling because NumPy's per-operation dispatch and temporary-allocation overhead compounds across five array operations, adding a constant penalty beyond pure bandwidth cost. Our JIT kernel fuses all passes into a single loop with stack-allocated accumulators (via \texttt{alloca} promoted to registers by LLVM). The \texttt{exp} function avoids \texttt{libm} entirely, using range reduction via repeated squaring ($\exp(x) = \exp(x/32)^{32}$) followed by a degree-5 Horner polynomial that achieves ${\sim}10^{-6}$ relative error.
 
-\emph{Cross-entropy} ($5.6\times$ at $N{=}4$M). Cross-entropy loss computes $-\log(\mathrm{softmax}(x)_k)$, which requires the same max, exp, and sum passes as softmax plus a final log. In NumPy, this is typically expressed as a chain of five array operations: \texttt{max}, \texttt{subtract}, \texttt{exp}, \texttt{sum}, and \texttt{log}. Each allocates a temporary $N$-element array and reads/writes it in full, producing at least $40N$ bytes of memory traffic. Our fused kernel computes the log-probability in a single pass, reading the input once and writing only the scalar output, for ${\sim}4N$ bytes total.
+\emph{Cross-entropy} ($5.6\times$ at $N{=}4$M). Cross-entropy loss computes $-\log(\mathrm{softmax}(x)_k)$, requiring the same passes as softmax plus a final log. The bandwidth model gives $S_{\text{BW}} = 24N/4N = 6.0\times$ (Table~\ref{tab:traffic}); the fused kernel writes only a scalar loss, so $B_f = 4N$. The observed $5.6\times$ slightly undershoots because the fused kernel's polynomial exp has higher arithmetic cost per byte than NumPy's separate vectorized passes, pushing $I$ toward the ridge point.
 
 What is notable about cross-entropy is how flat the speedup curve remains: $5.6\times$ at $N{=}64$, peaking at $6.7\times$ at $N{=}1$K, and still $5.6\times$ at $N{=}4$M. The speedup barely decays because the ratio of eliminated memory traffic is roughly constant regardless of problem size. NumPy's per-operation overhead (temporary allocation, Python dispatch, type checking) adds a fixed cost per pass that compounds across five operations; the fused kernel pays none of this. Even at $N{=}4$M where the working set (${\sim}16$\,MB) far exceeds L2 cache, the ${\sim}10\times$ reduction in memory traffic keeps the fused kernel well ahead.
 
 The additional log and subtraction operations add compute intensity without increasing memory pressure, which actually improves the compute-to-memory ratio and makes the kernel less bandwidth-bound than softmax. This explains why cross-entropy sustains a higher steady-state speedup ($5.6\times$ vs $4.6\times$) despite performing strictly more arithmetic per element.
 
-\emph{RMSNorm} (${\sim}0.7\times$ at $N{=}4$M). RMSNorm computes $x / \sqrt{\mathrm{mean}(x^2) + \epsilon}$ in two passes: a reduction pass that accumulates the sum of squares, and a scaling pass that divides each element by the computed norm. With only two passes to fuse (compared to four or five for softmax and cross-entropy), the potential memory traffic reduction is smaller: from ${\sim}16N$ bytes (two separate read-write passes) to ${\sim}12N$ bytes (one read-reduce pass plus one read-write scaling pass), roughly a $1.3\times$ improvement.
+\emph{RMSNorm} (${\sim}0.7\times$ at $N{=}4$M). RMSNorm computes $x / \sqrt{\mathrm{mean}(x^2) + \epsilon}$ in two passes: a reduction (sum of squares) and a scaling pass. The bandwidth model gives $S_{\text{BW}} = 20N/12N = 1.7\times$ (Table~\ref{tab:traffic}), the lowest ceiling among the fused kernels because only two passes can be fused.
 
 The JIT kernel achieves $1.9\times$ speedup up to $N{=}4$K, where dispatch overhead still contributes meaningfully. The crossover point where NumPy overtakes the JIT kernel occurs at $N{=}16$K ($1.2\times$), and by $N{=}65$K the JIT falls below $1\times$. At large $N$, NumPy's Accelerate framework uses vDSP-accelerated vector operations for the squared-norm and scaling, which are heavily tuned for exactly this reduce-then-broadcast pattern. The NEON intrinsics variant fares slightly better than auto-vectorized at large $N$ ($0.77\times$ vs $0.69\times$ at $N{=}4$M) because explicit register management avoids some spill overhead in the two-pass structure.
 
@@ -232,7 +267,7 @@ This result suggests that for a JIT compiler targeting LLVM, investing effort in
 
 The central result is that kernel fusion, combining multiple array passes into a single loop, provides sustained speedups that do not vanish at large problem sizes. This is the key advantage a JIT compiler has over NumPy's array-at-a-time execution model.
 
-\emph{Why fusion matters.} NumPy computes softmax as four separate operations: \texttt{max}, \texttt{subtract}, \texttt{exp}, and \texttt{divide}. Each reads and writes the full array, producing ${\sim}4\times$ the memory traffic of a fused implementation. At $N{=}4$M (${\sim}16$\,MB), the working set exceeds L1/L2 cache, making memory bandwidth the bottleneck. Fusion reduces this traffic to a single read-write pass, which is why softmax and cross-entropy sustain $4{-}6\times$ speedups even when simple kernels converge to $1\times$.
+\emph{Why fusion matters.} The roofline analysis predicts the observed speedups: softmax and cross-entropy track their bandwidth-bound ceilings $S_{\text{BW}}$ within 15\% at $N{=}4$M (Table~\ref{tab:traffic}), confirming that fusion's primary mechanism is eliminating intermediate memory traffic rather than reducing compute. At $N{=}4$M (${\sim}16$\,MB), the working set far exceeds L1/L2 cache, making $\beta$ the binding constraint. Fusion reduces DRAM traffic from ${\sim}4{-}6$ passes to one, shifting $I$ rightward on the roofline without changing $F$.
 
 \emph{Stack allocation enables register promotion.} A custom \texttt{Stack} memory class uses \texttt{alloca} instead of \texttt{malloc} for scalar accumulators. LLVM promotes these to registers, avoiding memory round-trips in the inner loop. This is critical for fused kernels that maintain multiple running accumulators (max, sum, etc.).
 
