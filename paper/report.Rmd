@@ -43,34 +43,25 @@ natbib: true
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE,
-                      fig.width=3.4, fig.height=2.4, fig.align="center",
-                      out.width="\\columnwidth", fig.env="center")
+  fig.width=3.4, fig.height=2.4, fig.align="center",
+  out.width="\\columnwidth", fig.env="center")
 library(ggplot2); library(tidyr); library(dplyr); library(forcats)
 
 theme_paper <- theme_minimal(base_size=9) +
-  theme(panel.grid.minor=element_blank(),
-        plot.title=element_text(size=9, face="bold"),
+  theme(panel.grid.minor=element_blank(), plot.title=element_text(size=9, face="bold"),
         axis.title=element_text(size=8), axis.text=element_text(size=7),
         plot.margin=margin(2,2,2,2))
+cols <- c("Auto-vectorized"="#4C72B0","NEON intrinsics"="#DD8452")
+lts <- c("Auto-vectorized"="solid","NEON intrinsics"="dashed")
+shps <- c("Auto-vectorized"=16,"NEON intrinsics"=17)
+nlab <- function(n) ifelse(n>=1e6, paste0(n/1e6,"M"), ifelse(n>=1e3, paste0(n/1e3,"K"), as.character(n)))
 
 df <- read.csv("../benchmarks/results.csv", stringsAsFactors=FALSE)
-
-# 1D kernels: those whose n column is purely numeric
 df_1d <- df %>% filter(grepl("^[0-9]+$", n)) %>% mutate(n=as.numeric(n))
-# 2D kernels: matmul, matvec, weighted_sum
-df_2d <- df %>% filter(!grepl("^[0-9]+$", n) | kernel %in% c("matmul","matvec"))
-
-# Pivot speedups to long form for faceted plots
-sp <- df_1d %>%
-  select(kernel, n, exo_speedup, neon_speedup) %>%
-  pivot_longer(cols=c(exo_speedup, neon_speedup),
-               names_to="variant", values_to="speedup") %>%
+sp <- df_1d %>% select(kernel, n, exo_speedup, neon_speedup) %>%
+  pivot_longer(c(exo_speedup, neon_speedup), names_to="variant", values_to="speedup") %>%
   mutate(variant=ifelse(variant=="exo_speedup","Auto-vectorized","NEON intrinsics"),
          speedup_clamped=pmax(speedup, 1.0))
-
-# Summary: peak speedup per kernel per variant
-peak <- sp %>% group_by(kernel, variant) %>%
-  summarise(peak_speedup=max(speedup), .groups="drop")
 ```
 
 \begin{abstract}
@@ -146,34 +137,23 @@ Each kernel has two JIT variants: \emph{auto-vectorized} (scalar Exo code, LLVM 
 \textbf{Fused Kernels: Sustained Speedup via Fusion.}
 
 ```{r fused-plot, fig.width=3.3, fig.height=5.5, out.width="\\columnwidth"}
-fused <- sp %>%
-  filter(kernel %in% c("softmax","cross_entropy","rmsnorm")) %>%
-  mutate(n_fct=factor(n, levels=sort(unique(n))),
-         n_lab=ifelse(n>=1e6, paste0(n/1e6,"M"),
-                ifelse(n>=1e3, paste0(n/1e3,"K"), as.character(n))),
+fused <- sp %>% filter(kernel %in% c("softmax","cross_entropy","rmsnorm")) %>%
+  mutate(n_fct=factor(n, levels=sort(unique(n))), n_lab=nlab(n),
          kernel=factor(kernel, levels=c("softmax","cross_entropy","rmsnorm"),
                        labels=c("Softmax","Cross-Entropy","RMSNorm")))
-n_labs <- fused %>% distinct(n, n_lab) %>% arrange(n)
-
+nl <- fused %>% distinct(n, n_lab) %>% arrange(n)
 ggplot(fused, aes(n_fct, speedup_clamped, color=variant, linetype=variant, group=variant)) +
-  geom_hline(yintercept=1, color="#bbbbbb", linewidth=0.4) +
-  geom_line(linewidth=0.5) +
-  geom_point(aes(shape=variant), size=1.0) +
-  facet_wrap(~kernel, ncol=1) +
-  scale_x_discrete(labels=setNames(n_labs$n_lab, n_labs$n)) +
-  scale_color_manual(values=c("Auto-vectorized"="#4C72B0","NEON intrinsics"="#DD8452")) +
-  scale_linetype_manual(values=c("Auto-vectorized"="solid","NEON intrinsics"="dashed")) +
-  scale_shape_manual(values=c("Auto-vectorized"=16,"NEON intrinsics"=17)) +
+  geom_hline(yintercept=1, color="#bbb", linewidth=0.4) + geom_line(linewidth=0.5) +
+  geom_point(aes(shape=variant), size=1.0) + facet_wrap(~kernel, ncol=1) +
+  scale_x_discrete(labels=setNames(nl$n_lab, nl$n)) +
+  scale_color_manual(values=cols) + scale_linetype_manual(values=lts) +
+  scale_shape_manual(values=shps) +
   labs(x=NULL, y="Speedup over NumPy", color=NULL, linetype=NULL, shape=NULL) +
-  theme_paper +
-  theme(legend.position="top", legend.key.size=unit(0.3,"cm"),
-        legend.text=element_text(size=6), legend.margin=margin(0,0,-4,0),
-        axis.text.x=element_text(angle=45, hjust=1, size=4),
-        axis.text.y=element_text(size=5.5),
-        axis.title.y=element_text(size=7),
-        strip.text=element_text(face="bold", size=7),
-        panel.border=element_rect(color="#cccccc", fill=NA, linewidth=0.3),
-        panel.spacing=unit(0.5,"lines"))
+  theme_paper + theme(legend.position="top", legend.key.size=unit(0.3,"cm"),
+    legend.text=element_text(size=6), legend.margin=margin(0,0,-4,0),
+    axis.text.x=element_text(angle=45, hjust=1, size=4), axis.text.y=element_text(size=5.5),
+    axis.title.y=element_text(size=7), strip.text=element_text(face="bold", size=7),
+    panel.border=element_rect(color="#ccc", fill=NA, linewidth=0.3), panel.spacing=unit(0.5,"lines"))
 ```
 
 \vspace{-0.8em}
@@ -198,59 +178,37 @@ The JIT kernel achieves $1.9\times$ speedup up to $N{=}4$K, where dispatch overh
 RMSNorm illustrates the limits of fusion as an optimization strategy: when the number of passes is small and NumPy's backend is well-optimized for the specific access pattern, single-threaded JIT compilation cannot compensate for the lack of hardware-accelerated vector primitives.
 
 ```{r fused-table, results='asis'}
-ftbl <- df_1d %>%
-  filter(kernel %in% c("softmax","cross_entropy","rmsnorm")) %>%
-  group_by(kernel) %>%
-  summarise(
-    `Peak auto-vec`=sprintf("%.1fx (N=%s)", max(exo_speedup),
-                            ifelse(n[which.max(exo_speedup)]>=1e3,
-                                   paste0(n[which.max(exo_speedup)]/1e3,"K"),
-                                   n[which.max(exo_speedup)])),
-    `Peak NEON`=sprintf("%.1fx (N=%s)", max(neon_speedup),
-                        ifelse(n[which.max(neon_speedup)]>=1e3,
-                               paste0(n[which.max(neon_speedup)]/1e3,"K"),
-                               n[which.max(neon_speedup)])),
-    `Auto-vec @ 4M`=sprintf("%.1fx", exo_speedup[n==max(n)]),
-    `NEON @ 4M`=sprintf("%.1fx", neon_speedup[n==max(n)]),
-    .groups="drop"
-  ) %>%
-  mutate(kernel=c("softmax"="Softmax","cross_entropy"="Cross-Entropy","rmsnorm"="RMSNorm")[kernel])
-
+pk <- function(v, ns) sprintf("%.1fx (N=%s)", max(v), nlab(ns[which.max(v)]))
+ftbl <- df_1d %>% filter(kernel %in% c("softmax","cross_entropy","rmsnorm")) %>%
+  group_by(kernel) %>% summarise(`Peak auto-vec`=pk(exo_speedup, n),
+    `Peak NEON`=pk(neon_speedup, n), `Auto-vec @ 4M`=sprintf("%.1fx", exo_speedup[n==max(n)]),
+    `NEON @ 4M`=sprintf("%.1fx", neon_speedup[n==max(n)]), .groups="drop") %>%
+  mutate(kernel=c(softmax="Softmax", cross_entropy="Cross-Entropy", rmsnorm="RMSNorm")[kernel])
 cat("\\begin{center}\n\\resizebox{\\columnwidth}{!}{")
-knitr::kable(ftbl, format="latex", booktabs=TRUE, col.names=c("Kernel","Peak auto-vec","Peak NEON","Auto-vec @ 4M","NEON @ 4M"),
-             align=c("l","r","r","r","r")) %>% cat()
+knitr::kable(ftbl, format="latex", booktabs=TRUE,
+  col.names=c("Kernel","Peak auto-vec","Peak NEON","Auto-vec @ 4M","NEON @ 4M"),
+  align=c("l","r","r","r","r")) %>% cat()
 cat("}\n\\captionof{table}{Fused kernel speedup over NumPy (Apple Silicon, float32). Peak speedup and sustained speedup at $N{=}4$M.}\n\\end{center}")
 ```
 
 \textbf{Baseline Kernels.}
 
 ```{r baseline-plot, fig.width=3.3, fig.height=8.0, out.width="\\columnwidth"}
-baselines <- sp %>%
-  filter(kernel %in% c("saxpy","add","relu","dot","embedding")) %>%
-  mutate(n_fct=factor(n, levels=sort(unique(n))),
-         n_lab=ifelse(n>=1e6, paste0(n/1e6,"M"),
-                ifelse(n>=1e3, paste0(n/1e3,"K"), as.character(n))))
-n_labs2 <- baselines %>% distinct(n, n_lab) %>% arrange(n)
-
-ggplot(baselines, aes(n_fct, speedup_clamped, color=variant, linetype=variant, group=variant)) +
-  geom_hline(yintercept=1, color="#bbbbbb", linewidth=0.4) +
-  geom_line(linewidth=0.5) +
-  geom_point(aes(shape=variant), size=0.8) +
-  facet_wrap(~kernel, scales="free_y", ncol=1) +
-  scale_x_discrete(labels=setNames(n_labs2$n_lab, n_labs2$n)) +
-  scale_color_manual(values=c("Auto-vectorized"="#4C72B0","NEON intrinsics"="#DD8452")) +
-  scale_linetype_manual(values=c("Auto-vectorized"="solid","NEON intrinsics"="dashed")) +
-  scale_shape_manual(values=c("Auto-vectorized"=16,"NEON intrinsics"=17)) +
+bl <- sp %>% filter(kernel %in% c("saxpy","add","relu","dot","embedding")) %>%
+  mutate(n_fct=factor(n, levels=sort(unique(n))), n_lab=nlab(n))
+nl2 <- bl %>% distinct(n, n_lab) %>% arrange(n)
+ggplot(bl, aes(n_fct, speedup_clamped, color=variant, linetype=variant, group=variant)) +
+  geom_hline(yintercept=1, color="#bbb", linewidth=0.4) + geom_line(linewidth=0.5) +
+  geom_point(aes(shape=variant), size=0.8) + facet_wrap(~kernel, scales="free_y", ncol=1) +
+  scale_x_discrete(labels=setNames(nl2$n_lab, nl2$n)) +
+  scale_color_manual(values=cols) + scale_linetype_manual(values=lts) +
+  scale_shape_manual(values=shps) +
   labs(x=NULL, y="Speedup over NumPy", color=NULL, linetype=NULL, shape=NULL) +
-  theme_paper +
-  theme(legend.position="top", legend.key.size=unit(0.3,"cm"),
-        legend.text=element_text(size=5.5), legend.margin=margin(0,0,-4,0),
-        axis.text.x=element_text(angle=45, hjust=1, size=3.5),
-        axis.text.y=element_text(size=5),
-        axis.title.y=element_text(size=6),
-        strip.text=element_text(face="bold", size=6),
-        panel.border=element_rect(color="#cccccc", fill=NA, linewidth=0.3),
-        panel.spacing=unit(0.3,"lines"))
+  theme_paper + theme(legend.position="top", legend.key.size=unit(0.3,"cm"),
+    legend.text=element_text(size=5.5), legend.margin=margin(0,0,-4,0),
+    axis.text.x=element_text(angle=45, hjust=1, size=3.5), axis.text.y=element_text(size=5),
+    axis.title.y=element_text(size=6), strip.text=element_text(face="bold", size=6),
+    panel.border=element_rect(color="#ccc", fill=NA, linewidth=0.3), panel.spacing=unit(0.3,"lines"))
 ```
 
 \vspace{-0.8em}
