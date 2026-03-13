@@ -1,3 +1,35 @@
+come up with a good new name - this is just a placeholder
+- figure out narrative and whether this will be more on exo or xdsl side
+
+in theory we want neon AND avx
+
+for completeness, look up clang intrinsics and just do the mapping 1:1 from source
+no nede to codegolf the intrinsics
+
+for speedup plots, dont clamp
+
+comparing with numba would be important
+they specifically optimize numpy like things
+
+open prs in xdsl
+
+---
+
+how do you write research papers?
+- discuss authorship ranking early on
+- define research question. what are you trying to achieve?
+- define your plan as an abstract: http://www.easterbrook.ca/steve/2010/01/how-to-write-a-scientific-abstract-in-six-easy-steps/
+    - -> this is crucial for the following steps.
+    - whats the angle? whats the story?
+    - we need this first before we bring in collaborators
+    - we can individually try formulating this and then come back and chat again
+
+move experimentation and project into different repos
+
+third repo with paper
+
+---
+
 entire project could consist of just 1 file (and 2 patch files) bridging exo with llvmlite:
 
 - experiments show custom vectorization is pointless -> snapshot entire project in archive/, drop intrinsics stuff, simplify code further
