@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import polars as pl
-from plotnine import aes, element_line, element_rect, element_text, expand_limits, facet_wrap, geom_hline, geom_line, geom_point, ggplot, labs, scale_color_manual, scale_linetype_manual, scale_shape_manual, theme, theme_minimal
+from plotnine import aes, annotate, element_line, element_rect, element_text, expand_limits, facet_wrap, geom_hline, geom_line, geom_point, ggplot, labs, scale_color_manual, scale_linetype_manual, scale_shape_manual, theme, theme_minimal
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -589,51 +589,61 @@ for t_size, d_size in tqdm(ws_sizes, desc="weighted_sum"):
 
 
 def _plot(df: pl.DataFrame) -> None:
-    pdf = df.unpivot(on=["exo_speedup", "neon_speedup"], index=["kernel", "n"], variable_name="variant", value_name="speedup").with_columns(pl.col("variant").replace({"exo_speedup": "Auto-vectorized", "neon_speedup": "NEON intrinsics"}), pl.col("speedup").clip(lower_bound=1.0)).to_pandas()
+    long = df.unpivot(on=["exo_speedup", "neon_speedup"], index=["kernel", "n"], variable_name="variant", value_name="speedup").with_columns(pl.col("variant").replace({"exo_speedup": "Auto-vectorized", "neon_speedup": "NEON intrinsics"}))
+
+    # sort kernels by max speedup at their largest input size (descending)
+    last_n = df.group_by("kernel").agg(pl.col("n").last().alias("last_n"))
+    best = df.join(last_n, on="kernel").filter(pl.col("n") == pl.col("last_n")).with_columns(pl.max_horizontal("exo_speedup", "neon_speedup").alias("best")).sort("best", descending=True)
+    kernel_order = best["kernel"].to_list()
+
+    pdf = long.to_pandas()
 
     seen = []
     for v in pdf["n"]:
         if v not in seen:
             seen.append(v)
     pdf["n"] = pd.Categorical(pdf["n"], categories=seen, ordered=True)
+    pdf["kernel"] = pd.Categorical(pdf["kernel"], categories=kernel_order, ordered=True)
 
     out = Path(__file__).parent / "plots"
     out.mkdir(exist_ok=True)
+    n_kernels = len(kernel_order)
     # fmt: off
     p = (
         ggplot(pdf, aes("n", "speedup", color="variant", linetype="variant", group="variant"))
-        + geom_hline(yintercept=1, linetype="solid", color="#bbbbbb", size=0.8)
+        + annotate("rect", xmin=float("-inf"), xmax=float("inf"), ymin=float("-inf"), ymax=1, fill="#e74c3c", alpha=0.07)
+        + geom_hline(yintercept=1, linetype="solid", color="#e74c3c", size=0.8)
         + geom_line(size=1.4)
         + geom_point(aes(shape="variant"), size=2.8)
-        + facet_wrap("~kernel", scales="free")
+        + facet_wrap("~kernel", scales="free", ncol=1)
         + scale_color_manual(values=["#4C72B0", "#DD8452"])
         + scale_linetype_manual(values=["solid", "dashed"])
         + scale_shape_manual(values=["o", "^"])
         + expand_limits(y=1)
         + theme_minimal()
         + theme(
-            figure_size=(20, 13),
+            figure_size=(8, 5 * n_kernels),
+            panel_spacing_y=0.15,  # default is 0.01, this is the fraction of panel height used as gap
             legend_position="top",
             legend_title=element_text(size=0),
-            legend_text=element_text(size=11),
-            plot_title=element_text(size=15, weight="bold"),
-            plot_subtitle=element_text(size=11, color="#555555"),
-            axis_title=element_text(size=10),
-            axis_text_x=element_text(rotation=45, ha="right", size=8),
-            strip_text=element_text(size=11, weight="bold"),
+            legend_text=element_text(size=13),
+            plot_title=element_text(size=18, weight="bold", margin={"b": 0}),
+            axis_title=element_text(size=13),
+            axis_text_x=element_text(rotation=45, ha="right", size=11),
+            axis_text_y=element_text(size=11),
+            strip_text=element_text(size=13, weight="bold"),
             panel_grid_minor=element_line(color="#eeeeee", size=0.3),
             panel_grid_major=element_line(color="#dddddd", size=0.5),
             panel_border=element_rect(color="#cccccc", size=0.5),
         )
         + labs(
-            title="xnumpy Kernel Performance vs NumPy",
-            subtitle="Speedup over NumPy (baseline = 1x, values below 1x clamped). Converges at large N as memory bandwidth becomes the bottleneck.",
-            x="Problem Size (number of elements)",
-            y="Speedup over NumPy (1x = baseline)",
+            title="xnumpy vs NumPy",
+            x="Problem size",
+            y="Speedup (x)",
             color="", linetype="", shape="",
         )
     )
-    p.save(str(out / "convergence.pdf"))
+    p.save(str(out / "convergence.pdf"), limitsize=False)
     # fmt: on
 
 
