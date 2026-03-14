@@ -29,7 +29,7 @@ def _dot(N: size, result: f32[1], q: f32[N], k: f32[N]):
 
 
 @cache
-def dot(n: int) -> Callable[..., None]:
+def dot_exo(n: int) -> Callable[..., None]:
     assert n % 4 == 0
     p = _dot.partial_eval(N=n)
     p = simplify(p)

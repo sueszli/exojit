@@ -20,7 +20,7 @@ def _matmul(M: size, K: size, N: size, C: f32[M, N] @ DRAM, A: f32[M, K] @ DRAM,
 
 
 @cache
-def matmul(m: int, k: int, n: int) -> Callable[..., None]:
+def matmul_exo(m: int, k: int, n: int) -> Callable[..., None]:
     p = _matmul.partial_eval(M=m, K=k, N=n)
     # fission: hoist the zero-init out of the j,k loops so k can be reordered
     p = fission(p, p.find("for k in _: _").before(), n_lifts=2)

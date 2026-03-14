@@ -42,5 +42,5 @@ def _jit_scale(n: int) -> Callable[..., None]:
 
 
 @cache
-def rmsnorm(n: int) -> tuple[Callable[..., None], Callable[..., None]]:
+def rmsnorm_exo(n: int) -> tuple[Callable[..., None], Callable[..., None]]:
     return _jit_sumsq(n), _jit_scale(n)

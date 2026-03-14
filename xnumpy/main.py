@@ -39,7 +39,7 @@ from xdsl.utils.scoped_dict import ScopedDict
 
 from xnumpy.jitcall import JitFunc
 from xnumpy.patches_xdsl_intrinsics import ConvertVecIntrinsic
-from xnumpy.patches_xdsl_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, RewriteMemRefTypes, SelectOp, VectorFMaxOp
+from xnumpy.patches_xdsl_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, FSqrtOp, RewriteMemRefTypes, SelectOp, VectorFMaxOp
 
 _FCMP_PREDICATES: dict[str, tuple[str, bool]] = {  # mlir predicate -> (op, ordered?)
     "oeq": ("==", True),
@@ -299,7 +299,11 @@ class IRGenerator:
             return self._emit(SelectOp(cmp, args[2], args[3]))
 
         output_type = self._to_mlir_type(extern.f.typecheck(extern.args))
-        return self._emit(llvm.CallOp(extern.f.name(), *args, return_type=output_type))
+        name = extern.f.name()
+        # weird libc convention
+        if name == "sqrt" and output_type == f32:
+            name = "sqrtf"
+        return self._emit(llvm.CallOp(name, *args, return_type=output_type))
 
     def _expr(self, expr: object) -> OpResult | SSAValue:
         # dispatch loopir expression node to its typed lowering method
@@ -635,6 +639,15 @@ class LLVMLiteGenerator:
                 phi_map[a].add_incoming(val_map[v], cur_block)
 
     @staticmethod
+    def _get_intrinsic(module: llvmlite.ir.Module, base_name: str, res_type: llvmlite.ir.Type, arity: int) -> llvmlite.ir.Function:
+        elem = "f32" if (res_type.element if isinstance(res_type, llvmlite.ir.VectorType) else res_type) == llvmlite.ir.FloatType() else "f64"
+        suffix = f".v{res_type.count}{elem}" if isinstance(res_type, llvmlite.ir.VectorType) else f".{elem}"
+        name = base_name + suffix
+        if name not in module.globals:
+            llvmlite.ir.Function(module, llvmlite.ir.FunctionType(res_type, [res_type] * arity), name=name)
+        return module.globals[name]
+
+    @staticmethod
     def _convert_op(op: Operation, builder: llvmlite.ir.IRBuilder, block_map: dict[Block, llvmlite.ir.Block], phi_map: dict[SSAValue, llvmlite.ir.PhiInstr], val_map: dict[SSAValue, llvmlite.ir.Value]) -> None:
         # translate one xdsl op to llvmlite ir. unmatched ops fall back to xdsl's convert_op
         match op:
@@ -666,32 +679,20 @@ class LLVMLiteGenerator:
                 mask = llvmlite.ir.Constant(llvmlite.ir.VectorType(llvmlite.ir.IntType(32), n_lanes), [0] * n_lanes)
                 val_map[op.vector] = builder.shuffle_vector(inserted, undef, mask)
             case vector.FMAOp():
-                lhs = val_map[op.lhs]
-                rhs = val_map[op.rhs]
-                acc = val_map[op.acc]
-                vec_type = convert_type(op.res.type)
-                n = vec_type.count
-                elem = "f32" if vec_type.element == llvmlite.ir.FloatType() else "f64"
-                intrinsic_name = f"llvm.fma.v{n}{elem}"
-                try:
-                    fma_fn = builder.module.get_global(intrinsic_name)
-                except KeyError:
-                    fma_type = llvmlite.ir.FunctionType(vec_type, [vec_type, vec_type, vec_type])
-                    fma_fn = llvmlite.ir.Function(builder.module, fma_type, name=intrinsic_name)
-                val_map[op.res] = builder.call(fma_fn, [lhs, rhs, acc])
+                val_map[op.res] = builder.call(
+                    LLVMLiteGenerator._get_intrinsic(builder.module, "llvm.fma", convert_type(op.res.type), arity=3),
+                    [val_map[op.lhs], val_map[op.rhs], val_map[op.acc]],
+                )
             case VectorFMaxOp():
-                lhs = val_map[op.lhs]
-                rhs = val_map[op.rhs]
-                vec_type = convert_type(op.res.type)
-                n = vec_type.count
-                elem = "f32" if vec_type.element == llvmlite.ir.FloatType() else "f64"
-                intrinsic_name = f"llvm.maxnum.v{n}{elem}"
-                try:
-                    maxnum_fn = builder.module.get_global(intrinsic_name)
-                except KeyError:
-                    maxnum_type = llvmlite.ir.FunctionType(vec_type, [vec_type, vec_type])
-                    maxnum_fn = llvmlite.ir.Function(builder.module, maxnum_type, name=intrinsic_name)
-                val_map[op.res] = builder.call(maxnum_fn, [lhs, rhs])
+                val_map[op.res] = builder.call(
+                    LLVMLiteGenerator._get_intrinsic(builder.module, "llvm.maxnum", convert_type(op.res.type), arity=2),
+                    [val_map[op.lhs], val_map[op.rhs]],
+                )
+            case FSqrtOp():
+                val_map[op.res] = builder.call(
+                    LLVMLiteGenerator._get_intrinsic(builder.module, "llvm.sqrt", convert_type(op.res.type), arity=1),
+                    [val_map[op.arg]],
+                )
             case _:
                 _xdsl_convert_op(op, builder, val_map)
 
@@ -729,9 +730,17 @@ class LLVMLiteGenerator:
                 if isinstance(arg.type, llvmlite.ir.PointerType):
                     arg.add_attribute("noalias")
 
-        for op in func_ops:
-            if op.body.blocks:
-                LLVMLiteGenerator._generate_func(op, llvm_module)
+        # declare external functions referenced by CallOps but not defined in the module
+        defined_names = {op.sym_name.data for op in func_ops}
+        extern_calls = {op.callee.string_value(): op for func_op in func_ops for block in func_op.body.blocks for op in block.ops if isinstance(op, llvm.CallOp) and op.callee is not None and op.callee.string_value() not in defined_names}
+        for name, op in extern_calls.items():
+            ret_type = convert_type(op.results[0].type) if op.results else llvmlite.ir.VoidType()
+            arg_types = [convert_type(a.type) for a in op.args]
+            llvmlite.ir.Function(llvm_module, llvmlite.ir.FunctionType(ret_type, arg_types), name=name)
+
+        for func_op in func_ops:
+            if func_op.body.blocks:
+                LLVMLiteGenerator._generate_func(func_op, llvm_module)
 
         return llvm_module
 

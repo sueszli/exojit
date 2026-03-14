@@ -4,20 +4,21 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
+from exo.libs.externs import select
 from exo.stdlib.scheduling import rename, simplify
 
 from xnumpy.main import compile_jit
 
 
 @proc
-def _embedding(D: size, out: f32[D], row: f32[D]):
-    for i in seq(0, D):
-        out[i] = row[i]
+def _relu(N: size, out: f32[N], inp: f32[N]):
+    for i in seq(0, N):
+        out[i] = select(0.0, inp[i], inp[i], 0.0)
 
 
 @cache
-def embedding(d: int) -> Callable[..., None]:
-    p = _embedding.partial_eval(D=d)
+def relu_exo(n: int) -> Callable[..., None]:
+    p = _relu.partial_eval(N=n)
     p = simplify(p)
-    name = f"_embedding_{d}"
+    name = f"_relu_{n}"
     return compile_jit(rename(p, name))[name]

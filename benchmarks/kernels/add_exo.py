@@ -10,14 +10,14 @@ from xnumpy.main import compile_jit
 
 
 @proc
-def _saxpy(N: size, y: f32[N] @ DRAM, x: f32[N] @ DRAM, a: f32[1] @ DRAM):
+def _add(N: size, z: f32[N], x: f32[N], y: f32[N]):
     for i in seq(0, N):
-        y[i] += a[0] * x[i]
+        z[i] = x[i] + y[i]
 
 
 @cache
-def saxpy(n: int) -> Callable[..., None]:
-    p = _saxpy.partial_eval(N=n)
+def add_exo(n: int) -> Callable[..., None]:
+    p = _add.partial_eval(N=n)
     p = simplify(p)
-    name = f"_saxpy_{n}"
+    name = f"_add_{n}"
     return compile_jit(rename(p, name))[name]

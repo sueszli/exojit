@@ -44,7 +44,7 @@ def _adam(N: size, param: f32[N] @ DRAM, grad: f32[N] @ DRAM, m: f32[N] @ DRAM, 
 
 
 @cache
-def adam(n: int) -> Callable[..., None]:
+def adam_exo(n: int) -> Callable[..., None]:
     p = _adam.partial_eval(N=n)
     p = simplify(p)
     name = f"_adam_{n}"
