@@ -18,9 +18,18 @@ def _matmul(M: size, K: size, N: size, C: f32[M, N] @ DRAM, A: f32[M, K] @ DRAM,
                 C[i, j] += A[i, k] * B[k, j]
 
 
+@proc
+def _matmul_par(M: size, K: size, N: size, C: f32[M, N] @ DRAM, A: f32[M, K] @ DRAM, B: f32[K, N] @ DRAM):
+    for i in par(0, M):
+        for j in seq(0, N):
+            C[i, j] = 0.0
+            for k in seq(0, K):
+                C[i, j] += A[i, k] * B[k, j]
+
+
 @cache
 def matmul_exo(m: int, k: int, n: int) -> Callable[..., None]:
-    p = _matmul.partial_eval(M=m, K=k, N=n)
+    p = (_matmul_par if m >= 256 else _matmul).partial_eval(M=m, K=k, N=n)
     p = fission(p, p.find("for k in _: _").before(), n_lifts=2)
     p = reorder_loops(p, "j k")
     do_k = k > 64

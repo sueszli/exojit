@@ -15,9 +15,15 @@ def _add(N: size, z: f32[N], x: f32[N], y: f32[N]):
         z[i] = x[i] + y[i]
 
 
+@proc
+def _add_par(N: size, z: f32[N], x: f32[N], y: f32[N]):
+    for i in par(0, N):
+        z[i] = x[i] + y[i]
+
+
 @cache
 def add_exo(n: int) -> Callable[..., None]:
-    p = _add.partial_eval(N=n)
+    p = (_add_par if n >= 524288 else _add).partial_eval(N=n)
     p = simplify(p)
     name = f"_add_{n}"
     return compile_jit(rename(p, name))[name]
