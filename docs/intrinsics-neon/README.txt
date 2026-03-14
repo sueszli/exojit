@@ -43,3 +43,10 @@ ARM official documentation:
 
   arm_neon_intrinsics_acle.md
     Same as above, converted to GitHub-flavored markdown via pandoc.
+
+Generated:
+
+  neon_intrinsics_list.txt
+    Exhaustive list of all NEON intrinsics extracted from arm_neon.td + arm_fp16.td.
+    425 base names organized by category, plus 3660 fully expanded type variants.
+    Generated via Python script parsing the TableGen definitions.
