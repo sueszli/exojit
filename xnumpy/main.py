@@ -809,6 +809,8 @@ def compile_jit(proc: Procedure) -> dict[str, object]:
     pto.speed_level = 3
     pto.loop_vectorization = True
     pto.slp_vectorization = True
+    pto.loop_interleaving = True  # multi-accumulator ILP (auto by O3, explicit for clarity)
+    pto.loop_unrolling = True  # loop unrolling (auto by O3, explicit for clarity)
     pb = llvmlite.binding.create_pass_builder(tm, pto)
     pb.getModulePassManager().run(mod_ref, pb)
 
