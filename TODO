@@ -1,3 +1,11 @@
+bump python version for speedup
+
+use more parallel loops in exo/neon kernels
+
+also write kernels in JAX and torch.compile for cpu
+
+---
+
 move more patches to xdsl and exo
 
 completeness: look up clang intrinsics and do a 1:1 from source. doesn't need to be concise, but simple and complete.

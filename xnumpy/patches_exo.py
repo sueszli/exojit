@@ -20,6 +20,14 @@ class Stack(Memory):
         return True
 
     @classmethod
+    def write(cls, s, lhs: str, rhs: str) -> str:
+        return f"{lhs} = {rhs};"
+
+    @classmethod
+    def reduce(cls, s, lhs: str, rhs: str) -> str:
+        return f"{lhs} += {rhs};"
+
+    @classmethod
     def free(cls, new_name: str, prim_type: str, shape: tuple[str, ...], srcinfo: object) -> str:
         return ""
 

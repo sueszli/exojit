@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
@@ -79,6 +81,7 @@ class IRGenerator:
         self.type_table = None
         self.seen_proc_names = set()
         self.seen_extern_decls = set()
+        self._par_counter = 0  # for naming
 
     @property
     def _syms(self) -> ScopedDict[str, SSAValue]:
@@ -372,7 +375,107 @@ class IRGenerator:
         region.add_block(merge_block)
         self.builder = Builder(insertion_point=InsertPoint.at_end(merge_block))
 
+    def _stmt_for_par(self, s: LoopIR.For) -> None:
+        # par() loop -> __kmpc_fork_call(@outlined, lo, hi, ...shared)
+        # outlined fn: static_init_8 -> loop [adj_lo, adj_hi] -> static_fini
+        lo = self._expr(s.lo)
+        hi = self._expr(s.hi)
+        ptr = llvm.LLVMPointerType()
+        c = lambda v, t=i64: self._emit(llvm.ConstantOp(IntegerAttr(v, t), t))
+        st = lambda v, p: self.builder.insert(llvm.StoreOp(v, p))
+        ext = lambda v: v if v.type == i64 else self._emit(llvm.SExtOp(v, i64))
+        alloc = lambda t: self._emit(llvm.AllocaOp(c(1), t))
+
+        def flat(sd):  # flatten ScopedDict parent chain
+            d = flat(sd.parent) if sd.parent else {}
+            d.update(sd.local_scope)
+            return d
+
+        # shared captures: all live vars passed to outlined fn
+        syms = flat(self._syms)
+        types = flat(self._types)
+        names = list(syms.keys())
+
+        # bounds passed by pointer
+        lo_p = alloc(lo.type)
+        st(lo, lo_p)
+        hi_p = alloc(hi.type)
+        st(hi, hi_p)
+
+        # outlined fn: void @__omp_outlined_N(i32* gtid, i32* tid, T* lo, T* hi, ...shared)
+        oname = f"__omp_outlined_{self._par_counter}"
+        self._par_counter += 1
+        atypes = [ptr] * 4 + [syms[n].type for n in names]
+        ftype = llvm.LLVMFunctionType(atypes, llvm.LLVMVoidType())
+        with self._scoped_state(inherit=False):
+            blk = Block(arg_types=atypes)
+            region = Region(blk)
+            self.builder = Builder(insertion_point=InsertPoint.at_end(blk))
+            self.symbol_table = ScopedDict()
+            self.type_table = ScopedDict()
+            for i, n in enumerate(names):  # bind shared captures (args[4:])
+                self._syms[n] = blk.args[4 + i]
+                self._types[n] = types[n]
+            gtid = self._emit(llvm.LoadOp(blk.args[0], i32))
+            lo_v = self._emit(llvm.LoadOp(blk.args[2], lo.type))
+            hi_v = self._emit(llvm.LoadOp(blk.args[3], hi.type))
+
+            # static_init_8 out-params: is_last, lower, upper, stride
+            is_last_p = alloc(i32)
+            lower_p = alloc(i64)
+            upper_p = alloc(i64)
+            stride_p = alloc(i64)
+            st(c(0, i32), is_last_p)
+            lo64 = ext(lo_v)
+            hi_incl = self._emit(llvm.SubOp(ext(hi_v), c(1)))  # [lo, hi) -> [lo, hi-1]
+            st(lo64, lower_p)
+            st(hi_incl, upper_p)
+            st(c(1), stride_p)
+
+            # partition [lo, hi-1] across threads (schedule 34 = static)
+            null = self._emit(llvm.NullOp())
+            self.builder.insert(llvm.CallOp("__kmpc_for_static_init_8", null, gtid, c(34, i32), is_last_p, lower_p, upper_p, stride_p, c(1), c(1)))
+
+            # this thread's chunk; clamp upper to original hi-1
+            adj_lo = self._emit(llvm.LoadOp(lower_p, i64))
+            adj_hi_raw = self._emit(llvm.LoadOp(upper_p, i64))
+            adj_hi = self._emit(llvm.SelectOp(self._emit(llvm.ICmpOp(adj_hi_raw, hi_incl, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64))), adj_hi_raw, hi_incl))
+
+            # loop: header(iv) -> body -> back-edge
+            r = blk.parent_region()
+            hdr = Block(arg_types=[i64])
+            body = Block()
+            exit_ = Block()
+            r.add_block(hdr)
+            r.add_block(body)
+            self.builder.insert(BrOp(hdr, adj_lo))
+            self.builder = Builder(insertion_point=InsertPoint.at_end(hdr))
+            iv = hdr.args[0]
+            self.builder.insert(CondBrOp(self._emit(llvm.ICmpOp(iv, adj_hi, IntegerAttr(llvm.ICmpPredicateFlag.SLE.to_int(), i64))), body, [], exit_, []))
+            with self._scoped_state():  # body: bind iter, emit stmts, iv++
+                self.builder = Builder(insertion_point=InsertPoint.at_end(body))
+                self.symbol_table = ScopedDict(self._syms)
+                self.type_table = ScopedDict(self._types)
+                self._syms[repr(s.iter)] = self._emit(llvm.TruncOp(iv, lo.type)) if i64 != lo.type else iv
+                self._types[repr(s.iter)] = T.Index
+                for stmt in s.body:
+                    self._stmt(stmt)
+                self.builder.insert(BrOp(hdr, self._emit(llvm.AddOp(iv, c(1)))))
+            r.add_block(exit_)  # exit: static_fini + ret
+            self.builder = Builder(insertion_point=InsertPoint.at_end(exit_))
+            self.builder.insert(llvm.CallOp("__kmpc_for_static_fini", self._emit(llvm.NullOp()), self._emit(llvm.LoadOp(blk.args[0], i32))))
+            self.builder.insert(llvm.ReturnOp())
+        self._insert_at_module(llvm.FuncOp(oname, ftype, linkage=llvm.LinkageAttr("external"), body=region))
+
+        # caller: fork_call(loc=null, argc, @outlined, lo*, hi*, ...shared_as_ptr)
+        args = [self._emit(llvm.NullOp()), c(len(names) + 2, i32), self._emit(llvm.AddressOfOp(oname, ptr)), lo_p, hi_p]
+        args += [self._emit(UnrealizedConversionCastOp.get([syms[n]], [ptr])) if syms[n].type != ptr else syms[n] for n in names]
+        self.builder.insert(llvm.CallOp("__kmpc_fork_call", *args))
+
     def _stmt_for(self, for_stmt: LoopIR.For) -> None:
+        if isinstance(for_stmt.loop_mode, LoopIR.Par):
+            return self._stmt_for_par(for_stmt)
+
         # lower for loop to cf.br/cond_br with header, body, and exit blocks
         lo = self._expr(for_stmt.lo)
         hi = self._expr(for_stmt.hi)
@@ -692,6 +795,14 @@ class LLVMLiteGenerator:
                     LLVMLiteGenerator._get_intrinsic(builder.module, "llvm.sqrt", convert_type(op.res.type), arity=1),
                     [val_map[op.arg]],
                 )
+            case llvm.AddressOfOp():
+                val_map[op.result] = builder.module.get_global(op.global_name.root_reference.data)
+            case llvm.NullOp():
+                val_map[op.nullptr] = llvmlite.ir.Constant(llvmlite.ir.PointerType(llvmlite.ir.IntType(8)), None)
+            case llvm.CallOp() if op.callee and op.callee.string_value().startswith("__kmpc_"):
+                fn = builder.module.get_global(op.callee.string_value())
+                args = [val_map[a] for a in op.args]
+                builder.call(fn, [builder.bitcast(a, fn.ftype.args[i]) if i < len(fn.ftype.args) and a.type != fn.ftype.args[i] else a for i, a in enumerate(args)])
             case _:
                 _xdsl_convert_op(op, builder, val_map)
 
@@ -732,10 +843,20 @@ class LLVMLiteGenerator:
         # declare external functions referenced by CallOps but not defined in the module
         defined_names = {op.sym_name.data for op in func_ops}
         extern_calls = {op.callee.string_value(): op for func_op in func_ops for block in func_op.body.blocks for op in block.ops if isinstance(op, llvm.CallOp) and op.callee is not None and op.callee.string_value() not in defined_names}
+        pt, i32t, i64t = llvmlite.ir.PointerType(llvmlite.ir.IntType(8)), llvmlite.ir.IntType(32), llvmlite.ir.IntType(64)
+        i32p, i64p, vt = llvmlite.ir.PointerType(i32t), llvmlite.ir.PointerType(i64t), llvmlite.ir.VoidType()
+        omp_decls = {
+            "__kmpc_fork_call": llvmlite.ir.FunctionType(vt, [pt, i32t, pt], var_arg=True),
+            "__kmpc_for_static_init_8": llvmlite.ir.FunctionType(vt, [pt, i32t, i32t, i32p, i64p, i64p, i64p, i64t, i64t]),
+            "__kmpc_for_static_fini": llvmlite.ir.FunctionType(vt, [pt, i32t]),
+        }
         for name, op in extern_calls.items():
-            ret_type = convert_type(op.results[0].type) if op.results else llvmlite.ir.VoidType()
-            arg_types = [convert_type(a.type) for a in op.args]
-            llvmlite.ir.Function(llvm_module, llvmlite.ir.FunctionType(ret_type, arg_types), name=name)
+            if name in omp_decls:
+                llvmlite.ir.Function(llvm_module, omp_decls[name], name=name)
+            else:
+                ret_type = convert_type(op.results[0].type) if op.results else llvmlite.ir.VoidType()
+                arg_types = [convert_type(a.type) for a in op.args]
+                llvmlite.ir.Function(llvm_module, llvmlite.ir.FunctionType(ret_type, arg_types), name=name)
 
         for func_op in func_ops:
             if func_op.body.blocks:
@@ -797,9 +918,24 @@ def _disk_cache(name: object, generate: Callable[[], str]) -> str:
     return ir_text
 
 
+@cache
+def _load_libomp() -> None:
+    if sys.platform != "darwin":
+        return llvmlite.binding.load_library_permanently("libgomp.so.1")
+    lib = "/opt/homebrew/opt/libomp/lib/libomp.dylib"
+    if not Path(lib).exists():
+        lib = subprocess.run(["brew", "--prefix", "libomp"], capture_output=True, text=True, check=True).stdout.strip() + "/lib/libomp.dylib"
+    llvmlite.binding.load_library_permanently(lib)
+
+
 def compile_jit(proc: Procedure) -> dict[str, object]:
     # disk-cache llvmlite ir to skip exo analysis + xdsl lowering on repeated runs
     ir_text = _disk_cache(proc._loopir_proc.name, lambda: str(LLVMLiteGenerator.generate(to_mlir(proc))))
+
+    # load libomp for parallel loops
+    # https://openmp.llvm.org/doxygen/group__THREADPRIVATE.html
+    if "__kmpc_fork_call" in ir_text:
+        _load_libomp()
 
     # parse + o3 optimize
     mod_ref = llvmlite.binding.parse_assembly(ir_text)
@@ -808,8 +944,8 @@ def compile_jit(proc: Procedure) -> dict[str, object]:
     pto.speed_level = 3
     pto.loop_vectorization = True
     pto.slp_vectorization = True
-    pto.loop_interleaving = True  # multi-accumulator ILP (auto by O3, explicit for clarity)
-    pto.loop_unrolling = True  # loop unrolling (auto by O3, explicit for clarity)
+    pto.loop_interleaving = True
+    pto.loop_unrolling = True
     pb = llvmlite.binding.create_pass_builder(tm, pto)
     pb.getModulePassManager().run(mod_ref, pb)
 
