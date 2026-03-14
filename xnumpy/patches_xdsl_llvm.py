@@ -49,7 +49,7 @@ class FSqrtOp(IRDLOperation):
 
 @irdl_op_definition
 class FCmpOp(IRDLOperation):
-    # https://github.com/xdslproject/xdsl/pull/5706
+    # TODO: remove after next xdsl release
     name = "llvm.fcmp"
 
     T: ClassVar = VarConstraint("T", AnyFloatConstr)
@@ -68,26 +68,6 @@ class FCmpOp(IRDLOperation):
 
 
 @irdl_op_definition
-class SelectOp(IRDLOperation):
-    # https://github.com/xdslproject/xdsl/pull/5707
-    name = "llvm.select"
-
-    T: ClassVar = VarConstraint("T", AnyAttr())
-
-    cond = operand_def(I1)
-    lhs = operand_def(T)
-    rhs = operand_def(T)
-    res = result_def(T)
-
-    traits = traits_def(Pure())
-
-    assembly_format = "$cond `,` $lhs `,` $rhs attr-dict `:` type($cond) `,` type($res)"
-
-    def __init__(self, cond: Operation | SSAValue, lhs: Operation | SSAValue, rhs: Operation | SSAValue):
-        super().__init__(operands=[cond, lhs, rhs], result_types=[SSAValue.get(lhs).type])
-
-
-@irdl_op_definition
 class BrOp(IRDLOperation):
     name = "llvm.br"
     arguments = var_operand_def()
@@ -101,7 +81,7 @@ class BrOp(IRDLOperation):
 
 @irdl_op_definition
 class CondBrOp(IRDLOperation):
-    # https://github.com/xdslproject/xdsl/pull/5710
+    # TODO: remove after next xdsl release
     name = "llvm.cond_br"
     cond = operand_def(IntegerType(1))
     then_arguments = var_operand_def()

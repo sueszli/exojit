@@ -39,7 +39,7 @@ from xdsl.utils.scoped_dict import ScopedDict
 
 from xnumpy.jitcall import JitFunc
 from xnumpy.patches_xdsl_intrinsics import ConvertVecIntrinsic
-from xnumpy.patches_xdsl_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, FSqrtOp, RewriteMemRefTypes, SelectOp, VectorFMaxOp
+from xnumpy.patches_xdsl_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, FSqrtOp, RewriteMemRefTypes, VectorFMaxOp
 
 _FCMP_PREDICATES: dict[str, tuple[str, bool]] = {  # mlir predicate -> (op, ordered?)
     "oeq": ("==", True),
@@ -296,7 +296,7 @@ class IRGenerator:
         if extern.f.name() == "select":
             # select(a, b, c, d) -> (a < b) ? c : d
             cmp = self._emit(FCmpOp(args[0], args[1], "olt"))
-            return self._emit(SelectOp(cmp, args[2], args[3]))
+            return self._emit(llvm.SelectOp(cmp, args[2], args[3]))
 
         output_type = self._to_mlir_type(extern.f.typecheck(extern.args))
         name = extern.f.name()
@@ -574,7 +574,6 @@ def _context() -> Context:
     ctx.load_dialect(Builtin)
     ctx.load_dialect(llvm.LLVM)
     ctx.load_op(FCmpOp)
-    ctx.load_op(SelectOp)
     ctx.load_op(BrOp)
     ctx.load_op(CondBrOp)
     ctx.load_op(VectorFMaxOp)
@@ -661,7 +660,7 @@ class LLVMLiteGenerator:
             case FCmpOp():
                 pred, is_ordered = _FCMP_PREDICATES[op.predicate.data]
                 val_map[op.res] = (builder.fcmp_ordered if is_ordered else builder.fcmp_unordered)(pred, val_map[op.lhs], val_map[op.rhs], flags=("fast",))
-            case SelectOp():
+            case llvm.SelectOp():
                 val_map[op.res] = builder.select(val_map[op.cond], val_map[op.lhs], val_map[op.rhs])
             case BrOp():
                 LLVMLiteGenerator._add_phis(phi_map, val_map, op.successor.args, op.operands, builder.block)
