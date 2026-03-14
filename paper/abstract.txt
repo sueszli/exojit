@@ -1,46 +1,48 @@
 Abstract
 ========
 
-Following the six-sentence structure from Easterbrook (2010):
+(1) Topic: In one sentence, what's the topic?
+  There is an abstraction-performance gap in ML kernel development: high-level
+  frameworks enable rapid iteration, but fused kernels still require C or CUDA
+  for performance.
+
+(2) Problem: What's the key research question?
+  Can we close this gap, letting ML researchers write and fuse kernels entirely
+  in Python at native-code performance?
+
+(3) Gap: Why has nobody adequately answered this yet?
+  NumPy cannot fuse operations. Numba JIT-compiles Python but lacks scheduling
+  primitives for tiling and memory hierarchy. Exo provides scheduling control
+  but emits C, requiring an external toolchain.
+
+(4) Approach: What's your big idea?
+  A JIT pipeline (Exo -> xDSL/MLIR -> LLVM MCJIT) that compiles scheduled
+  kernels to native code within Python, with ~1us dispatch. Because it JITs
+  within the Python process, the write-benchmark-tune loop stays entirely in
+  Python, tightening kernel development iteration cycles.
+
+(5) Methods: How did you do the research?
+  We implement common inference kernels as fused single-pass operations and
+  benchmark per-kernel against existing libraries.
+  We also publish an open benchmark arena for microgpt inference on CPU and
+  invite the community to beat our implementation (any library, any hardware,
+  SIMD permitted, no non-CPU accelerators).
+
+(6) Impact: Why should anyone care?
+  Fused softmax achieves 11.7x speedup over NumPy by eliminating intermediate
+  memory traffic and per-op dispatch. The contribution is not
+  just faster compute but a narrower abstraction-performance gap: ML
+  researchers get native-code performance without leaving the Python workflow
+  they already use. The pipeline also demonstrates xDSL/MLIR as a viable JIT
+  middle-end for scheduling DSLs.
+
+
+See also
+========
+
+Easterbrook, "How to write a scientific abstract in six easy steps", 2010.
   http://www.easterbrook.ca/steve/2010/01/how-to-write-a-scientific-abstract-in-six-easy-steps/
 
-Topic:
-  Python numerical computing relies on opaque BLAS libraries, but custom fused
-  kernels (softmax, RMSNorm, attention) lack optimized implementations.
-
-Problem:
-  Can developers write custom fused kernels at hand-tuned SIMD performance
-  without leaving Python?
-
-Gap:
-  NumPy can't fuse operations; Numba lacks explicit hardware control; Exo
-  provides scheduling control but emits C requiring offline compilation.
-
-Approach:
-  xnumpy JIT-compiles Exo's scheduling DSL to native code via xDSL/LLVM MCJIT
-  with explicit SIMD intrinsics and ~1us vectorcall dispatch.
-
-Methods:
-  13 kernel families (matmul, softmax, RMSNorm, Adam, cross-entropy, ...) in
-  auto-vectorized and NEON variants, benchmarked against NumPy/Accelerate on
-  Apple Silicon.
-
-Impact:
-  Up to 11.7x speedup over NumPy on fused kernels, showing scheduling DSLs +
-  modern compiler infra can match hand-tuned SIMD for custom ML kernels.
-
-
-Combined
---------
-
-Python numerical computing relies on opaque BLAS libraries, but custom fused
-kernels (softmax, RMSNorm, attention) lack optimized implementations. Existing
-tools force a tradeoff: NumPy can't fuse operations, Numba lacks hardware
-control, and Exo emits C requiring offline compilation. We present xnumpy, a JIT
-compiler that lowers Exo's scheduling DSL to native code via xDSL/LLVM MCJIT
-with explicit SIMD intrinsics and ~1us dispatch. We implemented 13 kernel
-families in auto-vectorized and ARM NEON variants, benchmarked against NumPy
-(Apple Accelerate) on Apple Silicon. Fused kernels like softmax achieve up to
-11.7x speedup over NumPy, showing that scheduling DSLs combined with modern
-compiler infrastructure can match hand-tuned SIMD performance for custom ML
-inference kernels.
+Karpathy, "microgpt", 2026.
+  https://karpathy.github.io/2026/02/12/microgpt/
+  https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95
