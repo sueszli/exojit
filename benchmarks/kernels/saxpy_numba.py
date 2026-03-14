@@ -4,10 +4,10 @@ import numba as nb
 import numpy as np
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _saxpy(y, x, a):
     alpha = a[0]
-    for i in range(y.shape[0]):
+    for i in nb.prange(y.shape[0]):
         y[i] += alpha * x[i]
 
 

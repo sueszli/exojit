@@ -4,18 +4,18 @@ import numba as nb
 import numpy as np
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _rmsnorm_sumsq(sumsq, x):
     s = np.float32(0.0)
-    for i in range(x.shape[0]):
+    for i in nb.prange(x.shape[0]):
         s += x[i] * x[i]
     sumsq[0] = s
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _rmsnorm_scale(out, x, scale):
     s = scale[0]
-    for i in range(x.shape[0]):
+    for i in nb.prange(x.shape[0]):
         out[i] = x[i] * s
 
 

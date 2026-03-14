@@ -15,12 +15,12 @@ def _ce_max(mx, x):
     mx[0] = m
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _ce_sum_exp(sum_exp, x, mx):
     m = mx[0]
     s = np.float32(0.0)
-    for i in range(x.shape[0]):
-        s += math.exp(x[i] - m)
+    for i in nb.prange(x.shape[0]):
+        s += np.float32(math.exp(x[i] - m))
     sum_exp[0] = s
 
 

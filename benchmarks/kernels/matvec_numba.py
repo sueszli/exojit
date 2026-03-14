@@ -4,10 +4,10 @@ import numba as nb
 import numpy as np
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _matvec(y, W, x):
     M, N = W.shape
-    for i in range(M):
+    for i in nb.prange(M):
         acc = np.float32(0.0)
         for j in range(N):
             acc += W[i, j] * x[j]

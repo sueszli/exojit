@@ -4,9 +4,9 @@ import numba as nb
 import numpy as np
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _embedding(out, row):
-    for i in range(row.shape[0]):
+    for i in nb.prange(row.shape[0]):
         out[i] = row[i]
 
 

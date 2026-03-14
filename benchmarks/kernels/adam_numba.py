@@ -6,14 +6,14 @@ import numba as nb
 import numpy as np
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _adam(param, grad, m, v, b1, b2, eps, lr, beta1_t, beta2_t):
     inv_b1 = np.float32(1.0) - b1[0]
     inv_b2 = np.float32(1.0) - b2[0]
     inv_beta1_t = np.float32(1.0) / beta1_t[0]
     inv_beta2_t = np.float32(1.0) / beta2_t[0]
 
-    for i in range(param.shape[0]):
+    for i in nb.prange(param.shape[0]):
         g = grad[i]
 
         m_val = b1[0] * m[i] + inv_b1 * g

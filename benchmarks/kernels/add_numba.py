@@ -4,9 +4,9 @@ import numba as nb
 import numpy as np
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _add(z, x, y):
-    for i in range(x.shape[0]):
+    for i in nb.prange(x.shape[0]):
         z[i] = x[i] + y[i]
 
 

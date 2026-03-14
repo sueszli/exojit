@@ -6,7 +6,7 @@ import numba as nb
 import numpy as np
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _softmax(out, x):
     n = x.shape[0]
     m = x[0]
@@ -14,12 +14,12 @@ def _softmax(out, x):
         if x[i] > m:
             m = x[i]
     s = np.float32(0.0)
-    for i in range(n):
-        v = math.exp(x[i] - m)
+    for i in nb.prange(n):
+        v = np.float32(math.exp(x[i] - m))
         out[i] = v
         s += v
     inv_s = np.float32(1.0) / s
-    for i in range(n):
+    for i in nb.prange(n):
         out[i] *= inv_s
 
 

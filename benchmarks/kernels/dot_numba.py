@@ -4,10 +4,10 @@ import numba as nb
 import numpy as np
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _dot(result, q, k):
     acc = np.float32(0.0)
-    for i in range(q.shape[0]):
+    for i in nb.prange(q.shape[0]):
         acc += q[i] * k[i]
     result[0] = acc
 

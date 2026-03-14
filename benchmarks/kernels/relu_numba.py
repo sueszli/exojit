@@ -4,9 +4,9 @@ import numba as nb
 import numpy as np
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _relu(out, x):
-    for i in range(x.shape[0]):
+    for i in nb.prange(x.shape[0]):
         out[i] = max(np.float32(0.0), x[i])
 
 

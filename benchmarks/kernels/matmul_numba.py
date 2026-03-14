@@ -4,16 +4,15 @@ import numba as nb
 import numpy as np
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _matmul(C, A, B):
     M, K = A.shape
     _, N = B.shape
-    for i in range(M):
-        for j in range(N):
-            acc = np.float32(0.0)
-            for k in range(K):
-                acc += A[i, k] * B[k, j]
-            C[i, j] = acc
+    for i in nb.prange(M):
+        for k in range(K):
+            a_ik = A[i, k]
+            for j in range(N):
+                C[i, j] += a_ik * B[k, j]
 
 
 def matmul_numba(M: int, K: int, N: int):

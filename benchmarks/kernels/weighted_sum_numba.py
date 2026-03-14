@@ -4,10 +4,10 @@ import numba as nb
 import numpy as np
 
 
-@nb.njit(cache=True, fastmath=True)
+@nb.njit(cache=True, fastmath=True, parallel=True)
 def _weighted_sum(out, weights, V):
     T, D = V.shape
-    for j in range(D):
+    for j in nb.prange(D):
         acc = np.float32(0.0)
         for t in range(T):
             acc += weights[t] * V[t, j]
