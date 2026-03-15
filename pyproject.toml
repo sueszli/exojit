@@ -18,6 +18,9 @@ dependencies = [
     "pyarrow",
     "tqdm",
     "filelock",
+    "jax",
+    "numba",
+    "torch",
 ]
 
 [build-system]

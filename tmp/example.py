@@ -6,18 +6,19 @@
 # ///
 
 import numpy as np
-from exo import proc
+from exo import *
+
 from exojit.main import compile_jit
 
 
 @proc
-def scale(n: size, x: f32[n], alpha: f32[1]):
-    for i in seq(0, n):
-        x[i] = alpha[0] * x[i]
+def scale(out: f32[4] @ DRAM, alpha: f32[1] @ DRAM):
+    for i in seq(0, 4):
+        out[i] = alpha[0] * out[i]
 
 
-x = np.ones(4, dtype=np.float32)
+out = np.ones(4, dtype=np.float32)
+func = compile_jit(scale)["scale"]
 alpha = np.array([3.0], dtype=np.float32)
-compile_jit(scale)["scale"](4, x, alpha)
-assert list(x) == [3.0, 3.0, 3.0, 3.0]
-print("ok")
+func(out, alpha)
+print(out)

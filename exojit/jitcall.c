@@ -55,16 +55,72 @@ static PyObject *JitFunc_vectorcall(PyObject *callable, PyObject *const *args, s
         n_views += is_view;
     }
 
-    // always pass 16 args — callee ignores extras per ARM64/x86-64 calling convention
+    // dispatch with exactly nargs. avoids UB from calling a fn via a mismatched pointer type
+    // this isn't pretty but very efficient
     if (ok) {
-        ((void (*)(T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15]);
+        switch (nargs) {
+        case 0:
+            ((void (*)(void))self->fn)();
+            break;
+        case 1:
+            ((void (*)(T))self->fn)(a[0]);
+            break;
+        case 2:
+            ((void (*)(T, T))self->fn)(a[0], a[1]);
+            break;
+        case 3:
+            ((void (*)(T, T, T))self->fn)(a[0], a[1], a[2]);
+            break;
+        case 4:
+            ((void (*)(T, T, T, T))self->fn)(a[0], a[1], a[2], a[3]);
+            break;
+        case 5:
+            ((void (*)(T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4]);
+            break;
+        case 6:
+            ((void (*)(T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5]);
+            break;
+        case 7:
+            ((void (*)(T, T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+            break;
+        case 8:
+            ((void (*)(T, T, T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
+            break;
+        case 9:
+            ((void (*)(T, T, T, T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
+            break;
+        case 10:
+            ((void (*)(T, T, T, T, T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
+            break;
+        case 11:
+            ((void (*)(T, T, T, T, T, T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10]);
+            break;
+        case 12:
+            ((void (*)(T, T, T, T, T, T, T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]);
+            break;
+        case 13:
+            ((void (*)(T, T, T, T, T, T, T, T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12]);
+            break;
+        case 14:
+            ((void (*)(T, T, T, T, T, T, T, T, T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13]);
+            break;
+        case 15:
+            ((void (*)(T, T, T, T, T, T, T, T, T, T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14]);
+            break;
+        case 16:
+            ((void (*)(T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T))self->fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15]);
+            break;
+        }
     }
 
     // release any buffer views we acquired
     for (Py_ssize_t i = 0; i < n_views; i++) {
         PyBuffer_Release(&views[i]);
     }
-    return ok ? Py_None : NULL;
+    if (!ok) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
 }
 
 static int JitFunc_init(JitFuncObject *self, PyObject *args, PyObject *kwds) {
