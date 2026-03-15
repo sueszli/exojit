@@ -222,7 +222,7 @@ def gpt(token_id: int, pos_id: int, keys: list[list[list[Value]]], values: list[
     return logits
 
 
-# Let there be Adam, the blessed optimizer and its buffers
+# adam optimizer value
 learning_rate = 0.01
 beta1 = 0.85
 beta2 = 0.99
@@ -230,11 +230,10 @@ eps_adam = 1e-8
 m: list[float] = [0.0] * len(params)  # first moment buffer
 v: list[float] = [0.0] * len(params)  # second moment buffer
 
-# Repeat in sequence
-num_steps = 1000  # number of training steps
+# train loop
+num_steps = 1000
 for step in range(num_steps):
 
-    # Take single document, tokenize it, surround it with BOS special token on both sides
     doc = docs[step % len(docs)]
     tokens = [BOS] + [uchars.index(ch) for ch in doc] + [BOS]
     n = min(block_size, len(tokens) - 1)
