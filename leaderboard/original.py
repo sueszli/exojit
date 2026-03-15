@@ -28,59 +28,59 @@ class Value:
 
     __slots__ = ("data", "grad", "_children", "_local_grads")  # perf optimization
 
-    def __init__(self, data, children=(), local_grads=()):
+    def __init__(self, data: float, children: tuple["Value", ...] = (), local_grads: tuple[float, ...] = ()) -> None:
         self.data = data  # scalar value of this node calculated during forward pass
         self.grad = 0  # derivative of the loss w.r.t. this node, calculated in backward pass
         self._children = children  # children of this node in the computation graph
         self._local_grads = local_grads  # local derivative of this node w.r.t. its children
 
-    def __add__(self, other):
+    def __add__(self, other: "Value | float") -> "Value":
         other = other if isinstance(other, Value) else Value(other)
         return Value(self.data + other.data, (self, other), (1, 1))
 
-    def __mul__(self, other):
+    def __mul__(self, other: "Value | float") -> "Value":
         other = other if isinstance(other, Value) else Value(other)
         return Value(self.data * other.data, (self, other), (other.data, self.data))
 
-    def __pow__(self, other):
+    def __pow__(self, other: float) -> "Value":
         return Value(self.data**other, (self,), (other * self.data ** (other - 1),))
 
-    def log(self):
+    def log(self) -> "Value":
         return Value(math.log(self.data), (self,), (1 / self.data,))
 
-    def exp(self):
+    def exp(self) -> "Value":
         return Value(math.exp(self.data), (self,), (math.exp(self.data),))
 
-    def relu(self):
+    def relu(self) -> "Value":
         # original gpt2 uses gelu
         return Value(max(0, self.data), (self,), (float(self.data > 0),))
 
-    def __neg__(self):
+    def __neg__(self) -> "Value":
         return self * -1
 
-    def __radd__(self, other):
+    def __radd__(self, other: "Value | float") -> "Value":
         return self + other
 
-    def __sub__(self, other):
+    def __sub__(self, other: "Value | float") -> "Value":
         return self + (-other)
 
-    def __rsub__(self, other):
+    def __rsub__(self, other: "Value | float") -> "Value":
         return other + (-self)
 
-    def __rmul__(self, other):
+    def __rmul__(self, other: "Value | float") -> "Value":
         return self * other
 
-    def __truediv__(self, other):
+    def __truediv__(self, other: "Value | float") -> "Value":
         return self * other**-1
 
-    def __rtruediv__(self, other):
+    def __rtruediv__(self, other: "Value | float") -> "Value":
         return other * self**-1
 
-    def backward(self):
-        topo = []
-        visited = set()
+    def backward(self) -> None:
+        topo: list[Value] = []
+        visited: set[Value] = set()
 
-        def build_topo(v):
+        def build_topo(v: "Value") -> None:
             if v not in visited:
                 visited.add(v)
                 for child in v._children:
@@ -106,7 +106,7 @@ block_size = 16  # context window size (longest name is 15 chars)
 n_head = 4  # num attention heads
 head_dim = n_embd // n_head  # which subset of dims each head operates on
 matrix = lambda nout, nin, std=0.08: [[Value(random.gauss(0, std)) for _ in range(nin)] for _ in range(nout)]  # torch.randn(nout, nin) * std
-state_dict = {
+state_dict: dict[str, list[list[Value]]] = {
     "wte": matrix(vocab_size, n_embd),  # weight token embedding
     "wpe": matrix(block_size, n_embd),  # weight positional embedding
     "lm_head": matrix(vocab_size, n_embd),  # language model head
@@ -118,16 +118,16 @@ for i in range(n_layer):
     state_dict[f"layer{i}.attn_wo"] = matrix(n_embd, n_embd)  # weight output
     state_dict[f"layer{i}.mlp_fc1"] = matrix(4 * n_embd, n_embd)  # fully connected 1
     state_dict[f"layer{i}.mlp_fc2"] = matrix(n_embd, 4 * n_embd)  # fully connected 2
-params = [p for mat in state_dict.values() for row in mat for p in row]  # flatten
+params: list[Value] = [p for mat in state_dict.values() for row in mat for p in row]  # flatten
 print(f"num params: {len(params)}")
 
 
-def linear(x, w):
+def linear(x: list[Value], w: list[list[Value]]) -> list[Value]:
     # x @ w.T
     return [sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]
 
 
-def softmax(logits):
+def softmax(logits: list[Value]) -> list[Value]:
     # F.softmax(logits, dim=-1)
     max_val = max(val.data for val in logits)
     exps = [(val - max_val).exp() for val in logits]
@@ -135,7 +135,7 @@ def softmax(logits):
     return [e / total for e in exps]
 
 
-def rmsnorm(x):
+def rmsnorm(x: list[Value]) -> list[Value]:
     # F.rms_norm(x, x.shape)
     # original gpt2 uses layernorm
     ms = sum(xi * xi for xi in x) / len(x)
@@ -183,7 +183,7 @@ def rmsnorm(x):
 #   weights @ V  =  weighted mix of values from all attended tokens
 
 
-def gpt(token_id, pos_id, keys, values):
+def gpt(token_id: int, pos_id: int, keys: list[list[list[Value]]], values: list[list[list[Value]]]) -> list[Value]:
     tok_emb = state_dict["wte"][token_id]  # token embedding
     pos_emb = state_dict["wpe"][pos_id]  # position embedding
     x = [t + p for t, p in zip(tok_emb, pos_emb)]  # joint token and position embedding
@@ -227,8 +227,8 @@ learning_rate = 0.01
 beta1 = 0.85
 beta2 = 0.99
 eps_adam = 1e-8
-m = [0.0] * len(params)  # first moment buffer
-v = [0.0] * len(params)  # second moment buffer
+m: list[float] = [0.0] * len(params)  # first moment buffer
+v: list[float] = [0.0] * len(params)  # second moment buffer
 
 # Repeat in sequence
 num_steps = 1000  # number of training steps
@@ -240,7 +240,8 @@ for step in range(num_steps):
     n = min(block_size, len(tokens) - 1)
 
     # Forward the token sequence through the model, building up the computation graph all the way to the loss
-    keys, values = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
+    keys: list[list[list[Value]]] = [[] for _ in range(n_layer)]
+    values: list[list[list[Value]]] = [[] for _ in range(n_layer)]
     losses = []
     for pos_id in range(n):
         token_id, target_id = tokens[pos_id], tokens[pos_id + 1]
@@ -272,9 +273,10 @@ for step in range(num_steps):
 
 
 temperature = 0.5  # in (0, 1], control the "creativity" of generated text, low to high
-print("\n--- inference (new, hallucinated names) ---")
+print("\ninference:")
 for sample_idx in range(20):
-    keys, values = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
+    keys: list[list[list[Value]]] = [[] for _ in range(n_layer)]
+    values: list[list[list[Value]]] = [[] for _ in range(n_layer)]
     token_id = BOS
     sample = []
     for pos_id in range(block_size):
