@@ -9,33 +9,23 @@ from pathlib import Path
 
 random.seed(42)
 
-#
-# load data
-#
 
-
+# load
 docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
 random.shuffle(docs)
 print(f"num docs: {len(docs)}")
 
 
-#
-# tokenizer
-#
-
-
+# tokenize
 uchars = sorted(set("".join(docs)))  # unique characters
 BOS = len(uchars)  # special beginning of sequence (BOS) token
 vocab_size = len(uchars) + 1  # +1 is for BOS
 print(f"vocab size: {vocab_size}")
 
 
-#
-# autograd
-#
-
-
 class Value:
+    # autograd
+
     __slots__ = ("data", "grad", "_children", "_local_grads")  # perf optimization
 
     def __init__(self, data, children=(), local_grads=()):
@@ -225,9 +215,9 @@ for step in range(num_steps):
     print(f"step {step+1:4d} / {num_steps:4d} | loss {loss.data:.4f}", end="\r")
 
 
-# 
+#
 # inference
-# 
+#
 
 
 temperature = 0.5  # in (0, 1], control the "creativity" of generated text, low to high
@@ -244,4 +234,3 @@ for sample_idx in range(20):
             break
         sample.append(uchars[token_id])
     print(f"sample {sample_idx+1:2d}: {''.join(sample)}")
-    
