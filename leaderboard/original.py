@@ -98,21 +98,26 @@ class Value:
 #
 
 
-n_layer = 1  # depth of the transformer neural network (number of layers)
-n_embd = 16  # width of the network (embedding dimension)
-block_size = 16  # maximum context length of the attention window (note: the longest name is 15 characters)
-n_head = 4  # number of attention heads
-head_dim = n_embd // n_head  # derived dimension of each head
-matrix = lambda nout, nin, std=0.08: [[Value(random.gauss(0, std)) for _ in range(nin)] for _ in range(nout)]
-state_dict = {"wte": matrix(vocab_size, n_embd), "wpe": matrix(block_size, n_embd), "lm_head": matrix(vocab_size, n_embd)}
+# init params
+n_layer = 1  # num stacked transformer blocks
+n_embd = 16  # embedding dimensions
+block_size = 16  # context window size (longest name is 15 chars)
+n_head = 4  # num attention heads
+head_dim = n_embd // n_head  # which subset of dims each head operates on
+matrix = lambda nout, nin, std=0.08: [[Value(random.gauss(0, std)) for _ in range(nin)] for _ in range(nout)]  # torch.randn(nout, nin) * std
+state_dict = {
+    "wte": matrix(vocab_size, n_embd),  # weight token embedding
+    "wpe": matrix(block_size, n_embd),  # weight positional embedding
+    "lm_head": matrix(vocab_size, n_embd),  # language model head
+}
 for i in range(n_layer):
-    state_dict[f"layer{i}.attn_wq"] = matrix(n_embd, n_embd)
-    state_dict[f"layer{i}.attn_wk"] = matrix(n_embd, n_embd)
-    state_dict[f"layer{i}.attn_wv"] = matrix(n_embd, n_embd)
-    state_dict[f"layer{i}.attn_wo"] = matrix(n_embd, n_embd)
-    state_dict[f"layer{i}.mlp_fc1"] = matrix(4 * n_embd, n_embd)
-    state_dict[f"layer{i}.mlp_fc2"] = matrix(n_embd, 4 * n_embd)
-params = [p for mat in state_dict.values() for row in mat for p in row]  # flatten params into a single list[Value]
+    state_dict[f"layer{i}.attn_wq"] = matrix(n_embd, n_embd) # weight query
+    state_dict[f"layer{i}.attn_wk"] = matrix(n_embd, n_embd) # weight key
+    state_dict[f"layer{i}.attn_wv"] = matrix(n_embd, n_embd) # weight value
+    state_dict[f"layer{i}.attn_wo"] = matrix(n_embd, n_embd) # weight output
+    state_dict[f"layer{i}.mlp_fc1"] = matrix(4 * n_embd, n_embd) # fully connected 1
+    state_dict[f"layer{i}.mlp_fc2"] = matrix(n_embd, 4 * n_embd) # fully connected 2
+params = [p for mat in state_dict.values() for row in mat for p in row]  # flatten
 print(f"num params: {len(params)}")
 
 
