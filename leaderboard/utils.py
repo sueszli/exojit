@@ -1,14 +1,17 @@
 # /// script
-# dependencies = ["plotext"]
+# dependencies = ["termgraph"]
 # ///
 
 import csv
 import inspect
-import plotext as plt
 import itertools
 import json
 import math
 from pathlib import Path
+
+from termgraph.args import Args
+from termgraph.chart import BarChart
+from termgraph.data import Data
 
 WEIGHTS_PATH = Path(__file__).parent / "weights.json"
 
@@ -80,16 +83,11 @@ def print_times_all() -> None:
     for name, _ in entries:
         print_times(times_dir / f"{name}.csv")
 
+    log_means = [math.log10(m * 1000) for _, m in entries]
     names = [e[0] for e in entries]
-    log_means = [math.log10(m) for _, m in entries]
-    plt.bar(names, log_means, orientation="h", width=1.0)
-    plt.plotsize(60, len(entries) + 5)
-    plt.title("mean inference time (ms) [log10 scale]")
-    plt.xlabel("log10(ms)")
-    plt.xfrequency(4)
-    plt.theme("clear")
-    plt.show()
-    plt.clf()
+    chart_data = Data([[v] for v in log_means], names)
+    chart_args = Args(title="mean inference time [log10(us) scale]", width=40, format="{:.3f}", space_between=True)
+    BarChart(chart_data, chart_args).draw()
 
 
 def save_times(step_times: list[float]) -> None:
