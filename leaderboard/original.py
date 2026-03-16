@@ -17,9 +17,9 @@ print(f"num docs: {len(docs)}")
 
 
 # tokenize
-uchars = sorted(set("".join(docs)))  # unique characters
-BOS = len(uchars)  # special "beginning of sequence" (BOS) token
-vocab_size = len(uchars) + 1  # +1 is for BOS
+uchars = sorted(set("".join(docs)))  # unique chars as tokens
+BOS = len(uchars)  # beginning of sequence BOS token
+vocab_size = len(uchars) + 1
 print(f"vocab size: {vocab_size}")
 
 
@@ -29,9 +29,9 @@ class Value:
     __slots__ = ("data", "grad", "_children", "_local_grads")  # perf optimization
 
     def __init__(self, data: float, children: tuple["Value", ...] = (), local_grads: tuple[float, ...] = ()) -> None:
-        self.data = data  # scalar value of this node calculated during forward pass
-        self.grad = 0  # derivative of the loss w.r.t. this node, calculated in backward pass
-        self._children = children  # children of this node in the computation graph
+        self.data = data  # scalar value of this node (calculated during forward pass)
+        self.grad = 0  # derivative of the loss w.r.t. this node (calculated in backward pass)
+        self._children = children  # children of this node in graph
         self._local_grads = local_grads  # local derivative of this node w.r.t. its children
 
     def __add__(self, other: "Value | float") -> "Value":
@@ -52,7 +52,6 @@ class Value:
         return Value(math.exp(self.data), (self,), (math.exp(self.data),))
 
     def relu(self) -> "Value":
-        # original gpt2 uses gelu
         return Value(max(0, self.data), (self,), (float(self.data > 0),))
 
     def __neg__(self) -> "Value":
@@ -107,15 +106,15 @@ n_head = 4  # num attention heads
 head_dim = n_embd // n_head  # which subset of dims each head operates on
 matrix = lambda nout, nin, std=0.08: [[Value(random.gauss(0, std)) for _ in range(nin)] for _ in range(nout)]  # torch.randn(nout, nin) * std
 state_dict: dict[str, list[list[Value]]] = {
-    "wte": matrix(vocab_size, n_embd),  # weight token embedding
-    "wpe": matrix(block_size, n_embd),  # weight positional embedding
+    "wte": matrix(vocab_size, n_embd),  # token embedding
+    "wpe": matrix(block_size, n_embd),  # positional embedding
     "lm_head": matrix(vocab_size, n_embd),  # language model head
 }
 for i in range(n_layer):
-    state_dict[f"layer{i}.attn_wq"] = matrix(n_embd, n_embd)  # weight query
-    state_dict[f"layer{i}.attn_wk"] = matrix(n_embd, n_embd)  # weight key
-    state_dict[f"layer{i}.attn_wv"] = matrix(n_embd, n_embd)  # weight value
-    state_dict[f"layer{i}.attn_wo"] = matrix(n_embd, n_embd)  # weight output
+    state_dict[f"layer{i}.attn_wq"] = matrix(n_embd, n_embd)  # query
+    state_dict[f"layer{i}.attn_wk"] = matrix(n_embd, n_embd)  # key
+    state_dict[f"layer{i}.attn_wv"] = matrix(n_embd, n_embd)  # value
+    state_dict[f"layer{i}.attn_wo"] = matrix(n_embd, n_embd)  # output
     state_dict[f"layer{i}.mlp_fc1"] = matrix(4 * n_embd, n_embd)  # fully connected 1
     state_dict[f"layer{i}.mlp_fc2"] = matrix(n_embd, 4 * n_embd)  # fully connected 2
 params: list[Value] = [p for mat in state_dict.values() for row in mat for p in row]  # flatten
@@ -137,88 +136,86 @@ def softmax(logits: list[Value]) -> list[Value]:
 
 def rmsnorm(x: list[Value]) -> list[Value]:
     # F.rms_norm(x, x.shape)
-    # original gpt2 uses layernorm
     ms = sum(xi * xi for xi in x) / len(x)
     scale = (ms + 1e-5) ** -0.5
     return [xi * scale for xi in x]
 
 
-# Transformer forward pass: token_ids -> logits
+#   all embeddings                                    (d_model each)
+#        │
+#        ├─── @W_Q ──► Q_cat                          (d_head)
+#        │
+#        ├─── @W_K ──► K_the, K_fluffy, K_cat, K_sat  (d_head each)
+#        │
+#        └─── @W_V ──► V_the, V_fluffy, V_cat, V_sat ────────────────┐
+#                          │                                         │
+#               Q_cat · each K / sqrt(d_head)                        │
+#                          │                                         │
+#                       softmax                                      │
+#                          │                                         │
+#                   w = [0.01, 0.85, 0.13, 0.01]                     │
+#                          │                                         │
+#                          └──────── Σ  w_i · V_i ───────────────────┘
+#                                           │
+#                                     head_out_cat    (d_head)
+#                                           │
+#                                        @ W_O
+#                                           │
+#                                       delta_cat     (d_model)
+#                                           │
+#                               x  ──(+)──► x_new     (d_model)
 #
-# Shapes (n=seq_len, d=n_embd=16, h=n_head=4, dh=head_dim=4, V=vocab_size):
-# -----------------------------------------------------------------------
-#   wte      (V, d)    token_id -> embedding vector
-#   wpe      (T, d)    position -> embedding vector
-#   attn_wq  (d, d)    x -> queries  (how much do I want to attend?)
-#   attn_wk  (d, d)    x -> keys     (what do I offer to be attended to?)
-#   attn_wv  (d, d)    x -> values   (what do I send if attended to?)
-#   attn_wo  (d, d)    concat heads -> residual
-#   mlp_fc1  (4d, d)   x -> hidden   (expand)
-#   mlp_fc2  (d, 4d)   hidden -> x   (contract)
-#   lm_head  (V, d)    x -> logits   (scores per token)
 #
-# Forward pass:
-# -------------
-#   x[t] = wte[token_ids[t]] + wpe[t]           # (d,)  embed + position
-#
-#   for each head h:
-#     Q = x @ wq.T                              # (n, d)
-#     K = x @ wk.T                              # (n, d)
-#     V = x @ wv.T                              # (n, d)
-#     scores = Q @ K.T / sqrt(head_dim)         # (n, n)  scaled dot-product
-#     scores = masked_fill(scores, causal_mask) # (n, n)  can't see future
-#     weights = softmax(scores)                 # (n, n)  sum to 1
-#     head_out = weights @ V                    # (n, dh)
-#   x = concat(head_outs) @ wo.T                # (n, d)  merge heads
-#
-#   h = relu(x @ mlp_fc1.T)                     # (n, 4d) expand
-#   x = h @ mlp_fc2.T                           # (n, d)  contract
-#
-#   logits = x[-1] @ lm_head.T                  # (V,)    last token only
-#   probs  = softmax(logits)                    # (V,)    next token dist
-#
-#   Q @ K.T  =  "does token i want to look at token j?"
-#               (dot product = similarity between query and key)
-#   weights  =  normalized attention scores (who looks at whom)
-#   weights @ V  =  weighted mix of values from all attended tokens
+#   Q  — what this token is looking for
+#   K  — whether this token is worth looking at
+#   V  — what this token injects when selected
+#   O  — project head outputs back into residual-stream space
 
 
-def gpt(token_id: int, pos_id: int, keys: list[list[list[Value]]], values: list[list[list[Value]]]) -> list[Value]:
+def gpt(
+    token_id: int,
+    pos_id: int,  # token position in the sequence
+    keys: list[list[list[Value]]],  # KV-cache keys: [layer][past_token][d_model]
+    values: list[list[list[Value]]],  # KV-cache values: [layer][past_token][d_model]
+) -> list[Value]:
     tok_emb = state_dict["wte"][token_id]  # token embedding
     pos_emb = state_dict["wpe"][pos_id]  # position embedding
-    x = [t + p for t, p in zip(tok_emb, pos_emb)]  # joint token and position embedding
-    x = rmsnorm(x)  # note: not redundant due to backward pass via the residual connection
+    x = [t + p for t, p in zip(tok_emb, pos_emb)]
+    x = rmsnorm(x)
 
     for li in range(n_layer):
-        # 1) Multi-head Attention block
+        # multi-head attention block
         x_residual = x
         x = rmsnorm(x)
-        q = linear(x, state_dict[f"layer{li}.attn_wq"])
-        k = linear(x, state_dict[f"layer{li}.attn_wk"])
-        v = linear(x, state_dict[f"layer{li}.attn_wv"])
-        keys[li].append(k)
+        q = linear(x, state_dict[f"layer{li}.attn_wq"])  # Q = x @ wq.T
+        k = linear(x, state_dict[f"layer{li}.attn_wk"])  # K = x @ wk.T
+        v = linear(x, state_dict[f"layer{li}.attn_wv"])  # V = x @ wv.T
+        keys[li].append(k)  # causal mask is implicit. cache only holds past tokens, never future
         values[li].append(v)
         x_attn = []
         for h in range(n_head):
-            hs = h * head_dim
+            hs = h * head_dim  # index offset
             q_h = q[hs : hs + head_dim]
             k_h = [ki[hs : hs + head_dim] for ki in keys[li]]
             v_h = [vi[hs : hs + head_dim] for vi in values[li]]
+            # scores = Q @ K.T / sqrt(head_dim)
             attn_logits = [sum(q_h[j] * k_h[t][j] for j in range(head_dim)) / head_dim**0.5 for t in range(len(k_h))]
             attn_weights = softmax(attn_logits)
+            # head_out = weights @ V
             head_out = [sum(attn_weights[t] * v_h[t][j] for t in range(len(v_h))) for j in range(head_dim)]
             x_attn.extend(head_out)
-        x = linear(x_attn, state_dict[f"layer{li}.attn_wo"])
-        x = [a + b for a, b in zip(x, x_residual)]
-        # 2) MLP block
-        x_residual = x
-        x = rmsnorm(x)
-        x = linear(x, state_dict[f"layer{li}.mlp_fc1"])
-        x = [xi.relu() for xi in x]
-        x = linear(x, state_dict[f"layer{li}.mlp_fc2"])
+        x = linear(x_attn, state_dict[f"layer{li}.attn_wo"])  # x = concat(head_outs) @ wo.T
         x = [a + b for a, b in zip(x, x_residual)]
 
-    logits = linear(x, state_dict["lm_head"])
+        # mlp block
+        x_residual = x
+        x = rmsnorm(x)
+        x = linear(x, state_dict[f"layer{li}.mlp_fc1"])  # h = x @ mlp_fc1.T  -> expand
+        x = [xi.relu() for xi in x]  # h = relu(h)
+        x = linear(x, state_dict[f"layer{li}.mlp_fc2"])  # x = h @ mlp_fc2.T  -> contract
+        x = [a + b for a, b in zip(x, x_residual)]
+
+    logits = linear(x, state_dict["lm_head"])  # logits = x[-1] @ lm_head.T
     return logits
 
 
@@ -235,33 +232,36 @@ num_steps = 1000
 for step in range(num_steps):
 
     doc = docs[step % len(docs)]
-    tokens = [BOS] + [uchars.index(ch) for ch in doc] + [BOS]
-    n = min(block_size, len(tokens) - 1)
+    tokens = [BOS] + [uchars.index(ch) for ch in doc] + [BOS]  # turn to token ids
+    n = min(block_size, len(tokens) - 1)  # num prediction steps
 
     # forward
     keys: list[list[list[Value]]] = [[] for _ in range(n_layer)]
     values: list[list[list[Value]]] = [[] for _ in range(n_layer)]
     losses = []
     for pos_id in range(n):
-        token_id, target_id = tokens[pos_id], tokens[pos_id + 1]
+        # predict
+        token_id = tokens[pos_id]
+        target_id = tokens[pos_id + 1]
         logits = gpt(token_id, pos_id, keys, values)
+        # compute loss
         probs = softmax(logits)
         loss_t = -probs[target_id].log()
         losses.append(loss_t)
-    loss = (1 / n) * sum(losses)  # final average loss over the document sequence. May yours be low.
+    loss = (1 / n) * sum(losses)
 
-    # backward loss
+    # compute gradients (∂loss/∂p for every param p)
     loss.backward()
 
-    # adam optimizer update
+    # adam optimizer weight update
     lr_t = learning_rate * (1 - step / num_steps)  # linear learning rate decay
     for i, p in enumerate(params):
         m[i] = beta1 * m[i] + (1 - beta1) * p.grad
         v[i] = beta2 * v[i] + (1 - beta2) * p.grad**2
         m_hat = m[i] / (1 - beta1 ** (step + 1))
         v_hat = v[i] / (1 - beta2 ** (step + 1))
-        p.data -= lr_t * m_hat / (v_hat**0.5 + eps_adam)
-        p.grad = 0  # optimizer.zero_grad()
+        p.data -= lr_t * m_hat / (v_hat**0.5 + eps_adam)  # update weights
+        p.grad = 0  # reset gradients
 
     print(f"step {step+1:4d} / {num_steps:4d} | loss {loss.data:.4f}", end="\r")
 
@@ -271,7 +271,7 @@ for step in range(num_steps):
 #
 
 
-print("\ninference:")
+print("inference:")
 temperature = 0.5
 for sample_idx in range(20):
     keys: list[list[list[Value]]] = [[] for _ in range(n_layer)]
@@ -281,6 +281,7 @@ for sample_idx in range(20):
     for pos_id in range(block_size):
         logits = gpt(token_id, pos_id, keys, values)
         probs = softmax([logit / temperature for logit in logits])
+        # sample from distribution
         token_id = random.choices(range(vocab_size), weights=[p.data for p in probs])[0]
         if token_id == BOS:
             break
