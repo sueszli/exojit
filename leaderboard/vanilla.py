@@ -194,4 +194,5 @@ for step in range(num_steps):
 
     print(f"step {step+1:4d} / {num_steps:4d} | loss {loss.data:.4f}", end="\r")
 
+
 assert_weights_match(state_dict)
