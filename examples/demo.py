@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import timeit
 
 import numpy as np
@@ -32,17 +30,14 @@ if __name__ == "__main__":
     B = np.random.randn(N, N).astype(np.float32)
     expected = A @ B
 
-    compiled = []
     naive_ms = None
     for label, p in [("naive", matmul), ("optimized", opt)]:
-        fns = compile_jit(p)
-        compiled.append(fns)
-        fn = fns[p.name()]
+        fn = compile_jit(p)[p.name()]
 
         C = np.zeros((N, N), dtype=np.float32)
-        fn(C.ctypes.data, A.ctypes.data, B.ctypes.data)
+        fn(C, A, B)
         assert np.allclose(C, expected, atol=0.5), f"{label} wrong"
 
-        ms = min(timeit.repeat(lambda: fn(C.ctypes.data, A.ctypes.data, B.ctypes.data), number=200, repeat=5)) / 200 * 1e3
+        ms = min(timeit.repeat(lambda: fn(C, A, B), number=200, repeat=5)) / 200 * 1e3
         print(f"{label:<12s} {ms:.2f} ms/call" + (f" ({naive_ms / ms:.1f}x)" if naive_ms else ""))
         naive_ms = naive_ms or ms

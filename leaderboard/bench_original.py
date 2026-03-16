@@ -1,7 +1,10 @@
+# /// script
+# requires-python = "==3.14.*"
+# ///
+
 # original microgpt (just refactored):
 # - https://karpathy.github.io/2026/02/12/microgpt/
 # - https://gist.githubusercontent.com/karpathy/8627fe009c40f57531cb18360106ce95/raw/14fb038816c7aae0bb9342c2dbf1a51dd134a5ff/microgpt.py
-
 
 import math
 import random
