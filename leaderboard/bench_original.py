@@ -29,6 +29,7 @@ docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
 random.shuffle(docs)
 print(f"num docs: {len(docs)}")
 
+
 # tokenize
 uchars = sorted(set("".join(docs)))  # unique chars as tokens
 BOS = len(uchars)  # beginning of sequence BOS token
