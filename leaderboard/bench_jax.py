@@ -72,14 +72,14 @@ opt_state = optimizer.init(state_dict)
 
 
 @jax.jit
-def step_fn(input_ids, target_ids, loss_mask, params, opt_state):
+def step_fn(input_ids: jax.Array, target_ids: jax.Array, loss_mask: jax.Array, params: dict[str, jax.Array], opt_state: optax.OptState) -> tuple[jax.Array, dict[str, jax.Array], optax.OptState]:
     loss, grads = jax.value_and_grad(forward, argnums=3)(input_ids, target_ids, loss_mask, params)
     updates, new_opt_state = optimizer.update(grads, opt_state)
     new_params = optax.apply_updates(params, updates)
     return loss, new_params, new_opt_state
 
 
-def tokenize(doc):
+def tokenize(doc: str) -> tuple[jax.Array, jax.Array, jax.Array]:
     tokens = jnp.array([bos] + [uchars.index(ch) for ch in doc] + [bos])
     n = min(BLOCK_SIZE, len(tokens) - 1)
     pad = (0, BLOCK_SIZE - n)
