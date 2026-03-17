@@ -33,16 +33,6 @@ def matrix(nout: int, nin: int, std: float = 0.08) -> jax.Array:
     return jnp.array([[random.gauss(0, std) for _ in range(nin)] for _ in range(nout)])
 
 
-state_dict: dict[str, jax.Array] = {"wte": matrix(vocab_size, n_embd), "wpe": matrix(block_size, n_embd), "lm_head": matrix(vocab_size, n_embd)}
-for i in range(n_layer):
-    state_dict[f"layer{i}.attn_wq"] = matrix(n_embd, n_embd)
-    state_dict[f"layer{i}.attn_wk"] = matrix(n_embd, n_embd)
-    state_dict[f"layer{i}.attn_wv"] = matrix(n_embd, n_embd)
-    state_dict[f"layer{i}.attn_wo"] = matrix(n_embd, n_embd)
-    state_dict[f"layer{i}.mlp_fc1"] = matrix(4 * n_embd, n_embd)
-    state_dict[f"layer{i}.mlp_fc2"] = matrix(n_embd, 4 * n_embd)
-
-
 def rmsnorm(x: jax.Array) -> jax.Array:
     return x * (jnp.mean(x**2, axis=-1, keepdims=True) + 1e-5) ** -0.5
 
@@ -64,6 +54,16 @@ def forward(input_ids: jax.Array, target_ids: jax.Array, loss_mask: jax.Array, p
         x = jax.nn.relu(xn @ params[f"layer{li}.mlp_fc1"].T) @ params[f"layer{li}.mlp_fc2"].T + x_residual
     per_token_loss = -jax.nn.log_softmax(x @ params["lm_head"].T, axis=-1)[jnp.arange(n), target_ids]
     return (per_token_loss * loss_mask).sum() / loss_mask.sum()
+
+
+state_dict: dict[str, jax.Array] = {"wte": matrix(vocab_size, n_embd), "wpe": matrix(block_size, n_embd), "lm_head": matrix(vocab_size, n_embd)}
+for i in range(n_layer):
+    state_dict[f"layer{i}.attn_wq"] = matrix(n_embd, n_embd)
+    state_dict[f"layer{i}.attn_wk"] = matrix(n_embd, n_embd)
+    state_dict[f"layer{i}.attn_wv"] = matrix(n_embd, n_embd)
+    state_dict[f"layer{i}.attn_wo"] = matrix(n_embd, n_embd)
+    state_dict[f"layer{i}.mlp_fc1"] = matrix(4 * n_embd, n_embd)
+    state_dict[f"layer{i}.mlp_fc2"] = matrix(n_embd, 4 * n_embd)
 
 
 learning_rate = 0.01
