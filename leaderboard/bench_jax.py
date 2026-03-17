@@ -16,17 +16,12 @@ from utils import assert_weights_match, save_times
 jax.config.update("jax_enable_x64", True)  # f64 instead of f32 to match precision
 random.seed(42)
 
-docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
-random.shuffle(docs)
-uchars = sorted(set("".join(docs)))
-BOS = len(uchars)
-vocab_size = len(uchars) + 1
 
-n_layer = 1
-n_embd = 16
-block_size = 16
-n_head = 4
-head_dim = n_embd // n_head
+N_LAYER = 1
+N_EMBED = 16
+BLOCK_SIZE = 16
+N_HEAD = 4
+NUM_STEPS = 1000
 
 
 def matrix(nout: int, nin: int, std: float = 0.08) -> jax.Array:
@@ -40,15 +35,15 @@ def rmsnorm(x: jax.Array) -> jax.Array:
 def forward(input_ids: jax.Array, target_ids: jax.Array, loss_mask: jax.Array, params: dict[str, jax.Array]) -> jax.Array:
     n = input_ids.shape[0]
     x = rmsnorm(params["wte"][input_ids] + params["wpe"][jnp.arange(n)])
-    for li in range(n_layer):
+    for li in range(N_LAYER):
         x_residual = x
         xn = rmsnorm(x)
-        q = (xn @ params[f"layer{li}.attn_wq"].T).reshape(n, n_head, head_dim)
-        k = (xn @ params[f"layer{li}.attn_wk"].T).reshape(n, n_head, head_dim)
-        v = (xn @ params[f"layer{li}.attn_wv"].T).reshape(n, n_head, head_dim)
+        q = (xn @ params[f"layer{li}.attn_wq"].T).reshape(n, N_HEAD, N_EMBED // N_HEAD)
+        k = (xn @ params[f"layer{li}.attn_wk"].T).reshape(n, N_HEAD, N_EMBED // N_HEAD)
+        v = (xn @ params[f"layer{li}.attn_wv"].T).reshape(n, N_HEAD, N_EMBED // N_HEAD)
         mask = jnp.triu(jnp.full((n, n), -1e10), 1)
-        attn_weights = jax.nn.softmax(jnp.einsum("ihd,jhd->hij", q, k) / head_dim**0.5 + mask, axis=-1)
-        x = jnp.einsum("hij,jhd->ihd", attn_weights, v).reshape(n, n_embd) @ params[f"layer{li}.attn_wo"].T + x_residual
+        attn_weights = jax.nn.softmax(jnp.einsum("ihd,jhd->hij", q, k) / (N_EMBED // N_HEAD) ** 0.5 + mask, axis=-1)
+        x = jnp.einsum("hij,jhd->ihd", attn_weights, v).reshape(n, N_EMBED) @ params[f"layer{li}.attn_wo"].T + x_residual
         x_residual = x
         xn = rmsnorm(x)
         x = jax.nn.relu(xn @ params[f"layer{li}.mlp_fc1"].T) @ params[f"layer{li}.mlp_fc2"].T + x_residual
@@ -56,18 +51,23 @@ def forward(input_ids: jax.Array, target_ids: jax.Array, loss_mask: jax.Array, p
     return (per_token_loss * loss_mask).sum() / loss_mask.sum()
 
 
-state_dict: dict[str, jax.Array] = {"wte": matrix(vocab_size, n_embd), "wpe": matrix(block_size, n_embd), "lm_head": matrix(vocab_size, n_embd)}
-for i in range(n_layer):
-    state_dict[f"layer{i}.attn_wq"] = matrix(n_embd, n_embd)
-    state_dict[f"layer{i}.attn_wk"] = matrix(n_embd, n_embd)
-    state_dict[f"layer{i}.attn_wv"] = matrix(n_embd, n_embd)
-    state_dict[f"layer{i}.attn_wo"] = matrix(n_embd, n_embd)
-    state_dict[f"layer{i}.mlp_fc1"] = matrix(4 * n_embd, n_embd)
-    state_dict[f"layer{i}.mlp_fc2"] = matrix(n_embd, 4 * n_embd)
+docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
+random.shuffle(docs)
+uchars = sorted(set("".join(docs)))
+bos = len(uchars)
+vocab_size = len(uchars) + 1
+
+state_dict: dict[str, jax.Array] = {"wte": matrix(vocab_size, N_EMBED), "wpe": matrix(BLOCK_SIZE, N_EMBED), "lm_head": matrix(vocab_size, N_EMBED)}
+for i in range(N_LAYER):
+    state_dict[f"layer{i}.attn_wq"] = matrix(N_EMBED, N_EMBED)
+    state_dict[f"layer{i}.attn_wk"] = matrix(N_EMBED, N_EMBED)
+    state_dict[f"layer{i}.attn_wv"] = matrix(N_EMBED, N_EMBED)
+    state_dict[f"layer{i}.attn_wo"] = matrix(N_EMBED, N_EMBED)
+    state_dict[f"layer{i}.mlp_fc1"] = matrix(4 * N_EMBED, N_EMBED)
+    state_dict[f"layer{i}.mlp_fc2"] = matrix(N_EMBED, 4 * N_EMBED)
 
 
-num_steps = 1000
-optimizer = optax.adam(optax.linear_schedule(0.01, 0.0, num_steps), b1=0.85, b2=0.99, eps=1e-8)
+optimizer = optax.adam(optax.linear_schedule(0.01, 0.0, NUM_STEPS), b1=0.85, b2=0.99, eps=1e-8)
 opt_state = optimizer.init(state_dict)
 
 
@@ -80,21 +80,21 @@ def step_fn(input_ids, target_ids, loss_mask, params, opt_state):
 
 
 def tokenize(doc):
-    tokens = jnp.array([BOS] + [uchars.index(ch) for ch in doc] + [BOS])
-    n = min(block_size, len(tokens) - 1)
-    pad = (0, block_size - n)
+    tokens = jnp.array([bos] + [uchars.index(ch) for ch in doc] + [bos])
+    n = min(BLOCK_SIZE, len(tokens) - 1)
+    pad = (0, BLOCK_SIZE - n)
     return jnp.pad(tokens[:n], pad), jnp.pad(tokens[1 : n + 1], pad), jnp.pad(jnp.ones(n), pad)
 
 
 tokenized = [tokenize(doc) for doc in docs]
 
 step_times = []
-for step in range(num_steps):
+for step in range(NUM_STEPS):
     t0 = time.perf_counter()
     input_ids, target_ids, loss_mask = tokenized[step % len(tokenized)]
     loss, state_dict, opt_state = step_fn(input_ids, target_ids, loss_mask, state_dict, opt_state)
     step_times.append(time.perf_counter() - t0)
-    print(f"step {step+1:4d} / {num_steps:4d} | loss {float(loss):.4f}", end="\r")
+    print(f"step {step+1:4d} / {NUM_STEPS:4d} | loss {float(loss):.4f}", end="\r")
 
 save_times(step_times)
 W = namedtuple("W", ["data"])
