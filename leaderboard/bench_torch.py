@@ -65,12 +65,15 @@ def char_to_id(uchars_tuple: tuple[str, ...]) -> dict[str, int]:
     return {ch: i for i, ch in enumerate(uchars_tuple)}
 
 
-def tokenize(doc: str, uchars: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
-    c2i = char_to_id(tuple(uchars))
-    bos = len(uchars)
-    tokens = [bos] + [c2i[ch] for ch in doc] + [bos]
-    n = min(BLOCK_SIZE, len(tokens) - 1)
-    return torch.tensor(tokens[:n]), torch.tensor(tokens[1 : n + 1])
+def tokenize(docs: list[str], uchars: list[str]) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    def tokenize_doc(doc: str) -> tuple[torch.Tensor, torch.Tensor]:
+        c2i = char_to_id(tuple(uchars))
+        bos = len(uchars)
+        tokens = [bos] + [c2i[ch] for ch in doc] + [bos]
+        n = min(BLOCK_SIZE, len(tokens) - 1)
+        return torch.tensor(tokens[:n]), torch.tensor(tokens[1 : n + 1])
+
+    return [tokenize_doc(doc) for doc in tqdm(docs, desc="tokenizing")]
 
 
 docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
@@ -92,7 +95,7 @@ state_dict = {
 
 opt_state = torch.optim.Adam(list(state_dict.values()), lr=0.01, betas=(0.85, 0.99), eps=1e-8)
 
-tokenized = [tokenize(doc, uchars) for doc in tqdm(docs, desc="tokenizing")]
+tokenized = tokenize(docs, uchars)
 
 step_times = []
 for step in range(NUM_STEPS):
