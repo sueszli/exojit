@@ -27,48 +27,37 @@ def rmsnorm(x: torch.Tensor) -> torch.Tensor:
     return x * (x.pow(2).mean(-1, keepdim=True) + 1e-5).rsqrt()
 
 
-@torch.compile(dynamic=True)
 def forward(params: dict[str, torch.Tensor], input_ids: torch.Tensor, target_ids: torch.Tensor) -> torch.Tensor:
     n = input_ids.shape[0]
-    x = rmsnorm(params["wte"][input_ids] + params["wpe"][torch.arange(n)])
+    x = rmsnorm(params["wte"][input_ids] + params["wpe"][:n])
     for li in range(N_LAYER):
         x_residual = x
         xn = rmsnorm(x)
-        q = (xn @ params[f"layer{li}.attn_wq"].T).view(n, N_HEAD, N_EMBED // N_HEAD).transpose(0, 1)
-        k = (xn @ params[f"layer{li}.attn_wk"].T).view(n, N_HEAD, N_EMBED // N_HEAD).transpose(0, 1)
-        v = (xn @ params[f"layer{li}.attn_wv"].T).view(n, N_HEAD, N_EMBED // N_HEAD).transpose(0, 1)
-        mask = torch.triu(torch.full((n, n), float("-inf"), dtype=x.dtype), 1)
-        attn_weights = F.softmax(q @ k.transpose(-2, -1) / (N_EMBED // N_HEAD) ** 0.5 + mask, dim=-1)
-        x = (attn_weights @ v).transpose(0, 1).reshape(n, N_EMBED) @ params[f"layer{li}.attn_wo"].T + x_residual
+        q = F.linear(xn, params[f"layer{li}.attn_wq"]).view(n, N_HEAD, N_EMBED // N_HEAD).transpose(0, 1)
+        k = F.linear(xn, params[f"layer{li}.attn_wk"]).view(n, N_HEAD, N_EMBED // N_HEAD).transpose(0, 1)
+        v = F.linear(xn, params[f"layer{li}.attn_wv"]).view(n, N_HEAD, N_EMBED // N_HEAD).transpose(0, 1)
+        attn_out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        x = F.linear(attn_out.transpose(0, 1).reshape(n, N_EMBED), params[f"layer{li}.attn_wo"]) + x_residual
         x_residual = x
         xn = rmsnorm(x)
-        x = F.relu(xn @ params[f"layer{li}.mlp_fc1"].T) @ params[f"layer{li}.mlp_fc2"].T + x_residual
-    return F.cross_entropy(x @ params["lm_head"].T, target_ids)
+        x = F.linear(F.relu(F.linear(xn, params[f"layer{li}.mlp_fc1"])), params[f"layer{li}.mlp_fc2"]) + x_residual
+    return F.cross_entropy(F.linear(x, params["lm_head"]), target_ids)
 
 
-def step_fn(params: dict[str, torch.Tensor], opt_state: dict[str, dict[str, torch.Tensor]], input_ids: torch.Tensor, target_ids: torch.Tensor, step: int) -> tuple[torch.Tensor, dict[str, torch.Tensor], dict[str, dict[str, torch.Tensor]]]:
+def step_fn(params: dict[str, torch.Tensor], optimizer: torch.optim.Optimizer, input_ids: torch.Tensor, target_ids: torch.Tensor, step: int) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.optim.Optimizer]:
+    optimizer.zero_grad()
     loss = forward(params, input_ids, target_ids)
     loss.backward()
 
     learning_rate = 0.01
-    beta1 = 0.85
-    beta2 = 0.99
-    eps_adam = 1e-8
     lr_t = learning_rate * (1 - step / NUM_STEPS)
 
-    m = opt_state["m"]
-    v = opt_state["v"]
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr_t
 
-    with torch.no_grad():
-        for k, p in params.items():
-            m[k] = beta1 * m[k] + (1 - beta1) * p.grad
-            v[k] = beta2 * v[k] + (1 - beta2) * p.grad**2
-            m_hat = m[k] / (1 - beta1 ** (step + 1))
-            v_hat = v[k] / (1 - beta2 ** (step + 1))
-            p -= lr_t * m_hat / (v_hat.sqrt() + eps_adam)
-            p.grad.zero_()
+    optimizer.step()
 
-    return loss, params, {"m": m, "v": v}
+    return loss, params, optimizer
 
 
 @functools.cache
@@ -101,7 +90,7 @@ state_dict = {
     **{f"layer{i}.mlp_fc2": matrix(N_EMBED, 4 * N_EMBED) for i in range(N_LAYER)},
 }
 
-opt_state = {"m": {k: torch.zeros_like(p) for k, p in state_dict.items()}, "v": {k: torch.zeros_like(p) for k, p in state_dict.items()}}
+opt_state = torch.optim.Adam(list(state_dict.values()), lr=0.01, betas=(0.85, 0.99), eps=1e-8)
 
 tokenized = [tokenize(doc, uchars) for doc in tqdm(docs, desc="tokenizing")]
 
@@ -111,7 +100,7 @@ for step in range(NUM_STEPS):
     input_ids, target_ids = tokenized[step % len(tokenized)]
     loss, state_dict, opt_state = step_fn(state_dict, opt_state, input_ids, target_ids, step)
     step_times.append(time.perf_counter() - t0)
-    print(f"step {step+1:4d} / {NUM_STEPS:4d} | loss {float(loss):.4f}", end="\r")
+    print(f"step {step+1:4d} / {NUM_STEPS:4d} | loss {loss.item():.4f}", end="\r")
 
 save_times(step_times)
 assert_weights_match(state_dict)
