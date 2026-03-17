@@ -5,6 +5,7 @@
 
 import random
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -92,19 +93,31 @@ state_dict: dict[str, torch.Tensor] = {
 
 train_inputs, train_targets, train_masks = tokenize(docs, uchars)
 
-m = {k: torch.zeros_like(v) for k, v in state_dict.items()}
-v_mom = {k: torch.zeros_like(v) for k, v in state_dict.items()}
-lrs = torch.tensor([0.01 * (1 - step / NUM_STEPS) for step in range(NUM_STEPS)], dtype=torch.float64)
-bc1s = torch.tensor([1 - 0.85 ** (step + 1) for step in range(NUM_STEPS)], dtype=torch.float64)
-bc2s = torch.tensor([1 - 0.99 ** (step + 1) for step in range(NUM_STEPS)], dtype=torch.float64)
+
+@dataclass
+class Adam:
+    m: dict[str, torch.Tensor]
+    v: dict[str, torch.Tensor]
+    lrs: torch.Tensor
+    bc1s: torch.Tensor
+    bc2s: torch.Tensor
+
+
+opt = Adam(
+    m={k: torch.zeros_like(v) for k, v in state_dict.items()},
+    v={k: torch.zeros_like(v) for k, v in state_dict.items()},
+    lrs=torch.tensor([0.01 * (1 - step / NUM_STEPS) for step in range(NUM_STEPS)], dtype=torch.float64),
+    bc1s=torch.tensor([1 - 0.85 ** (step + 1) for step in range(NUM_STEPS)], dtype=torch.float64),
+    bc2s=torch.tensor([1 - 0.99 ** (step + 1) for step in range(NUM_STEPS)], dtype=torch.float64),
+)
 
 # precompile
-train_step(state_dict, m, v_mom, lrs[0], bc1s[0], bc2s[0], train_inputs[0], train_targets[0], train_masks[0])
+train_step(state_dict, opt.m, opt.v, opt.lrs[0], opt.bc1s[0], opt.bc2s[0], train_inputs[0], train_targets[0], train_masks[0])
 
 step_times = []
 for step in range(NUM_STEPS):
     t0 = time.perf_counter()
-    state_dict, m, v_mom, loss = train_step(state_dict, m, v_mom, lrs[step], bc1s[step], bc2s[step], train_inputs[step], train_targets[step], train_masks[step])
+    state_dict, opt.m, opt.v, loss = train_step(state_dict, opt.m, opt.v, opt.lrs[step], opt.bc1s[step], opt.bc2s[step], train_inputs[step], train_targets[step], train_masks[step])
     step_times.append(time.perf_counter() - t0)
     print(f"step {step+1:4d} / {NUM_STEPS:4d} | loss {loss.item():.4f}", end="\r")
 

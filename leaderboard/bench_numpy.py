@@ -22,6 +22,8 @@ BLOCK_SIZE = 16
 N_HEAD = 4
 NUM_STEPS = 1000
 
+MASK = np.triu(np.full((BLOCK_SIZE, BLOCK_SIZE), -1e10), 1)
+
 
 def rmsnorm_fwd(x: np.ndarray):
     rms = (np.mean(x**2, axis=-1, keepdims=True) + 1e-5) ** -0.5
@@ -39,9 +41,12 @@ def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
     return e / e.sum(axis=axis, keepdims=True)
 
 
-def forward_backward(params: dict[str, np.ndarray], input_ids: np.ndarray, target_ids: np.ndarray):
+def forward_backward(params: dict[str, np.ndarray], input_ids: np.ndarray, target_ids: np.ndarray, loss_mask: np.ndarray):
     n = len(input_ids)
-    grads = {k: np.zeros_like(v) for k, v in params.items()}
+
+    grads = {}
+    grads["wte"] = np.zeros_like(params["wte"])
+    grads["wpe"] = np.zeros_like(params["wpe"])
 
     emb = params["wte"][input_ids] + params["wpe"][np.arange(n)]
     x, rms_init = rmsnorm_fwd(emb)
@@ -61,7 +66,7 @@ def forward_backward(params: dict[str, np.ndarray], input_ids: np.ndarray, targe
         q = (xn_attn @ wq.T).reshape(n, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2)
         k = (xn_attn @ wk.T).reshape(n, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2)
         v = (xn_attn @ wv.T).reshape(n, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2)
-        mask = np.triu(np.full((n, n), -1e10), 1)
+        mask = MASK[:n, :n]
         attn_w = softmax(q @ k.transpose(0, 2, 1) / (N_EMBED // N_HEAD) ** 0.5 + mask)
         attn_out = attn_w @ v
         attn_out_flat = attn_out.transpose(1, 0, 2).reshape(n, N_EMBED)
@@ -78,10 +83,13 @@ def forward_backward(params: dict[str, np.ndarray], input_ids: np.ndarray, targe
 
     logits = x @ params["lm_head"].T
     probs = softmax(logits)
-    loss = -np.log(probs[np.arange(n), target_ids]).mean()
 
-    dlogits = probs / n
-    dlogits[np.arange(n), target_ids] -= 1.0 / n
+    sum_mask = loss_mask.sum()
+    loss = -(np.log(probs[np.arange(n), target_ids]) * loss_mask).sum() / sum_mask
+
+    dlogits = probs / sum_mask
+    dlogits[np.arange(n), target_ids] -= 1.0 / sum_mask
+    dlogits *= loss_mask[:, None]
 
     grads["lm_head"] = dlogits.T @ x
     dx = dlogits @ params["lm_head"]
@@ -136,8 +144,8 @@ def forward_backward(params: dict[str, np.ndarray], input_ids: np.ndarray, targe
     return loss, grads
 
 
-def step_fn(params: dict[str, np.ndarray], opt_state: dict[str, dict[str, np.ndarray]], input_ids: np.ndarray, target_ids: np.ndarray, step: int) -> tuple[float, dict[str, np.ndarray], dict[str, dict[str, np.ndarray]]]:
-    loss, grads = forward_backward(params, input_ids, target_ids)
+def step_fn(params: dict[str, np.ndarray], opt_state: dict[str, dict[str, np.ndarray]], input_ids: np.ndarray, target_ids: np.ndarray, loss_mask: np.ndarray, step: int) -> tuple[float, dict[str, np.ndarray], dict[str, dict[str, np.ndarray]]]:
+    loss, grads = forward_backward(params, input_ids, target_ids, loss_mask)
 
     learning_rate = 0.01
     beta1 = 0.85
@@ -148,18 +156,19 @@ def step_fn(params: dict[str, np.ndarray], opt_state: dict[str, dict[str, np.nda
     m = opt_state["m"]
     v = opt_state["v"]
 
-    new_params = {}
-    new_m = {}
-    new_v = {}
+    bias_correction1 = 1 - beta1 ** (step + 1)
+    bias_correction2 = 1 - beta2 ** (step + 1)
 
     for k in params:
-        new_m[k] = beta1 * m[k] + (1 - beta1) * grads[k]
-        new_v[k] = beta2 * v[k] + (1 - beta2) * grads[k] ** 2
-        m_hat = new_m[k] / (1 - beta1 ** (step + 1))
-        v_hat = new_v[k] / (1 - beta2 ** (step + 1))
-        new_params[k] = params[k] - lr_t * m_hat / (v_hat**0.5 + eps_adam)
+        m[k] *= beta1
+        m[k] += (1 - beta1) * grads[k]
+        v[k] *= beta2
+        v[k] += (1 - beta2) * grads[k] ** 2
+        m_hat = m[k] / bias_correction1
+        v_hat = v[k] / bias_correction2
+        params[k] -= lr_t * m_hat / (v_hat**0.5 + eps_adam)
 
-    return loss, new_params, {"m": new_m, "v": new_v}
+    return loss, params, opt_state
 
 
 @functools.cache
@@ -167,12 +176,21 @@ def char_to_id(uchars_tuple: tuple[str, ...]) -> dict[str, int]:
     return {ch: i for i, ch in enumerate(uchars_tuple)}
 
 
-def tokenize(doc: str, uchars: list[str]) -> tuple[np.ndarray, np.ndarray]:
+def tokenize(doc: str, uchars: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     c2i = char_to_id(tuple(uchars))
     bos = len(uchars)
     tokens = [bos] + [c2i[ch] for ch in doc] + [bos]
     n = min(BLOCK_SIZE, len(tokens) - 1)
-    return np.array(tokens[:n]), np.array(tokens[1 : n + 1])
+
+    input_ids = np.zeros(BLOCK_SIZE, dtype=np.int32)
+    target_ids = np.zeros(BLOCK_SIZE, dtype=np.int32)
+    loss_mask = np.zeros(BLOCK_SIZE, dtype=np.float32)
+
+    input_ids[:n] = tokens[:n]
+    target_ids[:n] = tokens[1 : n + 1]
+    loss_mask[:n] = 1.0
+
+    return input_ids, target_ids, loss_mask
 
 
 docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
@@ -199,8 +217,8 @@ tokenized = [tokenize(doc, uchars) for doc in tqdm(docs, desc="tokenizing")]
 step_times = []
 for step in range(NUM_STEPS):
     t0 = time.perf_counter()
-    input_ids, target_ids = tokenized[step % len(tokenized)]
-    loss, state_dict, opt_state = step_fn(state_dict, opt_state, input_ids, target_ids, step)
+    input_ids, target_ids, loss_mask = tokenized[step % len(tokenized)]
+    loss, state_dict, opt_state = step_fn(state_dict, opt_state, input_ids, target_ids, loss_mask, step)
     step_times.append(time.perf_counter() - t0)
     print(f"step {step+1:4d} / {NUM_STEPS:4d} | loss {float(loss):.4f}", end="\r")
 
