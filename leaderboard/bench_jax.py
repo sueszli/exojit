@@ -3,7 +3,6 @@
 # dependencies = ["jax[cpu]", "optax", "numpy"]
 # ///
 
-import functools
 import random
 import time
 from collections import namedtuple
@@ -61,14 +60,9 @@ def train_fn(params: dict[str, jax.Array], opt_state: optax.OptState, train_inpu
     return jax.lax.scan(scan_fn, (params, opt_state), (train_inputs, train_targets, train_masks))
 
 
-@functools.cache
-def char_to_id(uchars_tuple: tuple[str, ...]) -> dict[str, int]:
-    return {ch: i for i, ch in enumerate(uchars_tuple)}
-
-
 def tokenize(docs: list[str], uchars: list[str]) -> tuple[jax.Array, jax.Array, jax.Array]:
     def tokenize_doc(doc: str) -> tuple[jax.Array, jax.Array, jax.Array]:
-        c2i = char_to_id(tuple(uchars))
+        c2i = {ch: i for i, ch in enumerate(uchars)}
         bos = len(uchars)
         tokens = [bos] + [c2i[ch] for ch in doc] + [bos]
         n = min(BLOCK_SIZE, len(tokens) - 1)
