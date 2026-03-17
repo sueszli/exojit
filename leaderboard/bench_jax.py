@@ -6,6 +6,7 @@
 import random
 import time
 from collections import namedtuple
+from functools import partial
 from pathlib import Path
 
 import jax
@@ -13,10 +14,8 @@ import jax.numpy as jnp
 import optax
 from utils import assert_weights_match, save_times
 
-jax.config.update("jax_enable_x64", True)  # f64 instead of f32 to match precision
+jax.config.update("jax_enable_x64", True)
 random.seed(42)
-docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
-random.shuffle(docs)
 
 
 N_LAYER = 1
@@ -30,7 +29,7 @@ def rmsnorm(x: jax.Array) -> jax.Array:
     return x * (jnp.mean(x**2, axis=-1, keepdims=True) + 1e-5) ** -0.5
 
 
-def forward(input_ids: jax.Array, target_ids: jax.Array, loss_mask: jax.Array, params: dict[str, jax.Array]) -> jax.Array:
+def forward(params: dict[str, jax.Array], input_ids: jax.Array, target_ids: jax.Array, loss_mask: jax.Array) -> jax.Array:
     n = input_ids.shape[0]
     x = rmsnorm(params["wte"][input_ids] + params["wpe"][jnp.arange(n)])
     for i in range(N_LAYER):
@@ -49,9 +48,27 @@ def forward(input_ids: jax.Array, target_ids: jax.Array, loss_mask: jax.Array, p
     return (per_token_loss * loss_mask).sum() / loss_mask.sum()
 
 
-uchars = sorted(set("".join(docs)))
+@partial(jax.jit, static_argnums=(5,))
+def step_fn(params: dict[str, jax.Array], opt_state: optax.OptState, input_ids: jax.Array, target_ids: jax.Array, loss_mask: jax.Array, optimizer: optax.GradientTransformation) -> tuple[jax.Array, dict[str, jax.Array], optax.OptState]:
+    loss, grads = jax.value_and_grad(forward, argnums=0)(params, input_ids, target_ids, loss_mask)
+    updates, new_opt_state = optimizer.update(grads, opt_state)
+    new_params = optax.apply_updates(params, updates)
+    return loss, new_params, new_opt_state
 
+
+def tokenize(doc: str, uchars: list[str]) -> tuple[jax.Array, jax.Array, jax.Array]:
+    bos = len(uchars)
+    tokens = jnp.array([bos] + [uchars.index(ch) for ch in doc] + [bos])
+    n = min(BLOCK_SIZE, len(tokens) - 1)
+    pad = (0, BLOCK_SIZE - n)
+    return jnp.pad(tokens[:n], pad), jnp.pad(tokens[1 : n + 1], pad), jnp.pad(jnp.ones(n), pad)
+
+
+docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
+random.shuffle(docs)
+uchars = sorted(set("".join(docs)))
 vocab_size = len(uchars) + 1
+
 matrix = lambda nout, nin, std=0.08: jnp.array([[random.gauss(0, std) for _ in range(nin)] for _ in range(nout)])
 state_dict: dict[str, jax.Array] = {
     "wte": matrix(vocab_size, N_EMBED),
@@ -68,30 +85,13 @@ state_dict: dict[str, jax.Array] = {
 optimizer = optax.adam(optax.linear_schedule(0.01, 0.0, NUM_STEPS), b1=0.85, b2=0.99, eps=1e-8)
 opt_state = optimizer.init(state_dict)
 
-
-@jax.jit
-def step_fn(input_ids: jax.Array, target_ids: jax.Array, loss_mask: jax.Array, params: dict[str, jax.Array], opt_state: optax.OptState) -> tuple[jax.Array, dict[str, jax.Array], optax.OptState]:
-    loss, grads = jax.value_and_grad(forward, argnums=3)(input_ids, target_ids, loss_mask, params)
-    updates, new_opt_state = optimizer.update(grads, opt_state)
-    new_params = optax.apply_updates(params, updates)
-    return loss, new_params, new_opt_state
-
-
-def tokenize(doc: str) -> tuple[jax.Array, jax.Array, jax.Array]:
-    bos = len(uchars)
-    tokens = jnp.array([bos] + [uchars.index(ch) for ch in doc] + [bos])
-    n = min(BLOCK_SIZE, len(tokens) - 1)
-    pad = (0, BLOCK_SIZE - n)
-    return jnp.pad(tokens[:n], pad), jnp.pad(tokens[1 : n + 1], pad), jnp.pad(jnp.ones(n), pad)
-
-
-tokenized = [tokenize(doc) for doc in docs]
+tokenized = [tokenize(doc, uchars) for doc in docs]
 
 step_times = []
 for step in range(NUM_STEPS):
     t0 = time.perf_counter()
     input_ids, target_ids, loss_mask = tokenized[step % len(tokenized)]
-    loss, state_dict, opt_state = step_fn(input_ids, target_ids, loss_mask, state_dict, opt_state)
+    loss, state_dict, opt_state = step_fn(state_dict, opt_state, input_ids, target_ids, loss_mask, optimizer)
     step_times.append(time.perf_counter() - t0)
     print(f"step {step+1:4d} / {NUM_STEPS:4d} | loss {float(loss):.4f}", end="\r")
 
