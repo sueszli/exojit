@@ -181,8 +181,8 @@ for step in pbar:
         v_hat = v[k] / (1 - beta2 ** (step + 1))
         state_dict[k] -= lr_t * m_hat / (v_hat**0.5 + eps_adam)
 
-    pbar.set_postfix(loss=f"{loss:.4f}")
     step_times.append(time.perf_counter() - t0)
+    pbar.set_postfix(loss=f"{loss:.4f}")
 
 save_times(step_times)
 W = namedtuple("W", ["data"])

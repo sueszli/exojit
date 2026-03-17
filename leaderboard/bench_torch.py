@@ -89,8 +89,8 @@ for step in pbar:
             v_hat = v[k] / (1 - beta2 ** (step + 1))
             p -= lr_t * m_hat / (v_hat.sqrt() + eps_adam)
             p.grad.zero_()
-    pbar.set_postfix(loss=f"{loss.item():.4f}")
     step_times.append(time.perf_counter() - t0)
+    pbar.set_postfix(loss=f"{loss.item():.4f}")
 
 save_times(step_times)
 assert_weights_match(state_dict)
