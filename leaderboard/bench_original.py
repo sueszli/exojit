@@ -16,11 +16,18 @@ from utils import dump_weights, save_times
 random.seed(42)
 
 
+# hyperparams
+N_LAYER = 1  # num stacked transformer blocks
+N_EMBED = 16  # embedding dimensions
+BLOCK_SIZE = 16  # context window size (longest name is 15 chars)
+N_HEAD = 4  # num attention heads
+NUM_STEPS = 1000  # num training steps
+
+
 # load
 docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
 random.shuffle(docs)
 print(f"num docs: {len(docs)}")
-
 
 # tokenize
 uchars = sorted(set("".join(docs)))  # unique chars as tokens
@@ -103,26 +110,20 @@ class Value:
 # training
 #
 
-
 # init params
-n_layer = 1  # num stacked transformer blocks
-n_embd = 16  # embedding dimensions
-block_size = 16  # context window size (longest name is 15 chars)
-n_head = 4  # num attention heads
-head_dim = n_embd // n_head  # which subset of dims each head operates on
 matrix = lambda nout, nin, std=0.08: [[Value(random.gauss(0, std)) for _ in range(nin)] for _ in range(nout)]  # torch.randn(nout, nin) * std
 state_dict: dict[str, list[list[Value]]] = {
-    "wte": matrix(vocab_size, n_embd),  # token embedding
-    "wpe": matrix(block_size, n_embd),  # positional embedding
-    "lm_head": matrix(vocab_size, n_embd),  # language model head
+    "wte": matrix(vocab_size, N_EMBED),  # token embedding
+    "wpe": matrix(BLOCK_SIZE, N_EMBED),  # positional embedding
+    "lm_head": matrix(vocab_size, N_EMBED),  # language model head
 }
-for i in range(n_layer):
-    state_dict[f"layer{i}.attn_wq"] = matrix(n_embd, n_embd)  # query
-    state_dict[f"layer{i}.attn_wk"] = matrix(n_embd, n_embd)  # key
-    state_dict[f"layer{i}.attn_wv"] = matrix(n_embd, n_embd)  # value
-    state_dict[f"layer{i}.attn_wo"] = matrix(n_embd, n_embd)  # output
-    state_dict[f"layer{i}.mlp_fc1"] = matrix(4 * n_embd, n_embd)  # fully connected 1
-    state_dict[f"layer{i}.mlp_fc2"] = matrix(n_embd, 4 * n_embd)  # fully connected 2
+for i in range(N_LAYER):
+    state_dict[f"layer{i}.attn_wq"] = matrix(N_EMBED, N_EMBED)  # query
+    state_dict[f"layer{i}.attn_wk"] = matrix(N_EMBED, N_EMBED)  # key
+    state_dict[f"layer{i}.attn_wv"] = matrix(N_EMBED, N_EMBED)  # value
+    state_dict[f"layer{i}.attn_wo"] = matrix(N_EMBED, N_EMBED)  # output
+    state_dict[f"layer{i}.mlp_fc1"] = matrix(4 * N_EMBED, N_EMBED)  # fully connected 1
+    state_dict[f"layer{i}.mlp_fc2"] = matrix(N_EMBED, 4 * N_EMBED)  # fully connected 2
 params: list[Value] = [p for mat in state_dict.values() for row in mat for p in row]  # flatten
 print(f"num params: {len(params)}")
 
@@ -189,7 +190,7 @@ def gpt(
     x = [t + p for t, p in zip(tok_emb, pos_emb)]
     x = rmsnorm(x)
 
-    for li in range(n_layer):
+    for li in range(N_LAYER):
         # multi-head attention block
         x_residual = x
         x = rmsnorm(x)
@@ -199,16 +200,16 @@ def gpt(
         keys[li].append(k)  # causal mask is implicit. cache only holds past tokens, never future
         values[li].append(v)
         x_attn = []
-        for h in range(n_head):
-            hs = h * head_dim  # index offset
-            q_h = q[hs : hs + head_dim]
-            k_h = [ki[hs : hs + head_dim] for ki in keys[li]]
-            v_h = [vi[hs : hs + head_dim] for vi in values[li]]
-            # scores = Q @ K.T / sqrt(head_dim)
-            attn_logits = [sum(q_h[j] * k_h[t][j] for j in range(head_dim)) / head_dim**0.5 for t in range(len(k_h))]
+        for h in range(N_HEAD):
+            hs = h * N_EMBED // N_HEAD  # index offset
+            q_h = q[hs : hs + N_EMBED // N_HEAD]
+            k_h = [ki[hs : hs + N_EMBED // N_HEAD] for ki in keys[li]]
+            v_h = [vi[hs : hs + N_EMBED // N_HEAD] for vi in values[li]]
+            # scores = Q @ K.T / sqrt(N_EMBED // N_HEAD)
+            attn_logits = [sum(q_h[j] * k_h[t][j] for j in range(N_EMBED // N_HEAD)) / (N_EMBED // N_HEAD) ** 0.5 for t in range(len(k_h))]
             attn_weights = softmax(attn_logits)
             # head_out = weights @ V
-            head_out = [sum(attn_weights[t] * v_h[t][j] for t in range(len(v_h))) for j in range(head_dim)]
+            head_out = [sum(attn_weights[t] * v_h[t][j] for t in range(len(v_h))) for j in range(N_EMBED // N_HEAD)]
             x_attn.extend(head_out)
         x = linear(x_attn, state_dict[f"layer{li}.attn_wo"])  # x = concat(head_outs) @ wo.T
         x = [a + b for a, b in zip(x, x_residual)]
@@ -234,17 +235,16 @@ m: list[float] = [0.0] * len(params)  # first moment buffer
 v: list[float] = [0.0] * len(params)  # second moment buffer
 
 # train loop
-num_steps = 1000
 step_times = []
-for step in range(num_steps):
+for step in range(NUM_STEPS):
     t0 = time.perf_counter()
     doc = docs[step % len(docs)]
     tokens = [BOS] + [uchars.index(ch) for ch in doc] + [BOS]  # turn to token ids
-    n = min(block_size, len(tokens) - 1)  # num prediction steps
+    n = min(BLOCK_SIZE, len(tokens) - 1)  # num prediction steps
 
     # forward
-    keys: list[list[list[Value]]] = [[] for _ in range(n_layer)]
-    values: list[list[list[Value]]] = [[] for _ in range(n_layer)]
+    keys: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
+    values: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
     losses = []
     for pos_id in range(n):
         # predict
@@ -261,7 +261,7 @@ for step in range(num_steps):
     loss.backward()
 
     # adam optimizer weight update
-    lr_t = learning_rate * (1 - step / num_steps)  # linear learning rate decay
+    lr_t = learning_rate * (1 - step / NUM_STEPS)  # linear learning rate decay
     for i, p in enumerate(params):
         m[i] = beta1 * m[i] + (1 - beta1) * p.grad
         v[i] = beta2 * v[i] + (1 - beta2) * p.grad**2
@@ -271,25 +271,23 @@ for step in range(num_steps):
         p.grad = 0  # reset gradients
 
     step_times.append(time.perf_counter() - t0)
-    print(f"step {step+1:4d} / {num_steps:4d} | loss {loss.data:.4f}", end="\r")
+    print(f"step {step+1:4d} / {NUM_STEPS:4d} | loss {loss.data:.4f}", end="\r")
 
 save_times(step_times)
 dump_weights(state_dict)
-
 
 #
 # inference
 #
 
-
 print("\ninference:")
 temperature = 0.5
 for sample_idx in range(20):
-    keys: list[list[list[Value]]] = [[] for _ in range(n_layer)]
-    values: list[list[list[Value]]] = [[] for _ in range(n_layer)]
+    keys: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
+    values: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
     token_id = BOS
     sample = []
-    for pos_id in range(block_size):
+    for pos_id in range(BLOCK_SIZE):
         logits = gpt(token_id, pos_id, keys, values)
         probs = softmax([logit / temperature for logit in logits])
         # sample from distribution
