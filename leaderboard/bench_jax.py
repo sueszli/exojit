@@ -1,6 +1,6 @@
 # /// script
 # requires-python = "==3.14.*"
-# dependencies = ["jax[cpu]", "optax", "tqdm", "numpy"]
+# dependencies = ["jax[cpu]", "optax", "numpy"]
 # ///
 
 import functools
@@ -13,7 +13,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from tqdm import tqdm
 from utils import assert_weights_match, save_times
 
 jax.config.update("jax_enable_x64", True)
@@ -32,16 +31,15 @@ def rmsnorm(x: jax.Array) -> jax.Array:
 
 
 def forward(params: dict[str, jax.Array], input_ids: jax.Array, target_ids: jax.Array, loss_mask: jax.Array) -> jax.Array:
-    n = input_ids.shape[0]
-    x = rmsnorm(params["wte"][input_ids] + params["wpe"][:n])
+    x = rmsnorm(params["wte"][input_ids] + params["wpe"])
     for i in range(N_LAYER):
         x_residual = x
         xn = rmsnorm(x)
-        q = (xn @ params[f"layer{i}.attn_wq"].T).reshape(n, N_HEAD, N_EMBED // N_HEAD)
-        k = (xn @ params[f"layer{i}.attn_wk"].T).reshape(n, N_HEAD, N_EMBED // N_HEAD)
-        v = (xn @ params[f"layer{i}.attn_wv"].T).reshape(n, N_HEAD, N_EMBED // N_HEAD)
+        q = (xn @ params[f"layer{i}.attn_wq"].T).reshape(BLOCK_SIZE, N_HEAD, N_EMBED // N_HEAD)
+        k = (xn @ params[f"layer{i}.attn_wk"].T).reshape(BLOCK_SIZE, N_HEAD, N_EMBED // N_HEAD)
+        v = (xn @ params[f"layer{i}.attn_wv"].T).reshape(BLOCK_SIZE, N_HEAD, N_EMBED // N_HEAD)
         attn_out = jax.nn.dot_product_attention(q, k, v, is_causal=True)
-        x = attn_out.reshape(n, N_EMBED) @ params[f"layer{i}.attn_wo"].T + x_residual
+        x = attn_out.reshape(BLOCK_SIZE, N_EMBED) @ params[f"layer{i}.attn_wo"].T + x_residual
         x_residual = x
         xn = rmsnorm(x)
         x = jax.nn.relu(xn @ params[f"layer{i}.mlp_fc1"].T) @ params[f"layer{i}.mlp_fc2"].T + x_residual
@@ -83,9 +81,9 @@ def tokenize(docs: list[str], uchars: list[str]) -> tuple[jax.Array, jax.Array, 
         target_ids[:n] = tokens[1 : n + 1]
         loss_mask[:n] = 1.0
 
-        return jnp.array(input_ids), jnp.array(target_ids), jnp.array(loss_mask)
+        return input_ids, target_ids, loss_mask
 
-    per_doc = [tokenize_doc(doc) for doc in tqdm(docs, desc="tokenizing")]
+    per_doc = [tokenize_doc(doc) for doc in docs]
     train_inputs, train_targets, train_masks = map(jnp.stack, zip(*[per_doc[step % len(per_doc)] for step in range(NUM_STEPS)]))
     return train_inputs, train_targets, train_masks
 
