@@ -34,19 +34,15 @@ def rmsnorm(x: jax.Array) -> jax.Array:
 
 def forward(params: dict[str, jax.Array], input_ids: jax.Array, target_ids: jax.Array, loss_mask: jax.Array) -> jax.Array:
     n = input_ids.shape[0]
-    x = rmsnorm(params["wte"][input_ids] + params["wpe"][jnp.arange(n)])
-    mask = jnp.triu(jnp.full((n, n), -1e10), 1)
+    x = rmsnorm(params["wte"][input_ids] + params["wpe"][:n])
     for i in range(N_LAYER):
         x_residual = x
         xn = rmsnorm(x)
-
-        q = (xn @ params[f"layer{i}.attn_wq"].T).reshape(n, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2)
-        k = (xn @ params[f"layer{i}.attn_wk"].T).reshape(n, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2)
-        v = (xn @ params[f"layer{i}.attn_wv"].T).reshape(n, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2)
-
-        attn_weights = jax.nn.softmax(q @ k.transpose(0, 2, 1) / (N_EMBED // N_HEAD) ** 0.5 + mask, axis=-1)
-        x = (attn_weights @ v).transpose(1, 0, 2).reshape(n, N_EMBED) @ params[f"layer{i}.attn_wo"].T + x_residual
-
+        q = (xn @ params[f"layer{i}.attn_wq"].T).reshape(n, N_HEAD, N_EMBED // N_HEAD)
+        k = (xn @ params[f"layer{i}.attn_wk"].T).reshape(n, N_HEAD, N_EMBED // N_HEAD)
+        v = (xn @ params[f"layer{i}.attn_wv"].T).reshape(n, N_HEAD, N_EMBED // N_HEAD)
+        attn_out = jax.nn.dot_product_attention(q, k, v, is_causal=True)
+        x = attn_out.reshape(n, N_EMBED) @ params[f"layer{i}.attn_wo"].T + x_residual
         x_residual = x
         xn = rmsnorm(x)
         x = jax.nn.relu(xn @ params[f"layer{i}.mlp_fc1"].T) @ params[f"layer{i}.mlp_fc2"].T + x_residual
