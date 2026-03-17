@@ -15,6 +15,8 @@ from utils import assert_weights_match, save_times
 
 jax.config.update("jax_enable_x64", True)  # f64 instead of f32 to match precision
 random.seed(42)
+docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
+random.shuffle(docs)
 
 
 N_LAYER = 1
@@ -47,11 +49,9 @@ def forward(input_ids: jax.Array, target_ids: jax.Array, loss_mask: jax.Array, p
     return (per_token_loss * loss_mask).sum() / loss_mask.sum()
 
 
-docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
-random.shuffle(docs)
 uchars = sorted(set("".join(docs)))
-vocab_size = len(uchars) + 1
 
+vocab_size = len(uchars) + 1
 matrix = lambda nout, nin, std=0.08: jnp.array([[random.gauss(0, std) for _ in range(nin)] for _ in range(nout)])
 state_dict: dict[str, jax.Array] = {
     "wte": matrix(vocab_size, N_EMBED),
