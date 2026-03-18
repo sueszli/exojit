@@ -386,7 +386,7 @@ opt_state = {"m": {k: [[0.0] * len(mat[0]) for _ in mat] for k, mat in state_dic
 tokenized = [tokenize(doc, uchars) for doc in docs]
 
 step_times = []
-for step in tqdm(range(NUM_STEPS), desc="training"):
+for step in tqdm(range(NUM_STEPS)):
     t0 = time.perf_counter()
     input_ids, target_ids, loss_mask = tokenized[step % len(tokenized)]
     loss, state_dict, opt_state = step_fn(state_dict, opt_state, input_ids, target_ids, loss_mask, step)
