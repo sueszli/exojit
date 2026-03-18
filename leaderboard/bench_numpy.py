@@ -32,7 +32,7 @@ def rmsnorm_fwd(x: np.ndarray):
 
 def rmsnorm_bwd(dout: np.ndarray, x: np.ndarray, rms: np.ndarray) -> np.ndarray:
     dot = (dout * x).sum(axis=-1, keepdims=True)
-    return dout * rms - (INV_N_EMBED * rms ** 3) * x * dot
+    return dout * rms - (INV_N_EMBED * rms**3) * x * dot
 
 
 def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
