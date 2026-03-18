@@ -21,18 +21,16 @@ BLOCK_SIZE = 16
 N_HEAD = 4
 NUM_STEPS = 1000
 
-MASK = np.triu(np.full((BLOCK_SIZE, BLOCK_SIZE), -1e10), 1)
-
 
 def rmsnorm_fwd(x: np.ndarray):
-    rms = (np.mean(x**2, axis=-1, keepdims=True) + 1e-5) ** -0.5
+    rms = (np.mean(x * x, axis=-1, keepdims=True) + 1e-5) ** -0.5
     return x * rms, rms
 
 
 def rmsnorm_bwd(dout: np.ndarray, x: np.ndarray, rms: np.ndarray) -> np.ndarray:
     d = x.shape[-1]
     dot = (dout * x).sum(axis=-1, keepdims=True)
-    return dout * rms - (rms**3 / d) * x * dot
+    return dout * rms - (rms * rms * rms / d) * x * dot
 
 
 def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -41,13 +39,12 @@ def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
 
 
 def forward_backward(params: dict[str, np.ndarray], input_ids: np.ndarray, target_ids: np.ndarray, loss_mask: np.ndarray):
-    n = len(input_ids)
+    grads = {
+        "wte": np.zeros_like(params["wte"]),
+        "wpe": np.zeros_like(params["wpe"]),
+    }
 
-    grads = {}
-    grads["wte"] = np.zeros_like(params["wte"])
-    grads["wpe"] = np.zeros_like(params["wpe"])
-
-    emb = params["wte"][input_ids] + params["wpe"][np.arange(n)]
+    emb = params["wte"][input_ids] + params["wpe"][np.arange(16)]
     x, rms_init = rmsnorm_fwd(emb)
 
     layer_cache = []
@@ -62,13 +59,12 @@ def forward_backward(params: dict[str, np.ndarray], input_ids: np.ndarray, targe
         x_pre_attn = x
         xn_attn, rms_attn = rmsnorm_fwd(x)
 
-        q = (xn_attn @ wq.T).reshape(n, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2)
-        k = (xn_attn @ wk.T).reshape(n, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2)
-        v = (xn_attn @ wv.T).reshape(n, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2)
-        mask = MASK[:n, :n]
-        attn_w = softmax(q @ k.transpose(0, 2, 1) / (N_EMBED // N_HEAD) ** 0.5 + mask)
+        q = (xn_attn @ wq.T).reshape(16, N_HEAD, 4).transpose(1, 0, 2)
+        k = (xn_attn @ wk.T).reshape(16, N_HEAD, 4).transpose(1, 0, 2)
+        v = (xn_attn @ wv.T).reshape(16, N_HEAD, 4).transpose(1, 0, 2)
+        attn_w = softmax(q @ k.transpose(0, 2, 1) * 0.5 + np.triu(np.full((16, 16), -1e10), 1))
         attn_out = attn_w @ v
-        attn_out_flat = attn_out.transpose(1, 0, 2).reshape(n, N_EMBED)
+        attn_out_flat = attn_out.transpose(1, 0, 2).reshape(16, N_EMBED)
         x = attn_out_flat @ wo.T + x_pre_attn
 
         x_pre_mlp = x
@@ -84,10 +80,10 @@ def forward_backward(params: dict[str, np.ndarray], input_ids: np.ndarray, targe
     probs = softmax(logits)
 
     sum_mask = loss_mask.sum()
-    loss = -(np.log(probs[np.arange(n), target_ids]) * loss_mask).sum() / sum_mask
+    loss = -(np.log(probs[np.arange(16), target_ids]) * loss_mask).sum() / sum_mask
 
     dlogits = probs / sum_mask
-    dlogits[np.arange(n), target_ids] -= 1.0 / sum_mask
+    dlogits[np.arange(16), target_ids] -= 1.0 / sum_mask
     dlogits *= loss_mask[:, None]
 
     grads["lm_head"] = dlogits.T @ x
@@ -114,20 +110,20 @@ def forward_backward(params: dict[str, np.ndarray], input_ids: np.ndarray, targe
         grads[f"layer{li}.attn_wo"] = dx.T @ cache["attn_out_flat"]
         dattn_out_flat = dx @ wo
 
-        dattn_out = dattn_out_flat.reshape(n, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2)
+        dattn_out = dattn_out_flat.reshape(16, N_HEAD, 4).transpose(1, 0, 2)
 
         aw = cache["attn_w"]
         dv = aw.transpose(0, 2, 1) @ dattn_out
         dattn_w = dattn_out @ cache["v"].transpose(0, 2, 1)
 
-        dlogits_attn = aw * (dattn_w - (dattn_w * aw).sum(-1, keepdims=True)) / (N_EMBED // N_HEAD) ** 0.5
+        dlogits_attn = aw * (dattn_w - (dattn_w * aw).sum(-1, keepdims=True)) * 0.5
 
         dq = dlogits_attn @ cache["k"]
         dk = dlogits_attn.transpose(0, 2, 1) @ cache["q"]
 
-        dq_flat = dq.transpose(1, 0, 2).reshape(n, N_EMBED)
-        dk_flat = dk.transpose(1, 0, 2).reshape(n, N_EMBED)
-        dv_flat = dv.transpose(1, 0, 2).reshape(n, N_EMBED)
+        dq_flat = dq.transpose(1, 0, 2).reshape(16, N_EMBED)
+        dk_flat = dk.transpose(1, 0, 2).reshape(16, N_EMBED)
+        dv_flat = dv.transpose(1, 0, 2).reshape(16, N_EMBED)
 
         grads[f"layer{li}.attn_wq"] = dq_flat.T @ cache["xn_attn"]
         grads[f"layer{li}.attn_wk"] = dk_flat.T @ cache["xn_attn"]
@@ -138,34 +134,46 @@ def forward_backward(params: dict[str, np.ndarray], input_ids: np.ndarray, targe
 
     demb = rmsnorm_bwd(dx, emb, rms_init)
     np.add.at(grads["wte"], input_ids, demb)
-    grads["wpe"][:n] += demb
+    grads["wpe"] += demb
 
     return loss, grads
 
 
-def step_fn(params: dict[str, np.ndarray], opt_state: dict[str, dict[str, np.ndarray]], input_ids: np.ndarray, target_ids: np.ndarray, loss_mask: np.ndarray, step: int) -> tuple[float, dict[str, np.ndarray], dict[str, dict[str, np.ndarray]]]:
+def step_fn(params: dict[str, np.ndarray], opt_state: dict, input_ids: np.ndarray, target_ids: np.ndarray, loss_mask: np.ndarray, step: int) -> tuple[float, dict[str, np.ndarray], dict]:
     loss, grads = forward_backward(params, input_ids, target_ids, loss_mask)
 
-    learning_rate = 0.01
-    beta1 = 0.85
-    beta2 = 0.99
-    eps_adam = 1e-8
-    lr_t = learning_rate * (1 - step / NUM_STEPS)
+    lr_t = 0.01 * (1 - step / NUM_STEPS)
+    bc1 = 1.0 - 0.85 ** (step + 1)
+    bc2 = 1.0 - 0.99 ** (step + 1)
 
-    m = opt_state["m"]
-    v = opt_state["v"]
+    flat_m = opt_state["flat_m"]
+    flat_v = opt_state["flat_v"]
+    flat_params = opt_state["flat_params"]
+    buf = opt_state["buf"]
+    tmp = opt_state["tmp"]
 
-    bias_correction1 = 1 - beta1 ** (step + 1)
-    bias_correction2 = 1 - beta2 ** (step + 1)
+    offset = 0
+    for k in PARAM_KEYS:
+        g = grads[k]
+        s = g.size
+        buf[offset : offset + s] = g.ravel()
+        offset += s
 
-    for k in params:
-        m[k] *= beta1
-        m[k] += (1 - beta1) * grads[k]
-        v[k] *= beta2
-        v[k] += (1 - beta2) * grads[k] ** 2
-        m_hat = m[k] / bias_correction1
-        v_hat = v[k] / bias_correction2
-        params[k] -= lr_t * m_hat / (v_hat**0.5 + eps_adam)
+    np.multiply(buf, 0.15, out=tmp)
+    flat_m *= 0.85
+    flat_m += tmp
+    np.multiply(buf, buf, out=tmp)
+    tmp *= 0.01
+    flat_v *= 0.99
+    flat_v += tmp
+
+    np.divide(flat_m, bc1, out=tmp)
+    np.divide(flat_v, bc2, out=buf)
+    np.sqrt(buf, out=buf)
+    buf += 1e-8
+    tmp /= buf
+    tmp *= lr_t
+    flat_params -= tmp
 
     return loss, params, opt_state
 
@@ -209,7 +217,22 @@ state_dict = {
     **{f"layer{i}.mlp_fc2": matrix(N_EMBED, 4 * N_EMBED) for i in range(N_LAYER)},
 }
 
-opt_state = {"m": {k: np.zeros_like(p) for k, p in state_dict.items()}, "v": {k: np.zeros_like(p) for k, p in state_dict.items()}}
+PARAM_KEYS = list(state_dict.keys())
+flat_params = np.concatenate([state_dict[k].ravel() for k in PARAM_KEYS])
+TOTAL_PARAMS = flat_params.size
+offset = 0
+for k in PARAM_KEYS:
+    n = state_dict[k].size
+    state_dict[k] = flat_params[offset : offset + n].reshape(state_dict[k].shape)
+    offset += n
+
+opt_state = {
+    "flat_m": np.zeros(TOTAL_PARAMS),
+    "flat_v": np.zeros(TOTAL_PARAMS),
+    "flat_params": flat_params,
+    "buf": np.empty(TOTAL_PARAMS),
+    "tmp": np.empty(TOTAL_PARAMS),
+}
 
 tokenized = [tokenize(doc, uchars) for doc in docs]
 
