@@ -16,7 +16,8 @@ N_HEAD = 4
 NUM_STEPS = 1000
 
 
-LayerCache = namedtuple("LayerCache", ["x_pre_attn", "xn_attn", "rms_attn", "q", "k", "v", "attn_w", "attn_out_flat", "x_pre_mlp", "xn_mlp", "rms_mlp", "h_pre", "h"])
+AttnCache = namedtuple("AttnCache", ["x_pre", "xn", "rms", "q", "k", "v", "attn_w", "out_flat"])
+MlpCache = namedtuple("MlpCache", ["x_pre", "xn", "rms", "h_pre", "h"])
 FwdCache = namedtuple("FwdCache", ["input_ids", "target_ids", "loss_mask", "sum_mask", "emb", "rms_init", "x", "probs", "layer_caches"])
 
 
@@ -41,53 +42,24 @@ ATTN_LOGITS = np.empty((N_HEAD, BLOCK_SIZE, BLOCK_SIZE))
 CAUSAL_MASK = np.triu(np.full((BLOCK_SIZE, BLOCK_SIZE), -1e10), 1)
 
 
-def layer_fwd(x: np.ndarray, params: dict, li: int) -> tuple[np.ndarray, LayerCache]:
+def attn_fwd(x: np.ndarray, wq: np.ndarray, wk: np.ndarray, wv: np.ndarray, wo: np.ndarray) -> tuple[np.ndarray, AttnCache]:
     global ATTN_LOGITS
-    attn_wq = params[f"layer{li}.attn_wq"]
-    attn_wk = params[f"layer{li}.attn_wk"]
-    attn_wv = params[f"layer{li}.attn_wv"]
-    attn_wo = params[f"layer{li}.attn_wo"]
-    mlp_fc1 = params[f"layer{li}.mlp_fc1"]
-    mlp_fc2 = params[f"layer{li}.mlp_fc2"]
-
-    x_pre_attn = x
-    xn_attn, rms_attn = rmsnorm_fwd(x)
-    q = (xn_attn @ attn_wq.T).reshape(BLOCK_SIZE, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2).copy()
-    k = (xn_attn @ attn_wk.T).reshape(BLOCK_SIZE, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2).copy()
-    v = (xn_attn @ attn_wv.T).reshape(BLOCK_SIZE, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2).copy()
+    xn, rms = rmsnorm_fwd(x)
+    q = (xn @ wq.T).reshape(BLOCK_SIZE, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2).copy()
+    k = (xn @ wk.T).reshape(BLOCK_SIZE, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2).copy()
+    v = (xn @ wv.T).reshape(BLOCK_SIZE, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2).copy()
     np.matmul(q, k.transpose(0, 2, 1), out=ATTN_LOGITS)
     ATTN_LOGITS *= 0.5
     ATTN_LOGITS += CAUSAL_MASK
     attn_w = softmax(ATTN_LOGITS)
-    attn_out_flat = (attn_w @ v).transpose(1, 0, 2).reshape(BLOCK_SIZE, N_EMBED)
-    x = attn_out_flat @ attn_wo.T + x_pre_attn
-
-    x_pre_mlp = x
-    xn_mlp, rms_mlp = rmsnorm_fwd(x)
-    h_pre = xn_mlp @ mlp_fc1.T
-    h = np.maximum(0.0, h_pre)
-    x = h @ mlp_fc2.T + x_pre_mlp
-
-    return x, LayerCache(x_pre_attn, xn_attn, rms_attn, q, k, v, attn_w, attn_out_flat, x_pre_mlp, xn_mlp, rms_mlp, h_pre, h)
+    out_flat = (attn_w @ v).transpose(1, 0, 2).reshape(BLOCK_SIZE, N_EMBED)
+    return out_flat @ wo.T + x, AttnCache(x, xn, rms, q, k, v, attn_w, out_flat)
 
 
-def layer_bwd(dx: np.ndarray, grads: dict, params: dict, c: LayerCache, li: int) -> np.ndarray:
-    attn_wq = params[f"layer{li}.attn_wq"]
-    attn_wk = params[f"layer{li}.attn_wk"]
-    attn_wv = params[f"layer{li}.attn_wv"]
-    attn_wo = params[f"layer{li}.attn_wo"]
-    mlp_fc1 = params[f"layer{li}.mlp_fc1"]
-    mlp_fc2 = params[f"layer{li}.mlp_fc2"]
-
+def attn_bwd(dx: np.ndarray, grads: dict, wq: np.ndarray, wk: np.ndarray, wv: np.ndarray, wo: np.ndarray, c: AttnCache, li: int) -> np.ndarray:
     dx_res = dx
-    np.matmul(dx.T, c.h, out=grads[f"layer{li}.mlp_fc2"])
-    dh_pre = (dx @ mlp_fc2) * (c.h_pre > 0)
-    np.matmul(dh_pre.T, c.xn_mlp, out=grads[f"layer{li}.mlp_fc1"])
-    dx = rmsnorm_bwd(dh_pre @ mlp_fc1, c.x_pre_mlp, c.rms_mlp) + dx_res
-
-    dx_res = dx
-    np.matmul(dx.T, c.attn_out_flat, out=grads[f"layer{li}.attn_wo"])
-    dattn_out = (dx @ attn_wo).reshape(BLOCK_SIZE, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2)
+    np.matmul(dx.T, c.out_flat, out=grads[f"layer{li}.attn_wo"])
+    dattn_out = (dx @ wo).reshape(BLOCK_SIZE, N_HEAD, N_EMBED // N_HEAD).transpose(1, 0, 2)
     dv = c.attn_w.transpose(0, 2, 1) @ dattn_out
     dattn_w = dattn_out @ c.v.transpose(0, 2, 1)
     dlogits_attn = c.attn_w * (dattn_w - (dattn_w * c.attn_w).sum(-1, keepdims=True)) * 0.5
@@ -96,11 +68,26 @@ def layer_bwd(dx: np.ndarray, grads: dict, params: dict, c: LayerCache, li: int)
     dq_flat = dq.transpose(1, 0, 2).reshape(BLOCK_SIZE, N_EMBED)
     dk_flat = dk.transpose(1, 0, 2).reshape(BLOCK_SIZE, N_EMBED)
     dv_flat = dv.transpose(1, 0, 2).reshape(BLOCK_SIZE, N_EMBED)
-    np.matmul(dq_flat.T, c.xn_attn, out=grads[f"layer{li}.attn_wq"])
-    np.matmul(dk_flat.T, c.xn_attn, out=grads[f"layer{li}.attn_wk"])
-    np.matmul(dv_flat.T, c.xn_attn, out=grads[f"layer{li}.attn_wv"])
-    dxn_attn = dq_flat @ attn_wq + dk_flat @ attn_wk + dv_flat @ attn_wv
-    return rmsnorm_bwd(dxn_attn, c.x_pre_attn, c.rms_attn) + dx_res
+    np.matmul(dq_flat.T, c.xn, out=grads[f"layer{li}.attn_wq"])
+    np.matmul(dk_flat.T, c.xn, out=grads[f"layer{li}.attn_wk"])
+    np.matmul(dv_flat.T, c.xn, out=grads[f"layer{li}.attn_wv"])
+    dxn = dq_flat @ wq + dk_flat @ wk + dv_flat @ wv
+    return rmsnorm_bwd(dxn, c.x_pre, c.rms) + dx_res
+
+
+def mlp_fwd(x: np.ndarray, fc1: np.ndarray, fc2: np.ndarray) -> tuple[np.ndarray, MlpCache]:
+    xn, rms = rmsnorm_fwd(x)
+    h_pre = xn @ fc1.T
+    h = np.maximum(0.0, h_pre)
+    return h @ fc2.T + x, MlpCache(x, xn, rms, h_pre, h)
+
+
+def mlp_bwd(dx: np.ndarray, grads: dict, fc1: np.ndarray, fc2: np.ndarray, c: MlpCache, li: int) -> np.ndarray:
+    dx_res = dx
+    np.matmul(dx.T, c.h, out=grads[f"layer{li}.mlp_fc2"])
+    dh_pre = (dx @ fc2) * (c.h_pre > 0)
+    np.matmul(dh_pre.T, c.xn, out=grads[f"layer{li}.mlp_fc1"])
+    return rmsnorm_bwd(dh_pre @ fc1, c.x_pre, c.rms) + dx_res
 
 
 BLOCK_RANGE = np.arange(BLOCK_SIZE)
@@ -112,8 +99,9 @@ def forward(params: dict, input_ids: np.ndarray, target_ids: np.ndarray, loss_ma
 
     layer_caches = []
     for li in range(N_LAYER):
-        x, lc = layer_fwd(x, params, li)
-        layer_caches.append(lc)
+        x, ac = attn_fwd(x, params[f"layer{li}.attn_wq"], params[f"layer{li}.attn_wk"], params[f"layer{li}.attn_wv"], params[f"layer{li}.attn_wo"])
+        x, mc = mlp_fwd(x, params[f"layer{li}.mlp_fc1"], params[f"layer{li}.mlp_fc2"])
+        layer_caches.append((ac, mc))
 
     probs = softmax(x @ params["lm_head"].T)
     sum_mask = loss_mask.sum()
@@ -134,7 +122,9 @@ def backward(params: dict, grads: dict, cache: FwdCache) -> None:
     dx = dlogits @ params["lm_head"]
 
     for li in reversed(range(N_LAYER)):
-        dx = layer_bwd(dx, grads, params, cache.layer_caches[li], li)
+        ac, mc = cache.layer_caches[li]
+        dx = mlp_bwd(dx, grads, params[f"layer{li}.mlp_fc1"], params[f"layer{li}.mlp_fc2"], mc, li)
+        dx = attn_bwd(dx, grads, params[f"layer{li}.attn_wq"], params[f"layer{li}.attn_wk"], params[f"layer{li}.attn_wv"], params[f"layer{li}.attn_wo"], ac, li)
 
     demb = rmsnorm_bwd(dx, cache.emb, cache.rms_init)
     np.add.at(grads["wte"], cache.input_ids, demb)
