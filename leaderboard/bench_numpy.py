@@ -10,7 +10,6 @@ from collections import namedtuple
 from pathlib import Path
 
 import numpy as np
-from tqdm import tqdm
 from utils import assert_weights_match, save_times
 
 random.seed(42)

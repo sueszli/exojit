@@ -57,8 +57,8 @@ def print_times(path: Path) -> None:
     variance = sum((x - mean) ** 2 for x in times) / (n - 1) if n > 1 else 0
     stddev = math.sqrt(variance)
     print(f"'{path.stem}'")
-    print(f"  Time (mean \u00b1 \u03c3):    {mean:8.1f} ms \u00b1 {stddev:8.1f} ms    [User: 0.0 ms, System: 0.0 ms]")
-    print(f"  Range (min \u2026 max):  {min(times):8.1f} ms \u2026 {max(times):8.1f} ms    {n} runs")
+    print(f"  Time (mean \u00b1 \u03c3):    {mean:8.3f} ms \u00b1 {stddev:8.3f} ms    [User: 0.0 ms, System: 0.0 ms]")
+    print(f"  Range (min \u2026 max):  {min(times):8.3f} ms \u2026 {max(times):8.3f} ms    {n} runs")
     print()
 
 
