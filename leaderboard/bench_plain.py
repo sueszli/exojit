@@ -27,7 +27,8 @@ FwdCache = namedtuple("FwdCache", ["input_ids", "target_ids", "loss_mask", "sum_
 
 
 def rmsnorm_fwd(x: list[list[float]]) -> tuple[list[list[float]], list[float]]:
-    n, d = len(x), len(x[0])
+    n = len(x)
+    d = len(x[0])
     inv_d = 1.0 / d
     out = [[0.0] * d for _ in range(n)]
     rms = [0.0] * n
@@ -42,7 +43,8 @@ def rmsnorm_fwd(x: list[list[float]]) -> tuple[list[list[float]], list[float]]:
 
 
 def rmsnorm_bwd(dout: list[list[float]], x: list[list[float]], rms: list[float]) -> list[list[float]]:
-    n, d = len(x), len(x[0])
+    n = len(x)
+    d = len(x[0])
     dx = [[0.0] * d for _ in range(n)]
     for i in range(n):
         do, row, scale = dout[i], x[i], rms[i]
@@ -55,7 +57,7 @@ def rmsnorm_bwd(dout: list[list[float]], x: list[list[float]], rms: list[float])
 
 
 def layer_fwd(x: list[list[float]], params: dict, li: int) -> tuple[list[list[float]], LayerCache]:
-    _sum = sum
+    _sum = sum  # get rid of these ???
     _exp = math.exp
     _rD = range(N_EMBED)
     _rH = range(N_EMBED // N_HEAD)
@@ -75,7 +77,7 @@ def layer_fwd(x: list[list[float]], params: dict, li: int) -> tuple[list[list[fl
     q = [[[0.0] * head_dim for _ in range(n)] for _ in range(N_HEAD)]
     k = [[[0.0] * head_dim for _ in range(n)] for _ in range(N_HEAD)]
     v = [[[0.0] * head_dim for _ in range(n)] for _ in range(N_HEAD)]
-    for i in range(n):
+    for i in range(n):  # these are repetitive! figure out relevant kernels
         xn_i = xn_attn[i]
         for j in _rD:
             wq_j, wk_j, wv_j = wq[j], wk[j], wv[j]
