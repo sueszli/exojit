@@ -219,7 +219,6 @@ for step in range(NUM_STEPS):
     input_ids, target_ids, loss_mask = tokenized[step % len(tokenized)]
     loss, state_dict, opt_state = step_fn(state_dict, opt_state, input_ids, target_ids, loss_mask, step)
     step_times.append(time.perf_counter() - t0)
-    print(f"step {step+1:4d} / {NUM_STEPS:4d} | loss {float(loss):.4f}", end="\r")
 
 save_times(step_times)
 W = namedtuple("W", ["data"])
