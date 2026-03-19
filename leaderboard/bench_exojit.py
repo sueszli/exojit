@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 from exo import *
-from exo.libs.externs import sqrt
+from exo.libs.externs import select, sqrt
 from exo.stdlib.scheduling import rename, simplify
 from tqdm import tqdm
 from utils import assert_weights_match, save_times
@@ -102,60 +102,25 @@ RMS_EPS = scalar_array(1e-5)
 ADAM_B1 = scalar_array(0.85)
 ADAM_B2 = scalar_array(0.99)
 ADAM_EPS = scalar_array(1e-8)
+INV_SCALE_ARRAY = scalar_array(INV_SCALE)
+CAUSAL_MASK_ARRAY = scalar_array(CAUSAL_MASK_VALUE)
 
 
 def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
     if axis != -1:
         raise ValueError("softmax only supports axis=-1")
     shape = x.shape
+    softmax_row = _jit_softmax_row(shape[-1])
     if len(shape) == 2:
         for i in range(shape[0]):
-            _softmax_row_2d(x, i)
+            softmax_row(x[i], x[i])
     elif len(shape) == 3:
         for i in range(shape[0]):
             for j in range(shape[1]):
-                _softmax_row_3d(x, i, j)
+                softmax_row(x[i, j], x[i, j])
     else:
         raise ValueError(f"unsupported softmax rank: {len(shape)}")
     return x
-
-
-def _softmax_row_2d(x: np.ndarray, i: int) -> None:
-    width = x.shape[1]
-    max_val = _sanitize_scalar(float(x[i, 0]))
-    x[i, 0] = max_val
-    for k in range(1, width):
-        val = _sanitize_scalar(float(x[i, k]))
-        x[i, k] = val
-        if val > max_val:
-            max_val = val
-    total = 0.0
-    for k in range(width):
-        val = math.exp(float(x[i, k]) - max_val)
-        x[i, k] = val
-        total += val
-    inv_total = 1.0 / total
-    for k in range(width):
-        x[i, k] *= inv_total
-
-
-def _softmax_row_3d(x: np.ndarray, i: int, j: int) -> None:
-    width = x.shape[2]
-    max_val = _sanitize_scalar(float(x[i, j, 0]))
-    x[i, j, 0] = max_val
-    for k in range(1, width):
-        val = _sanitize_scalar(float(x[i, j, k]))
-        x[i, j, k] = val
-        if val > max_val:
-            max_val = val
-    total = 0.0
-    for k in range(width):
-        val = math.exp(float(x[i, j, k]) - max_val)
-        x[i, j, k] = val
-        total += val
-    inv_total = 1.0 / total
-    for k in range(width):
-        x[i, j, k] *= inv_total
 
 
 def _sanitize_scalar(value: float) -> float:
@@ -166,17 +131,66 @@ def _sanitize_scalar(value: float) -> float:
     return value
 
 
+@proc
+def _matmul_nt(M: size, K: size, N: size, out: f64[M, N] @ DRAM, a: f64[M, K] @ DRAM, b: f64[N, K] @ DRAM):
+    for i in seq(0, M):
+        for j in seq(0, N):
+            acc: f64 @ Stack
+            acc = 0.0
+            for k in seq(0, K):
+                acc += a[i, k] * b[j, k]
+            out[i, j] = acc
+
+
+@proc
+def _matmul_nn(M: size, K: size, N: size, out: f64[M, N] @ DRAM, a: f64[M, K] @ DRAM, b: f64[K, N] @ DRAM):
+    for i in seq(0, M):
+        for j in seq(0, N):
+            acc: f64 @ Stack
+            acc = 0.0
+            for k in seq(0, K):
+                acc += a[i, k] * b[k, j]
+            out[i, j] = acc
+
+
+@proc
+def _matmul_tn(M: size, K: size, N: size, out: f64[K, N] @ DRAM, a: f64[M, K] @ DRAM, b: f64[M, N] @ DRAM):
+    for i in seq(0, K):
+        for j in seq(0, N):
+            acc: f64 @ Stack
+            acc = 0.0
+            for k in seq(0, M):
+                acc += a[k, i] * b[k, j]
+            out[i, j] = acc
+
+
+@cache
+def _jit_matmul_nt(m: int, k: int, n: int):
+    p = simplify(_matmul_nt.partial_eval(M=m, K=k, N=n))
+    name = f"_matmul_nt_{m}_{k}_{n}"
+    return compile_jit(rename(p, name))[name]
+
+
+@cache
+def _jit_matmul_nn(m: int, k: int, n: int):
+    p = simplify(_matmul_nn.partial_eval(M=m, K=k, N=n))
+    name = f"_matmul_nn_{m}_{k}_{n}"
+    return compile_jit(rename(p, name))[name]
+
+
+@cache
+def _jit_matmul_tn(m: int, k: int, n: int):
+    p = simplify(_matmul_tn.partial_eval(M=m, K=k, N=n))
+    name = f"_matmul_tn_{m}_{k}_{n}"
+    return compile_jit(rename(p, name))[name]
+
+
 def matmul_nt(a: np.ndarray, b: np.ndarray, out: np.ndarray) -> np.ndarray:
     rows, inner = a.shape
     out_cols, b_inner = b.shape
     if inner != b_inner or out.shape != (rows, out_cols):
         raise ValueError("shape mismatch in matmul_nt")
-    for i in range(rows):
-        for j in range(out_cols):
-            acc = 0.0
-            for k in range(inner):
-                acc += float(a[i, k]) * float(b[j, k])
-            out[i, j] = acc
+    _jit_matmul_nt(rows, inner, out_cols)(out, a, b)
     return out
 
 
@@ -185,12 +199,7 @@ def matmul_nn(a: np.ndarray, b: np.ndarray, out: np.ndarray) -> np.ndarray:
     b_inner, cols = b.shape
     if inner != b_inner or out.shape != (rows, cols):
         raise ValueError("shape mismatch in matmul_nn")
-    for i in range(rows):
-        for j in range(cols):
-            acc = 0.0
-            for k in range(inner):
-                acc += float(a[i, k]) * float(b[k, j])
-            out[i, j] = acc
+    _jit_matmul_nn(rows, inner, cols)(out, a, b)
     return out
 
 
@@ -199,12 +208,7 @@ def matmul_tn(a: np.ndarray, b: np.ndarray, out: np.ndarray) -> np.ndarray:
     b_rows, cols = b.shape
     if rows != b_rows or out.shape != (inner, cols):
         raise ValueError("shape mismatch in matmul_tn")
-    for i in range(inner):
-        for j in range(cols):
-            acc = 0.0
-            for k in range(rows):
-                acc += float(a[k, i]) * float(b[k, j])
-            out[i, j] = acc
+    _jit_matmul_tn(rows, inner, cols)(out, a, b)
     return out
 
 
@@ -271,30 +275,105 @@ def add_rows_at(dst: np.ndarray, row_ids: np.ndarray, src: np.ndarray) -> np.nda
     return dst
 
 
+@proc
+def _attn_logits(logits: f64[N_HEAD, BLOCK_SIZE, BLOCK_SIZE] @ DRAM, q: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, k: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, inv_scale: f64[1] @ DRAM, causal_mask: f64[1] @ DRAM):
+    for h in seq(0, N_HEAD):
+        for t in seq(0, BLOCK_SIZE):
+            for s in seq(0, BLOCK_SIZE):
+                if s > t:
+                    logits[h, t, s] = causal_mask[0]
+                else:
+                    acc: f64 @ Stack
+                    acc = 0.0
+                    for d in seq(0, HEAD_DIM):
+                        acc += q[h, t, d] * k[h, s, d]
+                    logits[h, t, s] = acc * inv_scale[0]
+
+
+@proc
+def _softmax_row(N: size, out: f64[N] @ DRAM, inp: f64[N] @ DRAM):
+    mx: f64 @ Stack
+    sum_val: f64 @ Stack
+    t: f64 @ Stack
+    y: f64 @ Stack
+    e5: f64 @ Stack
+    e4: f64 @ Stack
+    e3: f64 @ Stack
+    e2: f64 @ Stack
+    e1: f64 @ Stack
+    s1: f64 @ Stack
+    s2: f64 @ Stack
+    s3: f64 @ Stack
+    s4: f64 @ Stack
+    s5: f64 @ Stack
+
+    mx = inp[0]
+    for i in seq(1, N):
+        mx = select(mx, inp[i], inp[i], mx)
+
+    sum_val = 0.0
+    for j in seq(0, N):
+        t = inp[j] - mx
+        y = t * 0.03125
+        e5 = y * 0.008333333333333333 + 0.041666666666666664
+        e4 = e5 * y + 0.16666666666666666
+        e3 = e4 * y + 0.5
+        e2 = e3 * y + 1.0
+        e1 = e2 * y + 1.0
+        s1 = e1 * e1
+        s2 = s1 * s1
+        s3 = s2 * s2
+        s4 = s3 * s3
+        s5 = s4 * s4
+        out[j] = s5
+        sum_val += s5
+
+    for k in seq(0, N):
+        out[k] = out[k] / sum_val
+
+
+@proc
+def _attn_softmax_bwd(dlogits: f64[N_HEAD, BLOCK_SIZE, BLOCK_SIZE] @ DRAM, attn_w: f64[N_HEAD, BLOCK_SIZE, BLOCK_SIZE] @ DRAM, dattn_w: f64[N_HEAD, BLOCK_SIZE, BLOCK_SIZE] @ DRAM, inv_scale: f64[1] @ DRAM):
+    for h in seq(0, N_HEAD):
+        for t in seq(0, BLOCK_SIZE):
+            dot: f64 @ Stack
+            dot = 0.0
+            for s in seq(0, BLOCK_SIZE):
+                dot += dattn_w[h, t, s] * attn_w[h, t, s]
+            for s in seq(0, BLOCK_SIZE):
+                dlogits[h, t, s] = attn_w[h, t, s] * (dattn_w[h, t, s] - dot) * inv_scale[0]
+
+
+@cache
+def _jit_attn_logits():
+    p = simplify(_attn_logits)
+    name = "_attn_logits"
+    return compile_jit(rename(p, name))[name]
+
+
+@cache
+def _jit_softmax_row(n: int):
+    p = simplify(_softmax_row.partial_eval(N=n))
+    name = f"_softmax_row_{n}"
+    return compile_jit(rename(p, name))[name]
+
+
+@cache
+def _jit_attn_softmax_bwd():
+    p = simplify(_attn_softmax_bwd)
+    name = "_attn_softmax_bwd"
+    return compile_jit(rename(p, name))[name]
+
+
 def build_attention_logits(q: np.ndarray, k: np.ndarray) -> np.ndarray:
     logits = empty_array((N_HEAD, BLOCK_SIZE, BLOCK_SIZE), dtype=np.float64)
-    for h in range(N_HEAD):
-        for t in range(BLOCK_SIZE):
-            for s in range(BLOCK_SIZE):
-                if s > t:
-                    logits[h, t, s] = CAUSAL_MASK_VALUE
-                    continue
-                acc = 0.0
-                for d in range(HEAD_DIM):
-                    acc += float(q[h, t, d]) * float(k[h, s, d])
-                logits[h, t, s] = acc * INV_SCALE
+    _jit_attn_logits()(logits, q, k, INV_SCALE_ARRAY, CAUSAL_MASK_ARRAY)
     return logits
 
 
 def attention_softmax_backward(attn_w: np.ndarray, dattn_w: np.ndarray) -> np.ndarray:
     dlogits = empty_like_array(attn_w)
-    for h in range(N_HEAD):
-        for t in range(BLOCK_SIZE):
-            dot = 0.0
-            for s in range(BLOCK_SIZE):
-                dot += float(dattn_w[h, t, s]) * float(attn_w[h, t, s])
-            for s in range(BLOCK_SIZE):
-                dlogits[h, t, s] = float(attn_w[h, t, s]) * (float(dattn_w[h, t, s]) - dot) * INV_SCALE
+    _jit_attn_softmax_bwd()(dlogits, attn_w, dattn_w, INV_SCALE_ARRAY)
     return dlogits
 
 
@@ -762,10 +841,22 @@ tokenized = [tokenize(doc, uchars) for doc in docs]
 _jit_rmsnorm_fwd(BLOCK_SIZE, N_EMBED)
 _jit_rmsnorm_bwd(BLOCK_SIZE, N_EMBED)
 _jit_attn_qkv_fwd()
+_jit_attn_logits()
+_jit_softmax_row(BLOCK_SIZE)
 _jit_attn_av_fwd()
 _jit_attn_dv_dattnw()
+_jit_attn_softmax_bwd()
 _jit_attn_dq_dk()
 _jit_attn_qkv_bwd()
+_jit_matmul_nt(BLOCK_SIZE, N_EMBED, N_EMBED)
+_jit_matmul_nn(BLOCK_SIZE, N_EMBED, N_EMBED)
+_jit_matmul_tn(BLOCK_SIZE, N_EMBED, N_EMBED)
+_jit_matmul_nt(BLOCK_SIZE, N_EMBED, 4 * N_EMBED)
+_jit_matmul_nn(BLOCK_SIZE, N_EMBED, 4 * N_EMBED)
+_jit_matmul_tn(BLOCK_SIZE, 4 * N_EMBED, N_EMBED)
+_jit_matmul_nt(BLOCK_SIZE, N_EMBED, len(uchars) + 1)
+_jit_matmul_nn(BLOCK_SIZE, len(uchars) + 1, N_EMBED)
+_jit_matmul_tn(BLOCK_SIZE, len(uchars) + 1, N_EMBED)
 _jit_adam(total_params)
 
 step_times = []
