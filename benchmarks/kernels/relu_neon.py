@@ -5,9 +5,8 @@ from functools import cache
 
 from exo import *
 from exo.libs.externs import select
-from exo.stdlib.scheduling import rename
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import NEON
 
 _PAR_MIN_ELEMENTS = 524288
@@ -117,6 +116,4 @@ def _relu_neon_par(N: size, out: f32[N] @ DRAM, inp: f32[N] @ DRAM):
 @cache
 def relu_neon(n: int) -> Callable[..., None]:
     assert n % 16 == 0
-    p = (_relu_neon_par if n >= _PAR_MIN_ELEMENTS else _relu_neon).partial_eval(N=n)
-    name = f"_relu_neon_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit((_relu_neon_par if n >= _PAR_MIN_ELEMENTS else _relu_neon).partial_eval(N=n))

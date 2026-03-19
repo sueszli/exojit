@@ -4,9 +4,9 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import fission, rename, simplify
+from exo.stdlib.scheduling import fission, simplify
 
-from exojit.main import compile_jit
+from exojit.main import jit
 
 _PAR_MIN_ELEMENTS = 1024
 
@@ -32,5 +32,4 @@ def matvec_exo(m: int, k: int) -> Callable[..., None]:
     p = (_matvec_par if m >= _PAR_MIN_ELEMENTS else _matvec).partial_eval(M=m, K=k)
     p = fission(p, p.find("for i in _: _").before(), n_lifts=1)
     p = simplify(p)
-    name = f"_matvec_{m}_{k}"
-    return compile_jit(rename(p, name))[name]
+    return jit(p)

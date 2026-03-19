@@ -4,10 +4,9 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename
 from kernels.softmax_neon import neon_add_acc_f32x4, neon_broadcast_f32x4, neon_fmadd_f32x4, neon_loadu_f32x4, neon_mul_f32x4, neon_square_f32x4, neon_storeu_f32x4, neon_sub_f32x4
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import NEON
 
 
@@ -88,6 +87,4 @@ def cross_entropy_neon(n: int) -> Callable[..., None]:
         result[0] += sum_buf[2]
         result[0] += sum_buf[3]
 
-    name = f"_sum_exp_neon_{n}"
-    p = rename(_sum_exp_neon, name)
-    return compile_jit(p)[name]
+    return jit(_sum_exp_neon)

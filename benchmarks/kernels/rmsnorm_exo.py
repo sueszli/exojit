@@ -4,9 +4,9 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename, simplify
+from exo.stdlib.scheduling import simplify
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import Stack
 
 
@@ -29,16 +29,14 @@ def _rmsnorm_scale(N: size, out: f32[N], inp: f32[N], scale: f32[1]):
 def _jit_sumsq(n: int) -> Callable[..., None]:
     p = _rmsnorm_sumsq.partial_eval(N=n)
     p = simplify(p)
-    name = f"_rmsnorm_sumsq_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit(p)
 
 
 @cache
 def _jit_scale(n: int) -> Callable[..., None]:
     p = _rmsnorm_scale.partial_eval(N=n)
     p = simplify(p)
-    name = f"_rmsnorm_scale_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit(p)
 
 
 @cache

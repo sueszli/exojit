@@ -4,9 +4,9 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename, simplify
+from exo.stdlib.scheduling import simplify
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import Stack
 
 
@@ -49,8 +49,7 @@ def _sum_exp(N: size, result: f32[1], inp: f32[N], mx: f32[1]):
 def _jit_sum_exp(n: int) -> Callable[..., None]:
     p = _sum_exp.partial_eval(N=n)
     p = simplify(p)
-    name = f"_sum_exp_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit(p)
 
 
 @cache

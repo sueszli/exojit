@@ -928,9 +928,11 @@ def _load_libomp() -> None:
     llvmlite.binding.load_library_permanently(lib)
 
 
-def compile_jit(proc: Procedure) -> dict[str, object]:
+def jit(proc: Procedure) -> JitFunc:
     # disk-cache llvmlite ir to skip exo analysis + xdsl lowering on repeated runs
-    ir_text = _disk_cache(proc._loopir_proc.name, lambda: str(LLVMLiteGenerator.generate(to_mlir(proc))))
+    mlir_module = to_mlir(proc)
+    cache_key = hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16]
+    ir_text = _disk_cache(cache_key, lambda: str(LLVMLiteGenerator.generate(mlir_module)))
 
     # load libomp for parallel loops
     # https://openmp.llvm.org/doxygen/group__THREADPRIVATE.html
@@ -955,10 +957,9 @@ def compile_jit(proc: Procedure) -> dict[str, object]:
     engine.run_static_constructors()
 
     # extract func pointers from ir text (no xdsl module needed on cache hit)
-    fns: dict[str, object] = {}
-    for name in re.findall(r'define void @"?(\w+)"?\(', ir_text):
-        fns[name] = JitFunc(engine.get_function_address(name), engine)
-    return fns
+    if proc.name() in re.findall(r'define void @"?(\w+)"?\(', ir_text):
+        return JitFunc(engine.get_function_address(proc.name()), engine)
+    assert False, f"missing JIT entrypoint for {proc.name()}"
 
 
 #

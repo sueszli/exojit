@@ -5,10 +5,10 @@ from functools import cache
 
 from exo import *
 from exo.libs.externs import select
-from exo.stdlib.scheduling import rename, simplify
+from exo.stdlib.scheduling import simplify
 from kernels.softmax_neon import neon_loadu_f32x4, neon_storeu_f32x4
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import NEON, Stack
 
 
@@ -50,9 +50,7 @@ def _jit_max_neon(n: int) -> Callable[..., None]:
         m1 = select(buf[2], buf[3], buf[3], buf[2])
         result[0] = select(m0, m1, m1, m0)
 
-    name = f"_find_max_neon_{n}"
-    p = rename(_find_max_neon, name)
-    return compile_jit(p)[name]
+    return jit(_find_max_neon)
 
 
 @proc
@@ -68,8 +66,7 @@ def _find_max(N: size, result: f32[1], inp: f32[N]):
 def _jit_max(n: int) -> Callable[..., None]:
     p = _find_max.partial_eval(N=n)
     p = simplify(p)
-    name = f"_find_max_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit(p)
 
 
 @proc
@@ -113,8 +110,7 @@ def _softmax_core(N: size, out: f32[N], inp: f32[N], mx: f32[1]):
 def _jit_core(n: int) -> Callable[..., None]:
     p = _softmax_core.partial_eval(N=n)
     p = simplify(p)
-    name = f"_softmax_core_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit(p)
 
 
 @cache

@@ -4,9 +4,9 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename, simplify
+from exo.stdlib.scheduling import simplify
 
-from exojit.main import compile_jit
+from exojit.main import jit
 
 
 @proc
@@ -19,5 +19,4 @@ def _embedding(D: size, out: f32[D], row: f32[D]):
 def embedding_exo(d: int) -> Callable[..., None]:
     p = _embedding.partial_eval(D=d)
     p = simplify(p)
-    name = f"_embedding_{d}"
-    return compile_jit(rename(p, name))[name]
+    return jit(p)

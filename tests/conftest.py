@@ -8,7 +8,7 @@ import numpy as np
 from _utils import _call, compile_exo, compile_mlir
 from exo.API import Procedure
 
-from exojit.main import compile_jit, to_mlir
+from exojit.main import jit, to_mlir
 
 # xdsl irdl holds raw ctypes pointers. gc finalizer ordering -> dangling ptr -> segfault
 _gc.disable()
@@ -21,7 +21,7 @@ def assert_match(proc: Procedure, **kwargs: Any) -> None:
     # compile proc on all backends, verify outputs match exo_c (reference)
     ir = proc._loopir_proc
     module = to_mlir(proc)
-    jit_fn = compile_jit(proc)[ir.name]
+    jit_fn = jit(proc)
     results = {
         "exo_c": compile_exo(proc)(**kwargs),
         "xdsl_mlir": compile_mlir(proc, module)(**kwargs),

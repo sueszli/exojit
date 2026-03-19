@@ -5,9 +5,8 @@ from functools import cache
 
 from exo import *
 from exo.libs.externs import sqrt
-from exo.stdlib.scheduling import rename
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import NEON
 
 _PAR_MIN_ELEMENTS = 65536
@@ -418,6 +417,4 @@ def _adam_neon_par(N: size, param: f32[N] @ DRAM, grad: f32[N] @ DRAM, m: f32[N]
 @cache
 def adam_neon(n: int) -> Callable[..., None]:
     assert n % 16 == 0
-    p = (_adam_neon_par if n >= _PAR_MIN_ELEMENTS else _adam_neon).partial_eval(N=n)
-    name = f"_adam_neon_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit((_adam_neon_par if n >= _PAR_MIN_ELEMENTS else _adam_neon).partial_eval(N=n))

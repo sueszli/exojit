@@ -24,7 +24,7 @@ usage:
     $ uv run exojit examples/demo.py --mlir
     $ uv run exojit examples/demo.py --asm
     $ uv run exojit examples/demo.py --c
-    $ uv run python examples/demo.py # jit
+    $ uv run examples/demo.py
 
 
 how it works:

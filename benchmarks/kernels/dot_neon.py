@@ -4,10 +4,9 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename
 from kernels.softmax_neon import neon_add_acc_f32x4, neon_fmadd_f32x4, neon_loadu_f32x4, neon_storeu_f32x4
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import NEON
 
 
@@ -68,6 +67,4 @@ def dot_neon(n: int) -> Callable[..., None]:
         total += sum_buf[3]
         result[0] = total
 
-    name = f"_dot_neon_{n}"
-    p = rename(_dot_neon, name)
-    return compile_jit(p)[name]
+    return jit(_dot_neon)

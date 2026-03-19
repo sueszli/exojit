@@ -5,9 +5,9 @@ from functools import cache
 
 from exo import *
 from exo.libs.externs import sqrt
-from exo.stdlib.scheduling import rename, simplify
+from exo.stdlib.scheduling import simplify
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import Stack
 
 
@@ -47,5 +47,4 @@ def _adam(N: size, param: f32[N] @ DRAM, grad: f32[N] @ DRAM, m: f32[N] @ DRAM, 
 def adam_exo(n: int) -> Callable[..., None]:
     p = _adam.partial_eval(N=n)
     p = simplify(p)
-    name = f"_adam_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit(p)

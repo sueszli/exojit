@@ -4,7 +4,7 @@ import numpy as np
 from exo import *
 from exo.stdlib.scheduling import divide_loop, fission, rename, reorder_loops, simplify, unroll_loop
 
-from exojit.main import compile_jit
+from exojit.main import jit
 
 
 @proc
@@ -32,7 +32,7 @@ if __name__ == "__main__":
 
     naive_ms = None
     for label, p in [("naive", matmul), ("optimized", opt)]:
-        fn = compile_jit(p)[p.name()]
+        fn = jit(p)
 
         C = np.zeros((N, N), dtype=np.float32)
         fn(C, A, B)

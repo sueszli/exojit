@@ -4,9 +4,8 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import NEON
 
 _PAR_MIN_ELEMENTS = 1024
@@ -139,6 +138,4 @@ def _mv_neon_par(M: size, K: size, y: f32[M] @ DRAM, WT: f32[K, M] @ DRAM, x: f3
 def matvec_neon(m: int, k: int) -> Callable[..., None]:
     assert m % 4 == 0
     assert k % 4 == 0
-    p = (_mv_neon_par if m >= _PAR_MIN_ELEMENTS else _mv_neon).partial_eval(M=m, K=k)
-    name = f"_mv_neon_{m}_{k}"
-    return compile_jit(rename(p, name))[name]
+    return jit((_mv_neon_par if m >= _PAR_MIN_ELEMENTS else _mv_neon).partial_eval(M=m, K=k))

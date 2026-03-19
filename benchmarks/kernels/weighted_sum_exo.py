@@ -4,9 +4,9 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename, simplify
+from exo.stdlib.scheduling import simplify
 
-from exojit.main import compile_jit
+from exojit.main import jit
 
 
 @proc
@@ -22,5 +22,4 @@ def _weighted_sum(T: size, D: size, out: f32[D] @ DRAM, weights: f32[T] @ DRAM, 
 def weighted_sum_exo(t: int, d: int) -> Callable[..., None]:
     p = _weighted_sum.partial_eval(T=t, D=d)
     p = simplify(p)
-    name = f"_weighted_sum_{t}_{d}"
-    return compile_jit(rename(p, name))[name]
+    return jit(p)

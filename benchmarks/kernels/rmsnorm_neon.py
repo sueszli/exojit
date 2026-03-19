@@ -4,10 +4,9 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename
 from kernels.softmax_neon import neon_add_acc_f32x4, neon_broadcast_f32x4, neon_loadu_f32x4, neon_mul_f32x4, neon_square_f32x4, neon_storeu_f32x4
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import NEON
 
 _PAR_MIN_ELEMENTS = 524288
@@ -125,17 +124,13 @@ def _rmsnorm_scale_neon_par(N: size, out: f32[N] @ DRAM, inp: f32[N] @ DRAM, sca
 @cache
 def _jit_sumsq_neon(n: int) -> Callable[..., None]:
     assert n % 16 == 0
-    p = _rmsnorm_sumsq_neon.partial_eval(N=n)
-    name = f"_rmsnorm_sumsq_neon_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit(_rmsnorm_sumsq_neon.partial_eval(N=n))
 
 
 @cache
 def _jit_scale_neon(n: int) -> Callable[..., None]:
     assert n % 16 == 0
-    p = (_rmsnorm_scale_neon_par if n >= _PAR_MIN_ELEMENTS else _rmsnorm_scale_neon).partial_eval(N=n)
-    name = f"_rmsnorm_scale_neon_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit((_rmsnorm_scale_neon_par if n >= _PAR_MIN_ELEMENTS else _rmsnorm_scale_neon).partial_eval(N=n))
 
 
 @cache

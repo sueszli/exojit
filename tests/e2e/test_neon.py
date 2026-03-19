@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from exo import *
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import NEON
 
 pytestmark = pytest.mark.skipif(platform.machine() not in ("arm64", "aarch64"), reason="NEON requires aarch64")
@@ -275,8 +275,7 @@ def neon_broadcast_store_f64(out: f64[2] @ DRAM, s: f64[1] @ DRAM):
 
 
 def _jit_call(proc_obj, **kwargs):
-    fns = compile_jit(proc_obj)
-    fn = fns[proc_obj._loopir_proc.name]
+    fn = jit(proc_obj)
 
     args, bufs = [], {}
     for arg in proc_obj._loopir_proc.args:

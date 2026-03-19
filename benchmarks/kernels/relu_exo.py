@@ -5,9 +5,9 @@ from functools import cache
 
 from exo import *
 from exo.libs.externs import select
-from exo.stdlib.scheduling import rename, simplify
+from exo.stdlib.scheduling import simplify
 
-from exojit.main import compile_jit
+from exojit.main import jit
 
 
 @proc
@@ -20,5 +20,4 @@ def _relu(N: size, out: f32[N], inp: f32[N]):
 def relu_exo(n: int) -> Callable[..., None]:
     p = _relu.partial_eval(N=n)
     p = simplify(p)
-    name = f"_relu_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit(p)

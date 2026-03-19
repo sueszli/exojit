@@ -4,9 +4,8 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import NEON
 
 
@@ -98,6 +97,4 @@ def matmul_neon(m: int, k: int, n: int) -> Callable[..., None]:
                         neon_storeu_f32x4(C[4 * io + 2, bj * jo + 4 * ji : bj * jo + 4 * ji + 4], c2)
                         neon_storeu_f32x4(C[4 * io + 3, bj * jo + 4 * ji : bj * jo + 4 * ji + 4], c3)
 
-    name = f"_mm_neon_{m}_{k}_{n}"
-    p = rename(_mm_neon, name)
-    return compile_jit(p)[name]
+    return jit(_mm_neon)

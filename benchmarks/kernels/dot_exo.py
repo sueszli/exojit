@@ -4,9 +4,9 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename, simplify
+from exo.stdlib.scheduling import simplify
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import Stack
 
 
@@ -23,5 +23,4 @@ def _dot(N: size, result: f32[1], q: f32[N], k: f32[N]):
 def dot_exo(n: int) -> Callable[..., None]:
     p = _dot.partial_eval(N=n)
     p = simplify(p)
-    name = f"_dot_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit(p)

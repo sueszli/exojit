@@ -4,9 +4,8 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import NEON
 
 _PAR_MIN_ELEMENTS = 524288
@@ -106,6 +105,4 @@ def _add_neon_par(N: size, z: f32[N] @ DRAM, x: f32[N] @ DRAM, y: f32[N] @ DRAM)
 @cache
 def add_neon(n: int) -> Callable[..., None]:
     assert n % 16 == 0
-    p = (_add_neon_par if n >= _PAR_MIN_ELEMENTS else _add_neon).partial_eval(N=n)
-    name = f"_add_neon_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit((_add_neon_par if n >= _PAR_MIN_ELEMENTS else _add_neon).partial_eval(N=n))

@@ -4,9 +4,8 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import NEON
 
 _PAR_MIN_ELEMENTS = 1024
@@ -139,6 +138,4 @@ def _ws_neon_par(T: size, D: size, out: f32[D] @ DRAM, weights: f32[T] @ DRAM, V
 def weighted_sum_neon(t: int, d: int) -> Callable[..., None]:
     assert d % 4 == 0
     assert t % 4 == 0
-    p = (_ws_neon_par if d >= _PAR_MIN_ELEMENTS else _ws_neon).partial_eval(T=t, D=d)
-    name = f"_ws_neon_{t}_{d}"
-    return compile_jit(rename(p, name))[name]
+    return jit((_ws_neon_par if d >= _PAR_MIN_ELEMENTS else _ws_neon).partial_eval(T=t, D=d))

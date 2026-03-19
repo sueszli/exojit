@@ -4,9 +4,9 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import divide_loop, fission, rename, reorder_loops, simplify
+from exo.stdlib.scheduling import divide_loop, fission, reorder_loops, simplify
 
-from exojit.main import compile_jit
+from exojit.main import jit
 
 _PAR_MIN_ELEMENTS = 256
 
@@ -43,5 +43,4 @@ def matmul_exo(m: int, k: int, n: int) -> Callable[..., None]:
         if do_k:
             p = reorder_loops(p, "ki jo")
     p = simplify(p)
-    name = f"_matmul_{m}_{k}_{n}"
-    return compile_jit(rename(p, name))[name]
+    return jit(p)

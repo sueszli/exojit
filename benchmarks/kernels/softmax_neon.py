@@ -4,9 +4,8 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
-from exo.stdlib.scheduling import rename
 
-from exojit.main import compile_jit
+from exojit.main import jit
 from exojit.patches_exo import NEON
 
 
@@ -177,6 +176,4 @@ def softmax_neon(n: int) -> Callable[..., None]:
             neon_mul_f32x4(r, v, inv_v)
             neon_storeu_f32x4(out[4 * j : 4 * j + 4], r)
 
-    name = f"_softmax_neon_{n}"
-    p = rename(_softmax_neon, name)
-    return compile_jit(p)[name]
+    return jit(_softmax_neon)
