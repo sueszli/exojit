@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import numpy as np
+from _utils import compile_mlir
 from conftest import assert_match
 from exo import *
+
+from exojit.main import jit, to_mlir
 
 
 @proc
@@ -112,3 +116,22 @@ def test_i8_negate():
 
 def test_i8_mul():
     assert_match(i8_mul, dst=[0] * 4, a=[2, -3, 0, 7], b=[3, -4, 99, 1])
+
+
+@proc
+def size_gather(out: f64[4] @ DRAM, src: f64[8] @ DRAM, idx: size[4] @ DRAM):
+    for i in seq(0, 4):
+        if 0 <= idx[i]:
+            if idx[i] < 8:
+                out[i] = src[idx[i]]
+
+
+def test_size_gather():
+    src = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0]
+    idx = [7, 0, 5, 3]
+    expected = [17.0, 10.0, 15.0, 13.0]
+    out = [0.0] * 4
+    jit(size_gather)(out, src, idx)
+    np.testing.assert_allclose(out, expected)
+    mlir = compile_mlir(size_gather, to_mlir(size_gather))(out=[0.0] * 4, src=src, idx=idx)
+    np.testing.assert_allclose(mlir["out"], expected)

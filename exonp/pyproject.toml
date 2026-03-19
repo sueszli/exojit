@@ -1,0 +1,17 @@
+[project]
+name = "exonp"
+version = "0.1.0"
+description = "Small NumPy-like tensor helpers and common reusable Exo kernels"
+readme = "README.md"
+requires-python = "==3.14.*"
+dependencies = [
+    "exo-lang==1.0.0",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["exonp*"]
+namespaces = true

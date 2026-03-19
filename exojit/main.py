@@ -41,6 +41,7 @@ from xdsl.transforms.common_subexpression_elimination import CommonSubexpression
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.scoped_dict import ScopedDict
 
+import exojit.patches_exo  # noqa: F401
 from exojit.jitcall import JitFunc
 from exojit.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from exojit.patches_xdsl_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, FSqrtOp, RewriteMemRefTypes, VectorFMaxOp
@@ -143,7 +144,7 @@ class IRGenerator:
             case T.Tensor():
                 assert mem_space is not None
                 inner = self._to_mlir_type(exo_type.type)
-                assert inner in {f16, f32, f64, i8, i16, i32}
+                assert inner in {f16, f32, f64, i8, i16, i32, i64}
                 shape = self._shape(exo_type)
                 return MemRefType(inner, shape, NoneAttr(), mem_space)
             case _:
@@ -1006,6 +1007,8 @@ def _jit_tensor_c_type(arg_type: object) -> str:
         "i16": "int16_t",
         "ui16": "uint16_t",
         "i32": "int32_t",
+        "index": "int64_t",
+        "size": "int64_t",
         "bool": "_Bool",
     }
     basetype = str(arg_type.basetype())

@@ -28,6 +28,8 @@ DTYPES: dict[str, type] = {
     "i16": np.int16,
     "ui16": np.uint16,
     "i32": np.int32,
+    "size": np.int64,
+    "index": np.int64,
 }
 
 
