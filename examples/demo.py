@@ -28,4 +28,3 @@ expected = [[sum(A[i][k] * B[k][j] for k in range(32)) for j in range(32)] for i
 C = [[0.0] * 32 for _ in range(32)]
 jit(opt)(C, A, B)
 assert all(math.isclose(C[i][j], expected[i][j], rel_tol=1e-5, abs_tol=1e-5) for i in range(32) for j in range(32))
-print("ok")
