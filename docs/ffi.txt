@@ -1,0 +1,142 @@
+Exojit FFI Findings
+Generated: 2026-03-19
+
+Question
+- What is the fastest way to call functions returned by `main.jit()` from plain
+  Python float data?
+- Scope: this is only about the Python -> JIT boundary. If data already stays
+  in native buffers across fused Exo kernels, this cost should disappear
+  between those kernels.
+
+Final Answer
+- For Exojit's real workload, large `float32` and `float64` kernels such as
+  matrix multiplication and ML inference, the fastest measured default path was:
+  `cffi.new(...)` -> raw pointer -> `jitcall`
+- Tiny-input exception:
+  for very small flat lists, `array.array(...)` passed directly to `jitcall`
+  was a little faster.
+- Project conclusion:
+  use `cffi` as the default marshalling path for plain Python float inputs.
+
+Practical Cutoff
+- In the refined sweep, `cffi` was already winning by:
+  `N=72` for one-input `f32`
+  `N=72` for one-input `f64`
+  `N=72` for two-input `f64`
+  `N=80` for two-input `f32`
+- So for the workloads we care about, `cffi` is the right default.
+
+How We Evaluated It
+- Compared three paths:
+  1. `array.array(...)` -> direct `jitcall`
+  2. `np.fromiter(...)` -> direct `jitcall`
+  3. `cffi.new(...)` -> raw pointer -> `jitcall`
+- Actual Exo point samples:
+  - `f32`, one input:
+    `N=16`: `array` `0.357 us`, `cffi` `0.725 us`
+    `N=4096`: `cffi` `34.814 us`, `fromiter` `44.879 us`, `array` `48.616 us`
+    `N=65536`: `cffi` `549.336 us`, `fromiter` `724.870 us`, `array` `761.039 us`
+  - `f32`, two inputs:
+    `N=16`: `array` `0.683 us`, `cffi` `1.458 us`
+    `N=4096`: `cffi` `72.241 us`, `fromiter` `90.212 us`, `array` `99.531 us`
+    `N=65536`: `cffi` `1150.012 us`, `fromiter` `1452.422 us`, `array` `1518.046 us`
+- Refined cutoff sweeps used the same `jitcall` marshalling path via
+  `JitFunc` and a tiny helper C target.
+- I attempted the same fine-grained sweep through full `main.jit()`-compiled
+  Exo kernels, but that hit the repo's existing xDSL/GC instability. The coarse
+  Exo point samples above still agree with the same ranking.
+
+Recommendation
+- For project workloads, hide `cffi` inside exojit and make it the default
+  marshaller for plain Python float inputs.
+- Keep the current raw/buffer path for expert callers and already-native data.
+- Keeping a tiny-input `array.array` fast path is optional. It is not important
+  for the large kernels we care about.
+
+How To Integrate This In `main.py`
+- Keep the current low-level `JitFunc` unchanged.
+- Add `cffi` to project dependencies in `pyproject.toml`.
+- Change `jit(proc, raw: bool = False)` in `exojit/main.py` so it builds two layers:
+  1. `raw = JitFunc(engine.get_function_address(...), engine, arg_kinds)`
+  2. a Python wrapper around `raw`
+- At wrapper construction time, inspect `proc._loopir_proc` and precompute one
+  converter per argument.
+- Scalar args:
+  `Size/Index/Int/Bool/Stride` -> `int`
+- Tensor/window args:
+  - if the user passes an int address, use it directly
+  - if the user passes a Python object with the buffer protocol, use it directly
+  - if the user passes Python floats / lists, convert them internally with
+    `cffi` and pass the raw pointer to `raw`
+
+Suggested Internal Conversion Rule
+- Convert to the dtype declared by the Exo proc.
+- Do not blindly convert everything to `f64`.
+- If a proc argument is `f32[N]`, allocate `float[N]`.
+- If a proc argument is `f64[N]`, allocate `double[N]`.
+- If you want all user float inputs to mean `f64`, then the proc itself should
+  be declared as `f64`.
+
+Minimal Wrapper Shape
+
+```python
+from cffi import FFI
+ffi = FFI()
+ffi.cdef("typedef unsigned long uintptr_t;")
+
+def jit(proc, raw: bool = False):
+    raw_fn = JitFunc(...existing address..., ...engine..., _jit_arg_kinds(proc._loopir_proc))
+    if raw:
+        return raw_fn
+
+    converters = _build_arg_converters(proc._loopir_proc, ffi)
+
+    def wrapped(*args):
+        keepalive = []
+        lowered = []
+        for conv, arg in zip(converters, args):
+            value = conv(arg, keepalive)
+            lowered.append(value)
+        return raw_fn(*lowered)
+
+    wrapped._raw = raw_fn
+    return wrapped
+```
+
+Converter Rules
+- For `f32` tensor args:
+
+```python
+buf = ffi.new(f"float[{n}]", flat_vals)
+keepalive.append(buf)
+ptr = int(ffi.cast("uintptr_t", buf))
+```
+
+- For `f64` tensor args:
+
+```python
+buf = ffi.new(f"double[{n}]", flat_vals)
+keepalive.append(buf)
+ptr = int(ffi.cast("uintptr_t", buf))
+```
+
+- For nested Python lists, flatten according to the expected tensor shape and
+  validate the element count before allocating.
+
+Suggested API
+- `jit(proc, raw=False)`:
+  default user-friendly path, with internal marshalling
+- `jit(proc, raw=True)`:
+  current expert path, best for already-native data
+- Optional convenience:
+  when `raw=False`, attach `wrapped._raw = raw_jitfunc` so callers can still
+  reach the low-level path without recompiling
+
+Bottom Line
+- For Exojit's actual use case, the answer is `cffi`.
+- Integrate it inside `jit()` so users do not need to import or think about it.
+- The simplest API shape is:
+  `jit(proc, raw: bool = False)`
+- Convert Python floats to the proc's declared dtype in the wrapper layer, keep
+  the temporary `cffi` buffers alive for the duration of the call, and forward
+  raw pointers into the existing `JitFunc`.

@@ -2,58 +2,103 @@
 #include <Python.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 typedef struct {
     PyObject_HEAD void (*fn)(void);
     PyObject *engine;
     vectorcallfunc vectorcall;
+    Py_ssize_t nargs_expected;
+    unsigned char arg_kinds[64];
 } JitFuncObject;
 
 typedef intptr_t T;
 #define MAX_JIT_ARGS 64
+enum {
+    ARG_INT = 0,
+    ARG_PTR_RO = 1,
+    ARG_PTR_RW = 2,
+};
 
-static int arg_to_intptr(PyObject *obj, intptr_t *out, Py_buffer *view, int *is_view) {
-    // helper function. convert a python object to intptr_t: buffer objects -> data pointer, ints -> value
-    *is_view = 0;
+static int arg_error(Py_ssize_t index, PyObject *obj, const char *expected) {
+    PyErr_Format(PyExc_TypeError, "argument %zd: expected %s, got %.200s", index + 1, expected, Py_TYPE(obj)->tp_name);
+    return -1;
+}
 
-    // try buffer protocol first (numpy arrays, bytearrays, etc.)
-    if (PyObject_GetBuffer(obj, view, PyBUF_SIMPLE) == 0) {
-        *out = (intptr_t)view->buf;
-        *is_view = 1;
+static int marshal_arg(PyObject *obj, Py_ssize_t index, unsigned char kind, intptr_t *out, Py_buffer *view) {
+    const char *expected;
+    int flags;
+
+    switch (kind) {
+    case ARG_INT:
+        // fixed-width scalar args stay on the integer fast path
+        if (!PyLong_Check(obj)) {
+            return arg_error(index, obj, "int");
+        }
+        *out = (intptr_t)PyLong_AsSsize_t(obj);
+        return ((*out == -1) && PyErr_Occurred()) ? -1 : 0;
+    case ARG_PTR_RO:
+        expected = "int address or buffer";
+        flags = PyBUF_SIMPLE;
+        break;
+    case ARG_PTR_RW:
+        expected = "int address or writable buffer";
+        flags = PyBUF_WRITABLE;
+        break;
+    default:
+        PyErr_Format(PyExc_RuntimeError, "argument %zd: unknown JIT arg kind %u", index + 1, kind);
+        return -1;
+    }
+
+    // pointer args accept raw addresses or buffers; ints are the hot path
+    if (PyLong_Check(obj)) {
+        void *ptr = PyLong_AsVoidPtr(obj);
+        if ((ptr == NULL) && PyErr_Occurred()) {
+            return -1;
+        }
+        *out = (intptr_t)ptr;
         return 0;
     }
 
-    // GetBuffer sets an error on failure, clear it before trying int
-    PyErr_Clear();
-
-    if (PyLong_Check(obj)) {
-        *out = (intptr_t)PyLong_AsLongLong(obj);
-        return ((*out == -1) && PyErr_Occurred()) ? -1 : 0;
+    if (!PyObject_CheckBuffer(obj)) {
+        return arg_error(index, obj, expected);
+    }
+    if (PyObject_GetBuffer(obj, view, flags) == 0) {
+        *out = (intptr_t)view->buf;
+        return 1;
     }
 
-    PyErr_Format(PyExc_TypeError, "expected buffer or int, got %.200s", Py_TYPE(obj)->tp_name);
-    return -1;
+    PyErr_Clear();
+    return arg_error(index, obj, expected);
 }
 
 static PyObject *JitFunc_vectorcall(PyObject *callable, PyObject *const *args, size_t nargsf, PyObject *kwnames) {
     // cpython vectorcall entry point. marshal args, call JIT fn, release buffers
 
     JitFuncObject *self = (JitFuncObject *)callable;
-    Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
-    if (nargs > MAX_JIT_ARGS) {
-        PyErr_SetString(PyExc_TypeError, "JitFunc: too many arguments (max 64)");
+    if ((kwnames != NULL) && (PyTuple_GET_SIZE(kwnames) != 0)) {
+        PyErr_SetString(PyExc_TypeError, "JitFunc does not accept keyword arguments");
         return NULL;
     }
 
-    // marshal python args into a flat intptr_t array
+    Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+    if (nargs != self->nargs_expected) {
+        PyErr_Format(PyExc_TypeError, "JitFunc expected %zd arguments, got %zd", self->nargs_expected, nargs);
+        return NULL;
+    }
+
+    // marshal python args into a flat intptr_t array using the precomputed signature
     intptr_t a[MAX_JIT_ARGS];
     Py_buffer views[MAX_JIT_ARGS];
     Py_ssize_t n_views = 0;
     int ok = 1;
-    for (Py_ssize_t i = 0; i < nargs && ok; i++) {
-        int is_view;
-        ok = (arg_to_intptr(args[i], &a[i], &views[n_views], &is_view) == 0);
-        n_views += is_view;
+    for (Py_ssize_t i = 0; i < nargs; i++) {
+        int took_view = marshal_arg(args[i], i, self->arg_kinds[i], &a[i], &views[n_views]);
+        if (took_view < 0) {
+            ok = 0;
+            break;
+        }
+        n_views += took_view;
     }
 
     // dispatch with exactly nargs. avoids UB from calling a fn via a mismatched pointer type
@@ -269,19 +314,49 @@ static PyObject *JitFunc_vectorcall(PyObject *callable, PyObject *const *args, s
 }
 
 static int JitFunc_init(JitFuncObject *self, PyObject *args, PyObject *kwds) {
-    // store fn pointer and hold a ref to the JIT engine to prevent GC
+    // store fn pointer, argument signature, and hold a ref to the JIT engine to prevent GC
     unsigned long long address;
     PyObject *engine = Py_None;
-    static char *kwlist[] = {"address", "engine", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "K|O", kwlist, &address, &engine)) {
+    Py_buffer arg_kinds = {0};
+    const unsigned char *kinds;
+    static char *kwlist[] = {"address", "engine", "arg_kinds", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "KOy*", kwlist, &address, &engine, &arg_kinds)) {
         return -1;
     }
+
+    if (arg_kinds.len > MAX_JIT_ARGS) {
+        PyErr_SetString(PyExc_TypeError, "JitFunc: too many arguments (max 64)");
+        goto fail;
+    }
+
+    kinds = (const unsigned char *)arg_kinds.buf;
+    for (Py_ssize_t i = 0; i < arg_kinds.len; i++) {
+        switch (kinds[i]) {
+        case ARG_INT:
+        case ARG_PTR_RO:
+        case ARG_PTR_RW:
+            break;
+        default:
+            PyErr_Format(PyExc_TypeError, "JitFunc: invalid arg kind %u at index %zd", kinds[i], i);
+            goto fail;
+        }
+    }
+
+    self->nargs_expected = arg_kinds.len;
+    memcpy(self->arg_kinds, kinds, arg_kinds.len);
+    memset(self->arg_kinds + arg_kinds.len, 0, MAX_JIT_ARGS - arg_kinds.len);
+    PyBuffer_Release(&arg_kinds);
+
     self->fn = (void (*)(void))(uintptr_t)address;
     Py_XDECREF(self->engine);
     Py_INCREF(engine);
     self->engine = engine;
     self->vectorcall = JitFunc_vectorcall;
     return 0;
+
+fail:
+    PyBuffer_Release(&arg_kinds);
+    return -1;
 }
 
 static void JitFunc_dealloc(JitFuncObject *self) {

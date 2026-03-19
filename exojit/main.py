@@ -928,6 +928,68 @@ def _load_libomp() -> None:
     llvmlite.binding.load_library_permanently(lib)
 
 
+def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
+    # classify each argument once so the C wrapper can take the cheapest safe path
+    read_only = 1
+    writable = 2
+    write_cache: dict[int, frozenset[int]] = {}
+    visiting: set[int] = set()
+
+    def _aliases(expr: object, alias_map: dict[object, frozenset[int]]) -> frozenset[int]:
+        match expr:
+            case LoopIR.Read() | LoopIR.WindowExpr():
+                return alias_map.get(expr.name, frozenset())
+            case _:
+                return frozenset()
+
+    def _walk(stmts: list, alias_map: dict[object, frozenset[int]]) -> frozenset[int]:
+        alias_map = dict(alias_map)
+        written: set[int] = set()
+        for stmt in stmts:
+            match stmt:
+                case LoopIR.Assign() | LoopIR.Reduce():
+                    written.update(alias_map.get(stmt.name, ()))
+                case LoopIR.WindowStmt():
+                    alias_map[stmt.name] = _aliases(stmt.rhs, alias_map)
+                case LoopIR.If():
+                    written.update(_walk(stmt.body, alias_map))
+                    written.update(_walk(stmt.orelse, alias_map))
+                case LoopIR.For():
+                    written.update(_walk(stmt.body, alias_map))
+                case LoopIR.Call():
+                    for i in _written_tensor_args(stmt.f):
+                        written.update(_aliases(stmt.args[i], alias_map))
+        return frozenset(written)
+
+    def _written_tensor_args(proc_ir: LoopIR.proc) -> frozenset[int]:
+        proc_id = id(proc_ir)
+        if proc_id in write_cache:
+            return write_cache[proc_id]
+        if proc_id in visiting:
+            return frozenset()
+
+        visiting.add(proc_id)
+        try:
+            arg_aliases = {arg.name: frozenset({i}) for i, arg in enumerate(proc_ir.args) if arg.type.is_tensor_or_window()}
+            write_cache[proc_id] = _walk(proc_ir.body, arg_aliases)
+            return write_cache[proc_id]
+        finally:
+            visiting.remove(proc_id)
+
+    written = _written_tensor_args(proc)
+
+    def _kind(i: int, arg: object) -> int:
+        match arg.type:
+            case _ if arg.type.is_tensor_or_window():
+                return writable if i in written else read_only
+            case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
+                return 0
+            case _:
+                raise TypeError(f"unsupported JIT argument type for {arg.name}: {arg.type}")
+
+    return bytes(_kind(i, arg) for i, arg in enumerate(proc.args))
+
+
 def jit(proc: Procedure) -> JitFunc:
     # disk-cache llvmlite ir to skip exo analysis + xdsl lowering on repeated runs
     mlir_module = to_mlir(proc)
@@ -958,7 +1020,7 @@ def jit(proc: Procedure) -> JitFunc:
 
     # extract func pointers from ir text (no xdsl module needed on cache hit)
     if proc.name() in re.findall(r'define void @"?(\w+)"?\(', ir_text):
-        return JitFunc(engine.get_function_address(proc.name()), engine)
+        return JitFunc(engine.get_function_address(proc.name()), engine, _jit_arg_kinds(proc._loopir_proc))
     assert False, f"missing JIT entrypoint for {proc.name()}"
 
 
