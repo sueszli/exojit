@@ -151,7 +151,7 @@ class Tensor:
         return out
 
     def copy(self):
-        return self._copy_new()
+        return copy_tensor(self)
 
     def reshape(self, shape: tuple[int, ...]):
         if array_numel(shape) != array_numel(self.shape):
@@ -311,6 +311,85 @@ def empty_like_array(x: Tensor) -> Tensor:
 def flat_view(x: Tensor, offset: int, shape: tuple[int, ...]) -> Tensor:
     size = array_numel(shape)
     return x[offset : offset + size].reshape(shape)
+
+
+def copy_tensor(x: Tensor) -> Tensor:
+    out = Tensor(x.shape, dtype=x.dtype)
+    ctypes.memmove(out.ctypes.data, x.ctypes.data, array_numel(x.shape) * ctypes.sizeof(x._ctype))
+    return out
+
+
+def gather_rows(src: Tensor, row_ids: Tensor) -> Tensor:
+    if src.ndim != 2 or row_ids.ndim != 1:
+        raise TypeError("gather_rows expects a 2D source and 1D row ids")
+    rows = row_ids.shape[0]
+    cols = src.shape[1]
+    out = Tensor((rows, cols), dtype=src.dtype)
+    row_bytes = cols * ctypes.sizeof(src._ctype)
+    for i in range(rows):
+        row = int(row_ids._buf[row_ids._offset + i * row_ids._strides[0]])
+        ctypes.memmove(out.ctypes.data + i * row_bytes, src.ctypes.data + row * row_bytes, row_bytes)
+    return out
+
+
+def add_tensors(a: Tensor, b: Tensor) -> Tensor:
+    if a.shape != b.shape or a.dtype != b.dtype:
+        raise ValueError("shape mismatch in add_tensors")
+    out = Tensor(a.shape, dtype=a.dtype)
+    n = array_numel(a.shape)
+    a_base = a.ctypes.data
+    b_base = b.ctypes.data
+    if a.dtype is float:
+        for i in range(n):
+            out._buf[i] = a._buf[a._offset + i] + b._buf[b._offset + i]
+    else:
+        for i in range(n):
+            out._buf[i] = a._buf[a._offset + i] + b._buf[b._offset + i]
+    return out
+
+
+def scale_tensor_inplace(x: Tensor, scalar: float) -> None:
+    n = array_numel(x.shape)
+    base = x._offset
+    for i in range(n):
+        x._buf[base + i] *= scalar
+
+
+def add_tensor_inplace(dst: Tensor, src: Tensor) -> None:
+    if dst.shape != src.shape or dst.dtype != src.dtype:
+        raise ValueError("shape mismatch in add_tensor_inplace")
+    n = array_numel(dst.shape)
+    d_base = dst._offset
+    s_base = src._offset
+    for i in range(n):
+        dst._buf[d_base + i] += src._buf[s_base + i]
+
+
+def subtract_target_logprobs_inplace(dlogits: Tensor, target_ids: Tensor, inv_sum_mask: float) -> None:
+    cols = dlogits.shape[1]
+    row_bytes = cols
+    for i in range(dlogits.shape[0]):
+        target = int(target_ids._buf[target_ids._offset + i * target_ids._strides[0]])
+        dlogits._buf[dlogits._offset + i * row_bytes + target] -= inv_sum_mask
+
+
+def mask_rows_inplace(x: Tensor, loss_mask: Tensor) -> None:
+    cols = x.shape[1]
+    for i in range(x.shape[0]):
+        mask = loss_mask._buf[loss_mask._offset + i * loss_mask._strides[0]]
+        row_off = x._offset + i * cols
+        for j in range(cols):
+            x._buf[row_off + j] *= mask
+
+
+def scatter_add_rows(dst: Tensor, row_ids: Tensor, src: Tensor) -> None:
+    cols = src.shape[1]
+    for i in range(src.shape[0]):
+        row = int(row_ids._buf[row_ids._offset + i * row_ids._strides[0]])
+        dst_row = dst._offset + row * cols
+        src_row = src._offset + i * cols
+        for j in range(cols):
+            dst._buf[dst_row + j] += src._buf[src_row + j]
 
 
 def random_matrix(nout: int, nin: int, std: float = 0.08) -> Tensor:
@@ -902,7 +981,7 @@ def mlp_bwd(dx: Tensor, grads: dict, fc1: Tensor, fc2: Tensor, c: MlpCache, li: 
 
 
 def forward(params: dict, input_ids: Tensor, target_ids: Tensor, loss_mask: Tensor) -> tuple[float, FwdCache]:
-    emb = params["wte"][input_ids] + params["wpe"]
+    emb = add_tensors(gather_rows(params["wte"], input_ids), params["wpe"])
     x, rms_init = rmsnorm_fwd(emb)
 
     layer_caches = []
@@ -923,10 +1002,9 @@ def forward(params: dict, input_ids: Tensor, target_ids: Tensor, loss_mask: Tens
 def backward(params: dict, grads: dict, cache: FwdCache) -> None:
     dlogits = cache.probs.copy()
     inv_sum_mask = 1.0 / cache.sum_mask
-    dlogits *= inv_sum_mask
-    for i in range(BLOCK_SIZE):
-        dlogits[i, int(cache.target_ids[i])] -= inv_sum_mask
-    dlogits *= cache.loss_mask[:, None]
+    scale_tensor_inplace(dlogits, inv_sum_mask)
+    subtract_target_logprobs_inplace(dlogits, cache.target_ids, inv_sum_mask)
+    mask_rows_inplace(dlogits, cache.loss_mask)
 
     dx = empty_array((BLOCK_SIZE, N_EMBED), dtype=float)
     JIT_LM_HEAD_BWD._raw(dx.ctypes.data, grads["lm_head"].ctypes.data, dlogits.ctypes.data, cache.x.ctypes.data, params["lm_head"].ctypes.data)
@@ -937,11 +1015,8 @@ def backward(params: dict, grads: dict, cache: FwdCache) -> None:
         dx = attn_bwd(dx, grads, params[f"layer{li}.attn_wq"], params[f"layer{li}.attn_wk"], params[f"layer{li}.attn_wv"], params[f"layer{li}.attn_wo"], ac, li)
 
     demb = rmsnorm_bwd(dx, cache.emb, cache.rms_init)
-    for i in range(BLOCK_SIZE):
-        row = int(cache.input_ids[i])
-        for j in range(N_EMBED):
-            grads["wte"][row, j] += demb[i, j]
-    grads["wpe"] += demb
+    scatter_add_rows(grads["wte"], cache.input_ids, demb)
+    add_tensor_inplace(grads["wpe"], demb)
 
 
 def step_fn(params: dict, opt_state: dict, grads: dict, input_ids: Tensor, target_ids: Tensor, loss_mask: Tensor, step: int) -> tuple[float, dict, dict]:
