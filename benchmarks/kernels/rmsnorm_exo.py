@@ -29,14 +29,14 @@ def _rmsnorm_scale(N: size, out: f32[N], inp: f32[N], scale: f32[1]):
 def _jit_sumsq(n: int) -> Callable[..., None]:
     p = _rmsnorm_sumsq.partial_eval(N=n)
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)
 
 
 @cache
 def _jit_scale(n: int) -> Callable[..., None]:
     p = _rmsnorm_scale.partial_eval(N=n)
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)
 
 
 @cache

@@ -23,4 +23,4 @@ def _dot(N: size, result: f32[1], q: f32[N], k: f32[N]):
 def dot_exo(n: int) -> Callable[..., None]:
     p = _dot.partial_eval(N=n)
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)

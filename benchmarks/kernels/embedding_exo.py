@@ -19,4 +19,4 @@ def _embedding(D: size, out: f32[D], row: f32[D]):
 def embedding_exo(d: int) -> Callable[..., None]:
     p = _embedding.partial_eval(D=d)
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)

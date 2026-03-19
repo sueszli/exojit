@@ -8,7 +8,7 @@ from exo.stdlib.scheduling import divide_loop, fission, reorder_loops, simplify
 
 from exojit.main import jit
 
-_PAR_MIN_ELEMENTS = 256
+PAR_MIN_ELEMENTS = 256
 
 
 @proc
@@ -31,7 +31,7 @@ def _matmul_par(M: size, K: size, N: size, C: f32[M, N] @ DRAM, A: f32[M, K] @ D
 
 @cache
 def matmul_exo(m: int, k: int, n: int) -> Callable[..., None]:
-    p = (_matmul_par if m >= _PAR_MIN_ELEMENTS else _matmul).partial_eval(M=m, K=k, N=n)
+    p = (_matmul_par if m >= PAR_MIN_ELEMENTS else _matmul).partial_eval(M=m, K=k, N=n)
     p = fission(p, p.find("for k in _: _").before(), n_lifts=2)
     p = reorder_loops(p, "j k")
     do_k = k > 64
@@ -43,4 +43,4 @@ def matmul_exo(m: int, k: int, n: int) -> Callable[..., None]:
         if do_k:
             p = reorder_loops(p, "ki jo")
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)

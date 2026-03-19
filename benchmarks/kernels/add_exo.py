@@ -8,7 +8,7 @@ from exo.stdlib.scheduling import simplify
 
 from exojit.main import jit
 
-_PAR_MIN_ELEMENTS = 524288
+PAR_MIN_ELEMENTS = 524288
 
 
 @proc
@@ -25,6 +25,6 @@ def _add_par(N: size, z: f32[N], x: f32[N], y: f32[N]):
 
 @cache
 def add_exo(n: int) -> Callable[..., None]:
-    p = (_add_par if n >= _PAR_MIN_ELEMENTS else _add).partial_eval(N=n)
+    p = (_add_par if n >= PAR_MIN_ELEMENTS else _add).partial_eval(N=n)
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)

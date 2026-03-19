@@ -22,4 +22,4 @@ def _weighted_sum(T: size, D: size, out: f32[D] @ DRAM, weights: f32[T] @ DRAM, 
 def weighted_sum_exo(t: int, d: int) -> Callable[..., None]:
     p = _weighted_sum.partial_eval(T=t, D=d)
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)

@@ -9,7 +9,7 @@ from exo.libs.externs import select
 from exojit.main import jit
 from exojit.patches_exo import NEON
 
-_PAR_MIN_ELEMENTS = 524288
+PAR_MIN_ELEMENTS = 524288
 
 
 @instr("neon_loadu_f32x4({dst_data}, {src_data});")
@@ -116,4 +116,4 @@ def _relu_neon_par(N: size, out: f32[N] @ DRAM, inp: f32[N] @ DRAM):
 @cache
 def relu_neon(n: int) -> Callable[..., None]:
     assert n % 16 == 0
-    return jit((_relu_neon_par if n >= _PAR_MIN_ELEMENTS else _relu_neon).partial_eval(N=n))
+    return jit((_relu_neon_par if n >= PAR_MIN_ELEMENTS else _relu_neon).partial_eval(N=n), raw=True)

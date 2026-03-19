@@ -9,7 +9,7 @@ from exo.libs.externs import sqrt
 from exojit.main import jit
 from exojit.patches_exo import NEON
 
-_PAR_MIN_ELEMENTS = 65536
+PAR_MIN_ELEMENTS = 65536
 
 
 @instr("neon_loadu_f32x4({dst_data}, {src_data});")
@@ -417,4 +417,4 @@ def _adam_neon_par(N: size, param: f32[N] @ DRAM, grad: f32[N] @ DRAM, m: f32[N]
 @cache
 def adam_neon(n: int) -> Callable[..., None]:
     assert n % 16 == 0
-    return jit((_adam_neon_par if n >= _PAR_MIN_ELEMENTS else _adam_neon).partial_eval(N=n))
+    return jit((_adam_neon_par if n >= PAR_MIN_ELEMENTS else _adam_neon).partial_eval(N=n), raw=True)

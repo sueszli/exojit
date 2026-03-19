@@ -50,7 +50,7 @@ def _jit_max_neon(n: int) -> Callable[..., None]:
         m1 = select(buf[2], buf[3], buf[3], buf[2])
         result[0] = select(m0, m1, m1, m0)
 
-    return jit(_find_max_neon)
+    return jit(_find_max_neon, raw=True)
 
 
 @proc
@@ -66,7 +66,7 @@ def _find_max(N: size, result: f32[1], inp: f32[N]):
 def _jit_max(n: int) -> Callable[..., None]:
     p = _find_max.partial_eval(N=n)
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)
 
 
 @proc
@@ -110,7 +110,7 @@ def _softmax_core(N: size, out: f32[N], inp: f32[N], mx: f32[1]):
 def _jit_core(n: int) -> Callable[..., None]:
     p = _softmax_core.partial_eval(N=n)
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)
 
 
 @cache

@@ -8,7 +8,7 @@ from exo import *
 from exojit.main import jit
 from exojit.patches_exo import NEON
 
-_PAR_MIN_ELEMENTS = 1024
+PAR_MIN_ELEMENTS = 1024
 
 
 @instr("neon_loadu_f32x4({dst_data}, {src_data});")
@@ -138,4 +138,4 @@ def _ws_neon_par(T: size, D: size, out: f32[D] @ DRAM, weights: f32[T] @ DRAM, V
 def weighted_sum_neon(t: int, d: int) -> Callable[..., None]:
     assert d % 4 == 0
     assert t % 4 == 0
-    return jit((_ws_neon_par if d >= _PAR_MIN_ELEMENTS else _ws_neon).partial_eval(T=t, D=d))
+    return jit((_ws_neon_par if d >= PAR_MIN_ELEMENTS else _ws_neon).partial_eval(T=t, D=d), raw=True)

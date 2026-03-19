@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import platform
+import re
+from copy import deepcopy
 
 import numpy as np
 import pytest
@@ -276,20 +278,15 @@ def neon_broadcast_store_f64(out: f64[2] @ DRAM, s: f64[1] @ DRAM):
 
 def _jit_call(proc_obj, **kwargs):
     fn = jit(proc_obj)
-
-    args, bufs = [], {}
-    for arg in proc_obj._loopir_proc.args:
-        name = str(arg.name)
-        val = kwargs[name]
-        if hasattr(arg.type, "basetype"):
-            dtype = {"f32": np.float32, "f64": np.float64}[str(arg.type.basetype())]
-            arr = np.array(val, dtype=dtype)
-            bufs[name] = arr
-            args.append(arr.ctypes.data)
-        else:
-            args.append(int(val))
-
+    jit_kwargs = deepcopy(kwargs)
+    args = [jit_kwargs[re.sub(r"_\d+$", "", str(arg.name))] for arg in proc_obj._loopir_proc.args]
     fn(*args)
+    bufs: dict[str, np.ndarray] = {}
+    for arg in proc_obj._loopir_proc.args:
+        if not arg.type.is_tensor_or_window():
+            continue
+        name = re.sub(r"_\d+$", "", str(arg.name))
+        bufs[name] = np.asarray(jit_kwargs[name])
     return bufs
 
 
@@ -343,9 +340,8 @@ def test_neon_add_red_f32():
 def test_neon_saxpy_f32():
     y = [float(i) for i in range(16)]
     x = [float(i * 2) for i in range(16)]
-    a = [3.0]
     y_orig = np.array(y, dtype=np.float32)
-    bufs = _jit_call(neon_saxpy_f32, y=list(y), a=a, x=x)
+    bufs = _jit_call(neon_saxpy_f32, y=list(y), a=3.0, x=x)
     expected = y_orig + 3.0 * np.array(x, dtype=np.float32)
     np.testing.assert_allclose(bufs["y"], expected)
 
@@ -379,5 +375,5 @@ def test_neon_fma_f64():
 
 
 def test_neon_broadcast_f64():
-    bufs = _jit_call(neon_broadcast_store_f64, out=[0.0] * 2, s=[42.0])
+    bufs = _jit_call(neon_broadcast_store_f64, out=[0.0] * 2, s=42.0)
     np.testing.assert_allclose(bufs["out"], [42.0, 42.0])

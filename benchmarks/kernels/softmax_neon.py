@@ -176,4 +176,4 @@ def softmax_neon(n: int) -> Callable[..., None]:
             neon_mul_f32x4(r, v, inv_v)
             neon_storeu_f32x4(out[4 * j : 4 * j + 4], r)
 
-    return jit(_softmax_neon)
+    return jit(_softmax_neon, raw=True)

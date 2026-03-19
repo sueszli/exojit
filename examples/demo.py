@@ -1,43 +1,31 @@
-import timeit
+import math
+import random
 
-import numpy as np
 from exo import *
-from exo.API import Procedure
-from exo.stdlib.scheduling import divide_loop, fission, rename, reorder_loops, simplify, unroll_loop
-from numpy.typing import NDArray
+from exo.stdlib.scheduling import divide_loop, fission, reorder_loops, simplify, unroll_loop
 
 from exojit.main import jit
 
 
 @proc
-def matmul(C: f32[128, 128] @ DRAM, A: f32[128, 128] @ DRAM, B: f32[128, 128] @ DRAM):
-    for i in seq(0, 128):
-        for j in seq(0, 128):
+def matmul(C: f32[32, 32] @ DRAM, A: f32[32, 32] @ DRAM, B: f32[32, 32] @ DRAM):
+    for i in seq(0, 32):
+        for j in seq(0, 32):
             C[i, j] = 0.0
-            for k in seq(0, 128):
+            for k in seq(0, 32):
                 C[i, j] += A[i, k] * B[k, j]
 
 
-def bench(s: str, p: Procedure, A: NDArray[np.float32], B: NDArray[np.float32]) -> None:
-    f = jit(p)
-    C = np.zeros_like(A)
-    f(C, A, B)
-    assert np.allclose(C, A @ B, atol=0.5)
-    ms = min(timeit.repeat(lambda: f(C, A, B), number=200, repeat=5)) / 200 * 1e3
-    print(f"{s:<12s} {ms:.2f} ms/call")
+opt = fission(matmul, matmul.find("for k in _: _").before(), n_lifts=2)
+opt = reorder_loops(opt, "j k")
+opt = divide_loop(opt, "j #1", 4, ["jo", "ji"], perfect=True)
+opt = unroll_loop(opt, "ji")
+opt = simplify(opt)
 
-
-if __name__ == "__main__":
-    N = 128
-    A = np.random.randn(N, N).astype(np.float32)
-    B = np.random.randn(N, N).astype(np.float32)
-
-    bench("naive", matmul, A, B)
-
-    opt = rename(matmul, "opt")
-    opt = fission(opt, opt.find("for k in _: _").before(), n_lifts=2)  # separate init from compute
-    opt = reorder_loops(opt, "j k")  # j inside k -> row-major A streaming
-    opt = divide_loop(opt, "j #1", 4, ["jo", "ji"], perfect=True)  # tile j by 4
-    opt = unroll_loop(opt, "ji")  # unroll inner j -> 4 explicit accumulators
-    opt = simplify(opt)
-    bench("optimized", opt, A, B)
+A = [[random.uniform(-1.0, 1.0) for _ in range(32)] for _ in range(32)]
+B = [[random.uniform(-1.0, 1.0) for _ in range(32)] for _ in range(32)]
+expected = [[sum(A[i][k] * B[k][j] for k in range(32)) for j in range(32)] for i in range(32)]
+C = [[0.0] * 32 for _ in range(32)]
+jit(opt)(C, A, B)
+assert all(math.isclose(C[i][j], expected[i][j], rel_tol=1e-5, abs_tol=1e-5) for i in range(32) for j in range(32))
+print("ok")

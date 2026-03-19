@@ -20,4 +20,4 @@ def _relu(N: size, out: f32[N], inp: f32[N]):
 def relu_exo(n: int) -> Callable[..., None]:
     p = _relu.partial_eval(N=n)
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)

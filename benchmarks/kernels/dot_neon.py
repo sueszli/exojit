@@ -67,4 +67,4 @@ def dot_neon(n: int) -> Callable[..., None]:
         total += sum_buf[3]
         result[0] = total
 
-    return jit(_dot_neon)
+    return jit(_dot_neon, raw=True)

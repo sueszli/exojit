@@ -8,7 +8,7 @@ from exo.stdlib.scheduling import simplify
 
 from exojit.main import jit
 
-_PAR_MIN_ELEMENTS = 524288
+PAR_MIN_ELEMENTS = 524288
 
 
 @proc
@@ -25,6 +25,6 @@ def _saxpy_par(N: size, y: f32[N] @ DRAM, x: f32[N] @ DRAM, a: f32[1] @ DRAM):
 
 @cache
 def saxpy_exo(n: int) -> Callable[..., None]:
-    p = (_saxpy_par if n >= _PAR_MIN_ELEMENTS else _saxpy).partial_eval(N=n)
+    p = (_saxpy_par if n >= PAR_MIN_ELEMENTS else _saxpy).partial_eval(N=n)
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)

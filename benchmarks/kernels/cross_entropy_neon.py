@@ -87,4 +87,4 @@ def cross_entropy_neon(n: int) -> Callable[..., None]:
         result[0] += sum_buf[2]
         result[0] += sum_buf[3]
 
-    return jit(_sum_exp_neon)
+    return jit(_sum_exp_neon, raw=True)

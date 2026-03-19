@@ -19,15 +19,15 @@ from exo.API import Procedure
 from exo.core.LoopIR import LoopIR
 from xdsl.dialects.builtin import ModuleOp
 
-_DTYPES: dict[str, tuple[type, type]] = {
-    "f16": (np.float16, ctypes.c_uint16),
-    "f32": (np.float32, ctypes.c_float),
-    "f64": (np.float64, ctypes.c_double),
-    "i8": (np.int8, ctypes.c_int8),
-    "ui8": (np.uint8, ctypes.c_uint8),
-    "i16": (np.int16, ctypes.c_int16),
-    "ui16": (np.uint16, ctypes.c_uint16),
-    "i32": (np.int32, ctypes.c_int32),
+DTYPES: dict[str, type] = {
+    "f16": np.float16,
+    "f32": np.float32,
+    "f64": np.float64,
+    "i8": np.int8,
+    "ui8": np.uint8,
+    "i16": np.int16,
+    "ui16": np.uint16,
+    "i32": np.int32,
 }
 
 
@@ -45,10 +45,11 @@ def _disk_cache(fn: Callable[..., Path]) -> Callable[..., Path]:
     # like @cache but persists .so to disk across forked processes
     # first arg must be source text (used as cache key)
     cache_dir = Path(tempfile.gettempdir()) / "so_cache"
+    cache_tag = fn.__qualname__.encode() + fn.__code__.co_code
 
     def wrapper(source: str, *args, **kwargs) -> Path:
         cache_dir.mkdir(exist_ok=True)
-        h = hashlib.sha256(source.encode()).hexdigest()[:16]
+        h = hashlib.sha256(source.encode() + cache_tag).hexdigest()[:16]
         cached = cache_dir / f"{h}.so"
         if cached.exists():
             return cached
@@ -71,7 +72,7 @@ def _build_exo_so(_source: str, build_dir: Path) -> Path:
 def _build_mlir_so(source: str) -> Path:
     d = Path(tempfile.mkdtemp())
     (d / "o.mlir").write_text(source)
-    subprocess.run(f"{llvm_bin_path()}/mlir-translate --mlir-to-llvmir {d / 'o.mlir'} | clang -shared -x ir -o {d / 'lib.so'} -", shell=True, check=True)
+    subprocess.run(f"{llvm_bin_path()}/mlir-opt --convert-arith-to-llvm {d / 'o.mlir'} | {llvm_bin_path()}/mlir-translate --mlir-to-llvmir - | clang -shared -x ir -o {d / 'lib.so'} -", shell=True, check=True)
     return d / "lib.so"
 
 
@@ -95,11 +96,11 @@ def _call(fn: Callable, proc_ir: Any, kwargs: dict[str, Any], *, ctx: bool = Fal
         match arg.type:
             case LoopIR.Size() | LoopIR.Index():
                 args.append(int(val))
-            case LoopIR.Tensor():
-                np_dtype, _ = _DTYPES[str(arg.type.basetype())]
-                arr = np.array(val, dtype=np_dtype)
-                bufs[name] = arr
-                args.append(arr.ctypes.data)
+            case _ if arg.type.is_tensor_or_window():
+                tensor_type = arg.type.as_tensor if hasattr(arg.type, "as_tensor") else arg.type
+                buf = np.array(val, dtype=DTYPES[str(tensor_type.basetype())])
+                bufs[name] = buf
+                args.append(buf.ctypes.data)
     fn(*args)
     return bufs
 

@@ -25,32 +25,7 @@ static int arg_error(Py_ssize_t index, PyObject *obj, const char *expected) {
     return -1;
 }
 
-static int marshal_arg(PyObject *obj, Py_ssize_t index, unsigned char kind, intptr_t *out, Py_buffer *view) {
-    const char *expected;
-    int flags;
-
-    switch (kind) {
-    case ARG_INT:
-        // fixed-width scalar args stay on the integer fast path
-        if (!PyLong_Check(obj)) {
-            return arg_error(index, obj, "int");
-        }
-        *out = (intptr_t)PyLong_AsSsize_t(obj);
-        return ((*out == -1) && PyErr_Occurred()) ? -1 : 0;
-    case ARG_PTR_RO:
-        expected = "int address or buffer";
-        flags = PyBUF_SIMPLE;
-        break;
-    case ARG_PTR_RW:
-        expected = "int address or writable buffer";
-        flags = PyBUF_WRITABLE;
-        break;
-    default:
-        PyErr_Format(PyExc_RuntimeError, "argument %zd: unknown JIT arg kind %u", index + 1, kind);
-        return -1;
-    }
-
-    // pointer args accept raw addresses or buffers; ints are the hot path
+static int marshal_ptr_arg(PyObject *obj, Py_ssize_t index, unsigned char kind, intptr_t *out, Py_buffer *view) {
     if (PyLong_Check(obj)) {
         void *ptr = PyLong_AsVoidPtr(obj);
         if ((ptr == NULL) && PyErr_Occurred()) {
@@ -61,19 +36,40 @@ static int marshal_arg(PyObject *obj, Py_ssize_t index, unsigned char kind, intp
     }
 
     if (!PyObject_CheckBuffer(obj)) {
-        return arg_error(index, obj, expected);
-    }
-    if (PyObject_GetBuffer(obj, view, flags) == 0) {
-        *out = (intptr_t)view->buf;
-        return 1;
+        return arg_error(index, obj, kind == ARG_PTR_RW ? "int address or writable C-contiguous buffer" : "int address or C-contiguous buffer");
     }
 
-    PyErr_Clear();
-    return arg_error(index, obj, expected);
+    int flags = PyBUF_C_CONTIGUOUS | (kind == ARG_PTR_RW ? PyBUF_WRITABLE : 0);
+    if (PyObject_GetBuffer(obj, view, flags) < 0) {
+        PyErr_Clear();
+        return arg_error(index, obj, kind == ARG_PTR_RW ? "int address or writable C-contiguous buffer" : "int address or C-contiguous buffer");
+    }
+
+    *out = (intptr_t)view->buf;
+    return 0;
+}
+
+static int marshal_arg(PyObject *obj, Py_ssize_t index, unsigned char kind, intptr_t *out, Py_buffer *view) {
+    switch (kind) {
+    case ARG_INT:
+        // fixed-width scalar args stay on the integer fast path
+        if (!PyLong_Check(obj)) {
+            return arg_error(index, obj, "int");
+        }
+        *out = (intptr_t)PyLong_AsSsize_t(obj);
+        return ((*out == -1) && PyErr_Occurred()) ? -1 : 0;
+    case ARG_PTR_RO:
+        return marshal_ptr_arg(obj, index, kind, out, view);
+    case ARG_PTR_RW:
+        return marshal_ptr_arg(obj, index, kind, out, view);
+    default:
+        PyErr_Format(PyExc_RuntimeError, "argument %zd: unknown JIT arg kind %u", index + 1, kind);
+        return -1;
+    }
 }
 
 static PyObject *JitFunc_vectorcall(PyObject *callable, PyObject *const *args, size_t nargsf, PyObject *kwnames) {
-    // cpython vectorcall entry point. marshal args, call JIT fn, release buffers
+    // cpython vectorcall entry point. marshal args and call the raw JIT fn
 
     JitFuncObject *self = (JitFuncObject *)callable;
     if ((kwnames != NULL) && (PyTuple_GET_SIZE(kwnames) != 0)) {
@@ -89,16 +85,13 @@ static PyObject *JitFunc_vectorcall(PyObject *callable, PyObject *const *args, s
 
     // marshal python args into a flat intptr_t array using the precomputed signature
     intptr_t a[MAX_JIT_ARGS];
-    Py_buffer views[MAX_JIT_ARGS];
-    Py_ssize_t n_views = 0;
+    Py_buffer views[MAX_JIT_ARGS] = {0};
     int ok = 1;
     for (Py_ssize_t i = 0; i < nargs; i++) {
-        int took_view = marshal_arg(args[i], i, self->arg_kinds[i], &a[i], &views[n_views]);
-        if (took_view < 0) {
+        if (marshal_arg(args[i], i, self->arg_kinds[i], &a[i], &views[i]) < 0) {
             ok = 0;
             break;
         }
-        n_views += took_view;
     }
 
     // dispatch with exactly nargs. avoids UB from calling a fn via a mismatched pointer type
@@ -303,10 +296,13 @@ static PyObject *JitFunc_vectorcall(PyObject *callable, PyObject *const *args, s
         }
     }
 
-    // release any buffer views we acquired
-    for (Py_ssize_t i = 0; i < n_views; i++) {
+    for (Py_ssize_t i = 0; i < nargs; i++) {
+        if (views[i].obj == NULL) {
+            continue;
+        }
         PyBuffer_Release(&views[i]);
     }
+
     if (!ok) {
         return NULL;
     }

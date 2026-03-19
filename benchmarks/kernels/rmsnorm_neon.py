@@ -9,7 +9,7 @@ from kernels.softmax_neon import neon_add_acc_f32x4, neon_broadcast_f32x4, neon_
 from exojit.main import jit
 from exojit.patches_exo import NEON
 
-_PAR_MIN_ELEMENTS = 524288
+PAR_MIN_ELEMENTS = 524288
 
 
 @proc
@@ -124,13 +124,13 @@ def _rmsnorm_scale_neon_par(N: size, out: f32[N] @ DRAM, inp: f32[N] @ DRAM, sca
 @cache
 def _jit_sumsq_neon(n: int) -> Callable[..., None]:
     assert n % 16 == 0
-    return jit(_rmsnorm_sumsq_neon.partial_eval(N=n))
+    return jit(_rmsnorm_sumsq_neon.partial_eval(N=n), raw=True)
 
 
 @cache
 def _jit_scale_neon(n: int) -> Callable[..., None]:
     assert n % 16 == 0
-    return jit((_rmsnorm_scale_neon_par if n >= _PAR_MIN_ELEMENTS else _rmsnorm_scale_neon).partial_eval(N=n))
+    return jit((_rmsnorm_scale_neon_par if n >= PAR_MIN_ELEMENTS else _rmsnorm_scale_neon).partial_eval(N=n), raw=True)
 
 
 @cache

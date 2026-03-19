@@ -49,7 +49,7 @@ def _sum_exp(N: size, result: f32[1], inp: f32[N], mx: f32[1]):
 def _jit_sum_exp(n: int) -> Callable[..., None]:
     p = _sum_exp.partial_eval(N=n)
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)
 
 
 @cache

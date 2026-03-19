@@ -47,4 +47,4 @@ def _adam(N: size, param: f32[N] @ DRAM, grad: f32[N] @ DRAM, m: f32[N] @ DRAM, 
 def adam_exo(n: int) -> Callable[..., None]:
     p = _adam.partial_eval(N=n)
     p = simplify(p)
-    return jit(p)
+    return jit(p, raw=True)

@@ -8,7 +8,7 @@ from exo import *
 from exojit.main import jit
 from exojit.patches_exo import NEON
 
-_PAR_MIN_ELEMENTS = 524288
+PAR_MIN_ELEMENTS = 524288
 
 
 @instr("neon_loadu_f32x4({dst_data}, {src_data});")
@@ -108,4 +108,4 @@ def _saxpy_neon_par(N: size, y: f32[N] @ DRAM, x: f32[N] @ DRAM, a: f32[1] @ DRA
 @cache
 def saxpy_neon(n: int) -> Callable[..., None]:
     assert n % 16 == 0
-    return jit((_saxpy_neon_par if n >= _PAR_MIN_ELEMENTS else _saxpy_neon).partial_eval(N=n))
+    return jit((_saxpy_neon_par if n >= PAR_MIN_ELEMENTS else _saxpy_neon).partial_eval(N=n), raw=True)

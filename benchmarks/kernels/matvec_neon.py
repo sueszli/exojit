@@ -8,7 +8,7 @@ from exo import *
 from exojit.main import jit
 from exojit.patches_exo import NEON
 
-_PAR_MIN_ELEMENTS = 1024
+PAR_MIN_ELEMENTS = 1024
 
 
 @instr("neon_loadu_f32x4({dst_data}, {src_data});")
@@ -138,4 +138,4 @@ def _mv_neon_par(M: size, K: size, y: f32[M] @ DRAM, WT: f32[K, M] @ DRAM, x: f3
 def matvec_neon(m: int, k: int) -> Callable[..., None]:
     assert m % 4 == 0
     assert k % 4 == 0
-    return jit((_mv_neon_par if m >= _PAR_MIN_ELEMENTS else _mv_neon).partial_eval(M=m, K=k))
+    return jit((_mv_neon_par if m >= PAR_MIN_ELEMENTS else _mv_neon).partial_eval(M=m, K=k), raw=True)

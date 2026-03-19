@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import math
+import numbers
 import re
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, MutableSequence, Sequence
 from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
@@ -14,6 +15,7 @@ from pathlib import Path
 import click
 import llvmlite.binding
 import llvmlite.ir
+from cffi import FFI
 from exo import compile_procs as exo_compile_procs
 from exo.API import Procedure
 from exo.backend.LoopIR_compiler import find_all_subprocs
@@ -22,7 +24,7 @@ from exo.backend.parallel_analysis import ParallelAnalysis
 from exo.backend.prec_analysis import PrecisionAnalysis
 from exo.backend.win_analysis import WindowAnalysis
 from exo.core.LoopIR import LoopIR, T
-from exo.main import get_procs_from_module, load_user_code
+from exo.main import load_user_code
 from xdsl.backend.llvm.convert_op import convert_op as _xdsl_convert_op
 from xdsl.backend.llvm.convert_type import convert_type
 from xdsl.builder import Builder
@@ -43,7 +45,7 @@ from exojit.jitcall import JitFunc
 from exojit.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from exojit.patches_xdsl_llvm import BrOp, CondBrOp, ExtendedConvertMemRefToPtr, FCmpOp, FSqrtOp, RewriteMemRefTypes, VectorFMaxOp
 
-_FCMP_PREDICATES: dict[str, tuple[str, bool]] = {  # mlir predicate -> (op, ordered?)
+FCMP_PREDICATES: dict[str, tuple[str, bool]] = {  # mlir predicate -> (op, ordered?)
     "oeq": ("==", True),
     "ogt": (">", True),
     "oge": (">=", True),
@@ -235,7 +237,7 @@ class IRGenerator:
     @staticmethod
     def _cmp_binop(lhs: SSAValue, rhs: SSAValue, op: str, emit: Callable[[Operation], SSAValue]) -> SSAValue:
         integer_cmp_table = {"==": 0, "!=": 1, "<": 2, "<=": 3, ">": 4, ">=": 5}
-        float_cmp_table = {op: pred for pred, (op, ordered) in _FCMP_PREDICATES.items() if ordered and op not in ("ord", "uno")}
+        float_cmp_table = {op: pred for pred, (op, ordered) in FCMP_PREDICATES.items() if ordered and op not in ("ord", "uno")}
         assert lhs.type == rhs.type
         if lhs.type == i1:
             bool_ops = {"and": llvm.AndOp, "or": llvm.OrOp}
@@ -761,7 +763,7 @@ class LLVMLiteGenerator:
             case FNegOp():
                 val_map[op.res] = builder.fneg(val_map[op.arg])
             case FCmpOp():
-                pred, is_ordered = _FCMP_PREDICATES[op.predicate.data]
+                pred, is_ordered = FCMP_PREDICATES[op.predicate.data]
                 val_map[op.res] = (builder.fcmp_ordered if is_ordered else builder.fcmp_unordered)(pred, val_map[op.lhs], val_map[op.rhs], flags=("fast",))
             case llvm.SelectOp():
                 val_map[op.res] = builder.select(val_map[op.cond], val_map[op.lhs], val_map[op.rhs])
@@ -869,8 +871,9 @@ llvmlite.binding.initialize_native_target()
 llvmlite.binding.initialize_native_asmprinter()
 
 
-@cache
 def _target_machine() -> llvmlite.binding.TargetMachine:
+    # llvmlite target machines are not safe to reuse after MCJIT compilation.
+    # do not cache to avoid stale target-data pointers during later `--asm` runs.
     target = llvmlite.binding.Target.from_default_triple()
     cpu = llvmlite.binding.get_host_cpu_name()
     features = llvmlite.binding.get_host_cpu_features().flatten()
@@ -985,13 +988,164 @@ def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
             case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
                 return 0
             case _:
-                raise TypeError(f"unsupported JIT argument type for {arg.name}: {arg.type}")
+                assert False, f"unsupported JIT argument type for {arg.name}: {arg.type}"
 
     return bytes(_kind(i, arg) for i, arg in enumerate(proc.args))
 
 
-def jit(proc: Procedure) -> JitFunc:
-    # disk-cache llvmlite ir to skip exo analysis + xdsl lowering on repeated runs
+def _jit_tensor_c_type(arg_type: object) -> str:
+    # map Exo tensor dtypes to the cffi scalar type used for raw buffers
+    if isinstance(arg_type, T.Window):
+        arg_type = arg_type.as_tensor
+    assert isinstance(arg_type, T.Tensor), f"unsupported JIT tensor type: {arg_type}"
+    tensor_c_types = {
+        "f32": "float",
+        "f64": "double",
+        "i8": "int8_t",
+        "ui8": "uint8_t",
+        "i16": "int16_t",
+        "ui16": "uint16_t",
+        "i32": "int32_t",
+        "bool": "_Bool",
+    }
+    basetype = str(arg_type.basetype())
+    assert basetype in tensor_c_types, f"unsupported JIT tensor dtype: {basetype}"
+    return tensor_c_types[basetype]
+
+
+def _jit_eval_shape_expr(expr: object, env: dict[object, int]) -> int:
+    # evaluate the small shape language used by dynamic tensor arguments
+    match expr:
+        case LoopIR.Const():
+            return int(expr.val)
+        case LoopIR.Read():
+            if expr.name in env:
+                return env[expr.name]
+            key = repr(expr.name)
+            if key in env:
+                return env[key]
+            assert False, f"could not resolve dynamic tensor shape from {key}"
+        case LoopIR.USub():
+            return -_jit_eval_shape_expr(expr.arg, env)
+        case LoopIR.BinOp():
+            lhs = _jit_eval_shape_expr(expr.lhs, env)
+            rhs = _jit_eval_shape_expr(expr.rhs, env)
+            match expr.op:
+                case "+":
+                    return lhs + rhs
+                case "-":
+                    return lhs - rhs
+                case "*":
+                    return lhs * rhs
+                case "/":
+                    return lhs // rhs
+                case "%":
+                    return lhs % rhs
+                case _:
+                    assert False, f"unsupported dynamic tensor shape op: {expr.op}"
+        case _:
+            assert False, f"unsupported dynamic tensor shape expression: {expr}"
+
+
+def _jit_flatten_python_values(value: object) -> list[object]:
+    # flatten nested Python sequences into the contiguous buffer layout
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray, memoryview)):
+        return [value]
+    flat: list[object] = []
+    for item in value:
+        flat.extend(_jit_flatten_python_values(item))
+    return flat
+
+
+def _jit_sync_python_sequence(target: MutableSequence[object], buf: object, offset: int = 0) -> int:
+    # copy writable tensor outputs back into nested Python lists
+    for i, item in enumerate(target):
+        if isinstance(item, MutableSequence):
+            offset = _jit_sync_python_sequence(item, buf, offset)
+            continue
+        target[i] = buf[offset]
+        offset += 1
+    return offset
+
+
+def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writable: bool) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], object]:
+    # build one argument converter for tensor or window inputs
+    shape = tensor_type.shape()
+    c_type = _jit_tensor_c_type(tensor_type)
+
+    def direct_buffer_like(value: object) -> bool:
+        return isinstance(value, (bytes, bytearray, memoryview)) or (hasattr(value, "ndim") and hasattr(value, "dtype") and hasattr(value, "shape") and getattr(value, "ndim") > 0)
+
+    def convert(value: object, shape_env: dict[object, int], keepalive: list[object], syncbacks: list[Callable[[], None]]) -> object:
+        assert not direct_buffer_like(value), f"argument {index + 1}: direct buffer inputs are not supported by jit(); " "pass Python lists/scalars or use jit(proc, raw=True)"
+
+        numel = 1
+        for expr in shape:
+            numel *= _jit_eval_shape_expr(expr, shape_env)
+
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray, memoryview)):
+            assert numel == 1, f"argument {index + 1}: expected {numel} values, got scalar {type(value).__name__}"
+            assert not writable, f"argument {index + 1}: writable scalar tensor args require a mutable sequence"
+            assert isinstance(value, numbers.Real), f"argument {index + 1}: expected scalar numeric data, got {type(value).__name__}"
+            flat = [value]
+        else:
+            assert not writable or isinstance(value, MutableSequence), f"argument {index + 1}: writable tensor args passed as Python sequences must be mutable"
+            flat = _jit_flatten_python_values(value)
+            assert len(flat) == numel, f"argument {index + 1}: expected {numel} values, got {len(flat)}"
+
+        buf = ffi.new(f"{c_type}[{numel}]", flat)
+        keepalive.append(buf)
+        if writable and isinstance(value, MutableSequence):
+            syncbacks.append(lambda target=value, cffi_buf=buf: _jit_sync_python_sequence(target, cffi_buf))
+        return int(ffi.cast("uintptr_t", buf))
+
+    return convert
+
+
+def _jit_scalar_converter(*, name: object) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], int]:
+    # build one argument converter for scalar size and loop index inputs
+    def convert(value: object, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]]) -> int:
+        value = int(value)
+        shape_env[name] = value
+        shape_env[repr(name)] = value
+        return value
+
+    return convert
+
+
+def _jit_argument_converter(i: int, arg: object, kind: int, ffi: FFI) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], object]:
+    # dispatch each procedure argument to the right JIT converter
+    match arg.type:
+        case _ if arg.type.is_tensor_or_window():
+            tensor_type = arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type
+            return _jit_tensor_converter(ffi=ffi, index=i, tensor_type=tensor_type, writable=kind == 2)
+        case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
+            return _jit_scalar_converter(name=arg.name)
+        case _:
+            assert False, f"unsupported JIT argument type for {arg.name}: {arg.type}"
+
+
+def _jit_wrap(raw_fn: JitFunc, proc: Procedure, arg_kinds: bytes) -> Callable[..., None]:
+    # adapt the raw entrypoint to Python objects and sync writable outputs
+    ffi = FFI()
+    ffi.cdef("typedef unsigned long uintptr_t;")
+    converters = [_jit_argument_converter(i, arg, arg_kinds[i], ffi) for i, arg in enumerate(proc._loopir_proc.args)]
+
+    def wrapped(*args):
+        assert len(args) == len(converters), f"jit expected {len(converters)} arguments, got {len(args)}"
+
+        shape_env: dict[object, int] = {}
+        keepalive: list[object] = []
+        syncbacks: list[Callable[[], None]] = []
+        raw_fn(*[conv(arg, shape_env, keepalive, syncbacks) for conv, arg in zip(converters, args, strict=True)])
+        for sync in syncbacks:
+            sync()
+
+    wrapped._raw = raw_fn
+    return wrapped
+
+
+def jit(proc: Procedure, raw: bool = False) -> Callable[..., None] | JitFunc:
     mlir_module = to_mlir(proc)
     cache_key = hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16]
     ir_text = _disk_cache(cache_key, lambda: str(LLVMLiteGenerator.generate(mlir_module)))
@@ -1018,15 +1172,29 @@ def jit(proc: Procedure) -> JitFunc:
     engine.finalize_object()
     engine.run_static_constructors()
 
-    # extract func pointers from ir text (no xdsl module needed on cache hit)
-    if proc.name() in re.findall(r'define void @"?(\w+)"?\(', ir_text):
-        return JitFunc(engine.get_function_address(proc.name()), engine, _jit_arg_kinds(proc._loopir_proc))
-    assert False, f"missing JIT entrypoint for {proc.name()}"
+    assert re.search(rf'define void @"?{re.escape(proc.name())}"?\(', ir_text) is not None, f"missing JIT entrypoint for {proc.name()}"
+
+    arg_kinds = _jit_arg_kinds(proc._loopir_proc)
+    raw_fn = JitFunc(engine.get_function_address(proc.name()), engine, arg_kinds)
+    if raw:
+        return raw_fn
+    return _jit_wrap(raw_fn, proc, arg_kinds)
 
 
 #
 # cli entry point
 #
+
+
+def _dedup_proc_names(user_module: object) -> list[Procedure]:
+    # collect public procedures from a module and keep the last name match
+    exported = getattr(user_module, "__all__", None)
+    symbols = user_module.__dict__.items() if exported is None else ((name, getattr(user_module, name)) for name in exported)
+    procs = [proc for name, proc in symbols if not name.startswith("_") and isinstance(proc, Procedure) and not proc.is_instr()]
+    by_name: dict[str, Procedure] = {}
+    for proc in reversed(procs):
+        by_name.setdefault(proc.name(), proc)
+    return list(by_name.values())[::-1]
 
 
 @click.command()
@@ -1037,7 +1205,7 @@ def jit(proc: Procedure) -> JitFunc:
 def cli(source: Path, fmt: str | None):
     if not fmt:
         raise click.UsageError("Specify one of --c, --mlir, or --asm")
-    source = get_procs_from_module(load_user_code(source))
+    source = _dedup_proc_names(load_user_code(source))
 
     match fmt:
         case "c":

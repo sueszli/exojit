@@ -2,10 +2,11 @@
 # requires-python = "==3.14.*"
 # dependencies = [
 #   "exojit @ git+https://github.com/sueszli/exojit.git",
-#   "numpy",
 # ]
 # ///
 
+import ctypes
+import math
 import random
 import sys
 import time
@@ -13,7 +14,6 @@ from collections import namedtuple
 from functools import cache
 from pathlib import Path
 
-import numpy as np
 from exo import *
 from exo.libs.externs import select, sqrt
 from exo.stdlib.scheduling import divide_loop, fission, reorder_loops, simplify
@@ -32,7 +32,9 @@ N_HEAD = 4
 HEAD_DIM = N_EMBED // N_HEAD
 NUM_STEPS = 1000
 
-BLOCK_INDEX = np.arange(BLOCK_SIZE, dtype=np.intp)
+BLOCK_INDEX = Tensor((BLOCK_SIZE,), dtype=int)
+for i in range(BLOCK_SIZE):
+    BLOCK_INDEX[i] = i
 INV_SCALE = 1.0 / HEAD_DIM**0.5
 CAUSAL_MASK_VALUE = -1e10
 LOSS_FLOOR = sys.float_info.min
@@ -48,14 +50,11 @@ MlpCache = namedtuple("MlpCache", ["x_pre", "xn", "rms", "h_pre", "h"])
 FwdCache = namedtuple("FwdCache", ["input_ids", "target_ids", "loss_mask", "sum_mask", "emb", "rms_init", "x", "probs", "layer_caches"])
 
 
-def scalar_array(value: float) -> np.ndarray:
-    out = np.empty(1, dtype=np.float64)
-    out[0] = value
-    return out
+class _CtypesProxy:
+    __slots__ = ("data",)
 
-
-def empty_array(shape: tuple[int, ...], dtype=np.float64) -> np.ndarray:
-    return np.empty(shape, dtype=dtype)
+    def __init__(self, data: int):
+        self.data = data
 
 
 def array_numel(shape: tuple[int, ...]) -> int:
@@ -65,28 +64,256 @@ def array_numel(shape: tuple[int, ...]) -> int:
     return size
 
 
-def zeros_array(shape: tuple[int, ...], dtype=np.float64) -> np.ndarray:
-    out = np.empty(shape, dtype=dtype)
-    if len(shape) == 1:
-        for i in range(shape[0]):
-            out[i] = 0
-    else:
-        for idx in iter_indices(shape):
-            out[idx] = 0
+def _ctype_for_dtype(dtype):
+    if dtype is float:
+        return ctypes.c_double
+    if dtype is int:
+        return ctypes.c_int64
+    raise TypeError(f"unsupported dtype: {dtype!r}")
+
+
+def _zero_for_dtype(dtype):
+    return 0.0 if dtype is float else 0
+
+
+def _default_strides(shape: tuple[int, ...]) -> tuple[int, ...]:
+    if not shape:
+        return ()
+    strides = [1] * len(shape)
+    for i in range(len(shape) - 2, -1, -1):
+        strides[i] = strides[i + 1] * shape[i + 1]
+    return tuple(strides)
+
+
+class Tensor:
+    __slots__ = ("shape", "dtype", "_ctype", "_buf", "_offset", "_strides")
+
+    def __init__(
+        self,
+        shape: tuple[int, ...],
+        dtype=float,
+        *,
+        buffer=None,
+        offset: int = 0,
+        strides: tuple[int, ...] | None = None,
+        fill=None,
+    ):
+        self.shape = tuple(shape)
+        self.dtype = dtype
+        self._ctype = _ctype_for_dtype(dtype)
+        self._offset = offset
+        self._strides = _default_strides(self.shape) if strides is None else strides
+        if buffer is None:
+            self._buf = (self._ctype * array_numel(self.shape))()
+            if fill is not None:
+                for i in range(array_numel(self.shape)):
+                    self._buf[i] = fill
+        else:
+            self._buf = buffer
+
+    @property
+    def ctypes(self):
+        return _CtypesProxy(ctypes.addressof(self._buf) + self._offset * ctypes.sizeof(self._ctype))
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
+
+    def _flat_index(self, key: tuple[int, ...]) -> int:
+        if len(key) != self.ndim:
+            raise IndexError(f"expected {self.ndim} indices, got {len(key)}")
+        idx = self._offset
+        for k, dim, stride in zip(key, self.shape, self._strides, strict=True):
+            if k < 0:
+                k += dim
+            if k < 0 or k >= dim:
+                raise IndexError("index out of range")
+            idx += k * stride
+        return idx
+
+    def _scalar_at(self, key: tuple[int, ...]):
+        return self._buf[self._flat_index(key)]
+
+    def _set_scalar_at(self, key: tuple[int, ...], value):
+        self._buf[self._flat_index(key)] = value
+
+    def _row_view(self, i: int):
+        if self.ndim == 0:
+            raise TypeError("cannot index a scalar tensor")
+        if i < 0:
+            i += self.shape[0]
+        if i < 0 or i >= self.shape[0]:
+            raise IndexError("index out of range")
+        if self.ndim == 1:
+            return Tensor((1,), dtype=self.dtype, buffer=self._buf, offset=self._offset + i * self._strides[0], strides=(1,))
+        return Tensor(self.shape[1:], dtype=self.dtype, buffer=self._buf, offset=self._offset + i * self._strides[0], strides=self._strides[1:])
+
+    def _copy_new(self):
+        out = Tensor(self.shape, dtype=self.dtype)
+        for idx in iter_indices(self.shape):
+            out[idx] = self[idx]
+        return out
+
+    def copy(self):
+        return self._copy_new()
+
+    def reshape(self, shape: tuple[int, ...]):
+        if array_numel(shape) != array_numel(self.shape):
+            raise ValueError("cannot reshape tensor to different size")
+        return Tensor(shape, dtype=self.dtype, buffer=self._buf, offset=self._offset, strides=_default_strides(shape))
+
+    def sum(self):
+        total = 0.0 if self.dtype is float else 0
+        for idx in iter_indices(self.shape):
+            total += self[idx]
+        return total
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __iter__(self):
+        if self.ndim == 1:
+            for i in range(self.shape[0]):
+                yield self[i]
+            return
+        for i in range(self.shape[0]):
+            yield self._row_view(i)
+
+    def __getitem__(self, key):
+        if isinstance(key, Tensor):
+            if self.ndim == 2 and key.ndim == 1:
+                out = Tensor((key.shape[0], self.shape[1]), dtype=self.dtype)
+                for i in range(key.shape[0]):
+                    row = int(key[i])
+                    for j in range(self.shape[1]):
+                        out[i, j] = self[row, j]
+                return out
+            raise TypeError("unsupported tensor index")
+        if isinstance(key, slice):
+            if self.ndim != 1:
+                raise TypeError("slice indexing only supported for 1D tensors")
+            start, stop, step = key.indices(self.shape[0])
+            if step != 1:
+                raise TypeError("slice step other than 1 is unsupported")
+            length = max(0, stop - start)
+            return Tensor((length,), dtype=self.dtype, buffer=self._buf, offset=self._offset + start * self._strides[0], strides=(1,))
+        if isinstance(key, tuple):
+            if len(key) == 2 and key[1] is None and isinstance(key[0], slice):
+                start, stop, step = key[0].indices(self.shape[0])
+                if step != 1:
+                    raise TypeError("slice step other than 1 is unsupported")
+                length = max(0, stop - start)
+                return Tensor((length, 1), dtype=self.dtype, buffer=self._buf, offset=self._offset + start * self._strides[0], strides=(self._strides[0], 0))
+            if all(isinstance(k, int) for k in key):
+                return self._scalar_at(tuple(key))
+            raise TypeError("unsupported tensor index")
+        if isinstance(key, int):
+            if self.ndim == 1:
+                return self._scalar_at((key,))
+            return self._row_view(key)
+        raise TypeError(f"unsupported tensor index type: {type(key).__name__}")
+
+    def __setitem__(self, key, value):
+        if isinstance(key, int):
+            if self.ndim == 1:
+                self._set_scalar_at((key,), value)
+                return
+            raise TypeError("only 1D scalar assignment by integer is supported")
+        if isinstance(key, tuple) and all(isinstance(k, int) for k in key):
+            self._set_scalar_at(tuple(key), value)
+            return
+        if isinstance(key, slice):
+            if self.ndim != 1:
+                raise TypeError("slice assignment only supported for 1D tensors")
+            start, stop, step = key.indices(self.shape[0])
+            if step != 1:
+                raise TypeError("slice step other than 1 is unsupported")
+            if isinstance(value, Tensor):
+                if value.ndim != 1 or value.shape[0] != stop - start:
+                    raise ValueError("shape mismatch in slice assignment")
+                for i in range(stop - start):
+                    self[start + i] = value[i]
+            else:
+                for i in range(start, stop):
+                    self[i] = value
+            return
+        raise TypeError("unsupported tensor assignment")
+
+    def _elementwise(self, other, op, in_place: bool):
+        if isinstance(other, Tensor):
+            if self.shape == other.shape:
+                out = self if in_place else Tensor(self.shape, dtype=self.dtype)
+                for idx in iter_indices(self.shape):
+                    out[idx] = op(self[idx], other[idx])
+                return out
+            if self.ndim == 2 and other.ndim == 2 and other.shape[1] == 1 and other.shape[0] == self.shape[0]:
+                out = self if in_place else Tensor(self.shape, dtype=self.dtype)
+                for i in range(self.shape[0]):
+                    rhs = other[i, 0]
+                    for j in range(self.shape[1]):
+                        out[i, j] = op(self[i, j], rhs)
+                return out
+            raise ValueError("shape mismatch in tensor operation")
+        out = self if in_place else Tensor(self.shape, dtype=self.dtype)
+        for idx in iter_indices(self.shape):
+            out[idx] = op(self[idx], other)
+        return out
+
+    def __add__(self, other):
+        return self._elementwise(other, lambda a, b: a + b, False)
+
+    def __iadd__(self, other):
+        return self._elementwise(other, lambda a, b: a + b, True)
+
+    def __sub__(self, other):
+        return self._elementwise(other, lambda a, b: a - b, False)
+
+    def __isub__(self, other):
+        return self._elementwise(other, lambda a, b: a - b, True)
+
+    def __mul__(self, other):
+        return self._elementwise(other, lambda a, b: a * b, False)
+
+    def __imul__(self, other):
+        return self._elementwise(other, lambda a, b: a * b, True)
+
+    def __float__(self):
+        if self.numel() != 1:
+            raise TypeError("only scalar tensors can be converted to float")
+        return float(self._buf[self._offset])
+
+    def numel(self) -> int:
+        return array_numel(self.shape)
+
+
+def scalar_array(value: float) -> Tensor:
+    out = Tensor((1,), dtype=float)
+    out[0] = value
     return out
 
 
-def empty_like_array(x: np.ndarray) -> np.ndarray:
+def empty_array(shape: tuple[int, ...], dtype=float) -> Tensor:
+    return Tensor(shape, dtype=dtype)
+
+
+def zeros_array(shape: tuple[int, ...], dtype=float) -> Tensor:
+    out = Tensor(shape, dtype=dtype)
+    for idx in iter_indices(shape):
+        out[idx] = _zero_for_dtype(dtype)
+    return out
+
+
+def empty_like_array(x: Tensor) -> Tensor:
     return empty_array(x.shape, x.dtype)
 
 
-def flat_view(x: np.ndarray, offset: int, shape: tuple[int, ...]) -> np.ndarray:
+def flat_view(x: Tensor, offset: int, shape: tuple[int, ...]) -> Tensor:
     size = array_numel(shape)
     return x[offset : offset + size].reshape(shape)
 
 
-def random_matrix(nout: int, nin: int, std: float = 0.08) -> np.ndarray:
-    out = empty_array((nout, nin), dtype=np.float64)
+def random_matrix(nout: int, nin: int, std: float = 0.08) -> Tensor:
+    out = empty_array((nout, nin), dtype=float)
     for i in range(nout):
         for j in range(nin):
             out[i, j] = random.gauss(0.0, std)
@@ -102,8 +329,8 @@ INV_SCALE_ARRAY = scalar_array(INV_SCALE)
 CAUSAL_MASK_ARRAY = scalar_array(CAUSAL_MASK_VALUE)
 
 
-def softmax(x: np.ndarray) -> np.ndarray:
-    _jit_softmax_2d(*x.shape)(x, x)
+def softmax(x: Tensor) -> Tensor:
+    _jit_softmax_2d(*x.shape)._raw(x.ctypes.data, x.ctypes.data)
     return x
 
 
@@ -135,12 +362,12 @@ def _jit_matmul_nt(m: int, k: int, n: int):
     return jit(_schedule_matmul(_matmul_nt.partial_eval(M=m, K=k, N=n), k, n))
 
 
-def matmul_nt(a: np.ndarray, b: np.ndarray, out: np.ndarray) -> np.ndarray:
+def matmul_nt(a: Tensor, b: Tensor, out: Tensor) -> Tensor:
     rows, inner = a.shape
     out_cols, b_inner = b.shape
     if inner != b_inner or out.shape != (rows, out_cols):
         raise ValueError("shape mismatch in matmul_nt")
-    _jit_matmul_nt(rows, inner, out_cols)(out, a, b)
+    _jit_matmul_nt(rows, inner, out_cols)._raw(out.ctypes.data, a.ctypes.data, b.ctypes.data)
     return out
 
 
@@ -167,8 +394,8 @@ def _zero_1d(N: size, x: f64[N] @ DRAM):
         x[i] = 0.0
 
 
-def zero_array(x: np.ndarray) -> np.ndarray:
-    _jit_zero_1d(x.shape[0])(x)
+def zero_array(x: Tensor) -> Tensor:
+    _jit_zero_1d(x.shape[0])._raw(x.ctypes.data)
     return x
 
 
@@ -225,9 +452,13 @@ def _jit_zero_1d(n: int):
     return jit(simplify(_zero_1d.partial_eval(N=n)))
 
 
-def cross_entropy_loss(probs: np.ndarray, target_ids: np.ndarray, loss_mask: np.ndarray, sum_mask: float) -> float:
-    selected = probs[BLOCK_INDEX, target_ids]
-    return float(-(np.log(np.clip(selected, LOSS_FLOOR, 1.0)) * loss_mask).sum() / sum_mask)
+def cross_entropy_loss(probs: Tensor, target_ids: Tensor, loss_mask: Tensor, sum_mask: float) -> float:
+    total = 0.0
+    for i in range(BLOCK_SIZE):
+        if loss_mask[i] != 0:
+            value = probs[i, int(target_ids[i])]
+            total += math.log(max(LOSS_FLOOR, min(value, 1.0)))
+    return float(-total / sum_mask)
 
 
 @proc
@@ -619,55 +850,55 @@ def _jit_adam(n: int):
     return jit(simplify(_adam.partial_eval(N=n)))
 
 
-def rmsnorm_fwd(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def rmsnorm_fwd(x: Tensor) -> tuple[Tensor, Tensor]:
     out = empty_like_array(x)
-    rms = empty_array((x.shape[0], 1), dtype=np.float64)
-    JIT_RMSNORM_FWD(out, rms, x, RMS_INV_N, RMS_EPS)
+    rms = empty_array((x.shape[0], 1), dtype=float)
+    JIT_RMSNORM_FWD._raw(out.ctypes.data, rms.ctypes.data, x.ctypes.data, RMS_INV_N.ctypes.data, RMS_EPS.ctypes.data)
     return out, rms
 
 
-def rmsnorm_bwd(dout: np.ndarray, x: np.ndarray, rms: np.ndarray) -> np.ndarray:
+def rmsnorm_bwd(dout: Tensor, x: Tensor, rms: Tensor) -> Tensor:
     dx = empty_like_array(x)
-    JIT_RMSNORM_BWD(dx, dout, x, rms, RMS_INV_N)
+    JIT_RMSNORM_BWD._raw(dx.ctypes.data, dout.ctypes.data, x.ctypes.data, rms.ctypes.data, RMS_INV_N.ctypes.data)
     return dx
 
 
-def attn_fwd(x: np.ndarray, wq: np.ndarray, wk: np.ndarray, wv: np.ndarray, wo: np.ndarray) -> tuple[np.ndarray, AttnCache]:
+def attn_fwd(x: Tensor, wq: Tensor, wk: Tensor, wv: Tensor, wo: Tensor) -> tuple[Tensor, AttnCache]:
     xn, rms = rmsnorm_fwd(x)
-    q = empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM), dtype=np.float64)
+    q = empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM), dtype=float)
     k = empty_like_array(q)
     v = empty_like_array(q)
-    attn_w = empty_array((N_HEAD, BLOCK_SIZE, BLOCK_SIZE), dtype=np.float64)
-    out_flat = empty_array((BLOCK_SIZE, N_EMBED), dtype=np.float64)
-    out = empty_array((BLOCK_SIZE, N_EMBED), dtype=np.float64)
-    JIT_ATTN_FWD(out, xn, rms, q, k, v, attn_w, out_flat, x, wq, wk, wv, wo)
+    attn_w = empty_array((N_HEAD, BLOCK_SIZE, BLOCK_SIZE), dtype=float)
+    out_flat = empty_array((BLOCK_SIZE, N_EMBED), dtype=float)
+    out = empty_array((BLOCK_SIZE, N_EMBED), dtype=float)
+    JIT_ATTN_FWD._raw(out.ctypes.data, xn.ctypes.data, rms.ctypes.data, q.ctypes.data, k.ctypes.data, v.ctypes.data, attn_w.ctypes.data, out_flat.ctypes.data, x.ctypes.data, wq.ctypes.data, wk.ctypes.data, wv.ctypes.data, wo.ctypes.data)
     return out, AttnCache(x, xn, rms, q, k, v, attn_w, out_flat)
 
 
-def attn_bwd(dx: np.ndarray, grads: dict, wq: np.ndarray, wk: np.ndarray, wv: np.ndarray, wo: np.ndarray, c: AttnCache, li: int) -> np.ndarray:
-    out = empty_array((BLOCK_SIZE, N_EMBED), dtype=np.float64)
-    dattn_out = empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM), dtype=np.float64)
-    JIT_ATTN_BWD(out, grads[f"layer{li}.attn_wq"], grads[f"layer{li}.attn_wk"], grads[f"layer{li}.attn_wv"], grads[f"layer{li}.attn_wo"], dattn_out, dx, c.x_pre, c.xn, c.rms, c.q, c.k, c.v, c.attn_w, c.out_flat, wq, wk, wv, wo)
+def attn_bwd(dx: Tensor, grads: dict, wq: Tensor, wk: Tensor, wv: Tensor, wo: Tensor, c: AttnCache, li: int) -> Tensor:
+    out = empty_array((BLOCK_SIZE, N_EMBED), dtype=float)
+    dattn_out = empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM), dtype=float)
+    JIT_ATTN_BWD._raw(out.ctypes.data, grads[f"layer{li}.attn_wq"].ctypes.data, grads[f"layer{li}.attn_wk"].ctypes.data, grads[f"layer{li}.attn_wv"].ctypes.data, grads[f"layer{li}.attn_wo"].ctypes.data, dattn_out.ctypes.data, dx.ctypes.data, c.x_pre.ctypes.data, c.xn.ctypes.data, c.rms.ctypes.data, c.q.ctypes.data, c.k.ctypes.data, c.v.ctypes.data, c.attn_w.ctypes.data, c.out_flat.ctypes.data, wq.ctypes.data, wk.ctypes.data, wv.ctypes.data, wo.ctypes.data)
     return out
 
 
-def mlp_fwd(x: np.ndarray, fc1: np.ndarray, fc2: np.ndarray) -> tuple[np.ndarray, MlpCache]:
-    out = empty_array((BLOCK_SIZE, N_EMBED), dtype=np.float64)
-    xn = empty_array((BLOCK_SIZE, N_EMBED), dtype=np.float64)
-    rms = empty_array((BLOCK_SIZE, 1), dtype=np.float64)
-    h_pre = empty_array((BLOCK_SIZE, 4 * N_EMBED), dtype=np.float64)
+def mlp_fwd(x: Tensor, fc1: Tensor, fc2: Tensor) -> tuple[Tensor, MlpCache]:
+    out = empty_array((BLOCK_SIZE, N_EMBED), dtype=float)
+    xn = empty_array((BLOCK_SIZE, N_EMBED), dtype=float)
+    rms = empty_array((BLOCK_SIZE, 1), dtype=float)
+    h_pre = empty_array((BLOCK_SIZE, 4 * N_EMBED), dtype=float)
     h = empty_like_array(h_pre)
-    JIT_MLP_FWD(out, xn, rms, h_pre, h, x, fc1, fc2, RMS_INV_N, RMS_EPS)
+    JIT_MLP_FWD._raw(out.ctypes.data, xn.ctypes.data, rms.ctypes.data, h_pre.ctypes.data, h.ctypes.data, x.ctypes.data, fc1.ctypes.data, fc2.ctypes.data, RMS_INV_N.ctypes.data, RMS_EPS.ctypes.data)
     return out, MlpCache(x, xn, rms, h_pre, h)
 
 
-def mlp_bwd(dx: np.ndarray, grads: dict, fc1: np.ndarray, fc2: np.ndarray, c: MlpCache, li: int) -> np.ndarray:
-    out = empty_array((BLOCK_SIZE, N_EMBED), dtype=np.float64)
-    JIT_MLP_BWD(out, grads[f"layer{li}.mlp_fc1"], grads[f"layer{li}.mlp_fc2"], dx, c.x_pre, c.xn, c.rms, c.h_pre, c.h, fc1, fc2, RMS_INV_N)
+def mlp_bwd(dx: Tensor, grads: dict, fc1: Tensor, fc2: Tensor, c: MlpCache, li: int) -> Tensor:
+    out = empty_array((BLOCK_SIZE, N_EMBED), dtype=float)
+    JIT_MLP_BWD._raw(out.ctypes.data, grads[f"layer{li}.mlp_fc1"].ctypes.data, grads[f"layer{li}.mlp_fc2"].ctypes.data, dx.ctypes.data, c.x_pre.ctypes.data, c.xn.ctypes.data, c.rms.ctypes.data, c.h_pre.ctypes.data, c.h.ctypes.data, fc1.ctypes.data, fc2.ctypes.data, RMS_INV_N.ctypes.data)
     return out
 
 
-def forward(params: dict, input_ids: np.ndarray, target_ids: np.ndarray, loss_mask: np.ndarray) -> tuple[float, FwdCache]:
+def forward(params: dict, input_ids: Tensor, target_ids: Tensor, loss_mask: Tensor) -> tuple[float, FwdCache]:
     emb = params["wte"][input_ids] + params["wpe"]
     x, rms_init = rmsnorm_fwd(emb)
 
@@ -677,8 +908,8 @@ def forward(params: dict, input_ids: np.ndarray, target_ids: np.ndarray, loss_ma
         x, mc = mlp_fwd(x, params[f"layer{li}.mlp_fc1"], params[f"layer{li}.mlp_fc2"])
         layer_caches.append((ac, mc))
 
-    logits = empty_array((BLOCK_SIZE, params["lm_head"].shape[0]), dtype=np.float64)
-    JIT_LOGITS(logits, x, params["lm_head"])
+    logits = empty_array((BLOCK_SIZE, params["lm_head"].shape[0]), dtype=float)
+    JIT_LOGITS._raw(logits.ctypes.data, x.ctypes.data, params["lm_head"].ctypes.data)
     probs = softmax(logits)
     sum_mask = float(loss_mask.sum())
     loss = cross_entropy_loss(probs, target_ids, loss_mask, sum_mask)
@@ -689,11 +920,12 @@ def backward(params: dict, grads: dict, cache: FwdCache) -> None:
     dlogits = cache.probs.copy()
     inv_sum_mask = 1.0 / cache.sum_mask
     dlogits *= inv_sum_mask
-    dlogits[BLOCK_INDEX, cache.target_ids] -= inv_sum_mask
+    for i in range(BLOCK_SIZE):
+        dlogits[i, int(cache.target_ids[i])] -= inv_sum_mask
     dlogits *= cache.loss_mask[:, None]
 
-    dx = empty_array((BLOCK_SIZE, N_EMBED), dtype=np.float64)
-    JIT_LM_HEAD_BWD(dx, grads["lm_head"], dlogits, cache.x, params["lm_head"])
+    dx = empty_array((BLOCK_SIZE, N_EMBED), dtype=float)
+    JIT_LM_HEAD_BWD._raw(dx.ctypes.data, grads["lm_head"].ctypes.data, dlogits.ctypes.data, cache.x.ctypes.data, params["lm_head"].ctypes.data)
 
     for li in reversed(range(N_LAYER)):
         ac, mc = cache.layer_caches[li]
@@ -701,42 +933,34 @@ def backward(params: dict, grads: dict, cache: FwdCache) -> None:
         dx = attn_bwd(dx, grads, params[f"layer{li}.attn_wq"], params[f"layer{li}.attn_wk"], params[f"layer{li}.attn_wv"], params[f"layer{li}.attn_wo"], ac, li)
 
     demb = rmsnorm_bwd(dx, cache.emb, cache.rms_init)
-    np.add.at(grads["wte"], cache.input_ids, demb)
+    for i in range(BLOCK_SIZE):
+        row = int(cache.input_ids[i])
+        for j in range(N_EMBED):
+            grads["wte"][row, j] += demb[i, j]
     grads["wpe"] += demb
 
 
-def step_fn(params: dict, opt_state: dict, grads: dict, input_ids: np.ndarray, target_ids: np.ndarray, loss_mask: np.ndarray, step: int) -> tuple[float, dict, dict]:
-    JIT_ZERO_GRADS(opt_state["flat_grads"])
+def step_fn(params: dict, opt_state: dict, grads: dict, input_ids: Tensor, target_ids: Tensor, loss_mask: Tensor, step: int) -> tuple[float, dict, dict]:
+    JIT_ZERO_GRADS._raw(opt_state["flat_grads"].ctypes.data)
     loss, cache = forward(params, input_ids, target_ids, loss_mask)
     backward(params, grads, cache)
 
     opt_state["lr"][0] = ADAM_PARAMS["LR_T"][step]
     opt_state["bc1"][0] = ADAM_PARAMS["BC1"][step]
     opt_state["bc2"][0] = ADAM_PARAMS["BC2"][step]
-    JIT_ADAM(
-        opt_state["flat_params"],
-        opt_state["flat_grads"],
-        opt_state["flat_m"],
-        opt_state["flat_v"],
-        ADAM_B1,
-        ADAM_B2,
-        ADAM_EPS,
-        opt_state["lr"],
-        opt_state["bc1"],
-        opt_state["bc2"],
-    )
+    JIT_ADAM._raw(opt_state["flat_params"].ctypes.data, opt_state["flat_grads"].ctypes.data, opt_state["flat_m"].ctypes.data, opt_state["flat_v"].ctypes.data, ADAM_B1.ctypes.data, ADAM_B2.ctypes.data, ADAM_EPS.ctypes.data, opt_state["lr"].ctypes.data, opt_state["bc1"].ctypes.data, opt_state["bc2"].ctypes.data)
     return loss, params, opt_state
 
 
-def tokenize(doc: str, uchars: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def tokenize(doc: str, uchars: list[str]) -> tuple[Tensor, Tensor, Tensor]:
     c2i = {ch: i for i, ch in enumerate(uchars)}
     bos = len(uchars)
     tokens = [bos] + [c2i[ch] for ch in doc] + [bos]
     n = min(BLOCK_SIZE, len(tokens) - 1)
 
-    input_ids = zeros_array((BLOCK_SIZE,), dtype=np.int64)
-    target_ids = zeros_array((BLOCK_SIZE,), dtype=np.int64)
-    loss_mask = zeros_array((BLOCK_SIZE,), dtype=np.float64)
+    input_ids = zeros_array((BLOCK_SIZE,), dtype=int)
+    target_ids = zeros_array((BLOCK_SIZE,), dtype=int)
+    loss_mask = zeros_array((BLOCK_SIZE,), dtype=float)
     for i in range(n):
         input_ids[i] = tokens[i]
         target_ids[i] = tokens[i + 1]
@@ -761,7 +985,7 @@ state_dict = {
 }
 
 total_params = sum(array_numel(state_dict[k].shape) for k in state_dict)
-flat_params = empty_array((total_params,), dtype=np.float64)
+flat_params = empty_array((total_params,), dtype=float)
 offset = 0
 for k in state_dict:
     arr = state_dict[k]
@@ -774,7 +998,7 @@ for k in state_dict:
     state_dict[k] = flat_view(flat_params, offset, shape)
     offset += array_numel(shape)
 
-flat_grads = zeros_array((total_params,), dtype=np.float64)
+flat_grads = zeros_array((total_params,), dtype=float)
 grads = {}
 offset = 0
 for k in state_dict:
@@ -783,13 +1007,13 @@ for k in state_dict:
     offset += array_numel(shape)
 
 opt_state = {
-    "flat_m": zeros_array((total_params,), dtype=np.float64),
-    "flat_v": zeros_array((total_params,), dtype=np.float64),
+    "flat_m": zeros_array((total_params,), dtype=float),
+    "flat_v": zeros_array((total_params,), dtype=float),
     "flat_params": flat_params,
     "flat_grads": flat_grads,
-    "lr": empty_array((1,), dtype=np.float64),
-    "bc1": empty_array((1,), dtype=np.float64),
-    "bc2": empty_array((1,), dtype=np.float64),
+    "lr": empty_array((1,), dtype=float),
+    "bc1": empty_array((1,), dtype=float),
+    "bc2": empty_array((1,), dtype=float),
 }
 
 tokenized = [tokenize(doc, uchars) for doc in docs]
@@ -799,92 +1023,17 @@ JIT_LM_HEAD_BWD = jit(simplify(_lm_head_bwd.partial_eval(V=len(uchars) + 1)))
 JIT_ZERO_GRADS = _jit_zero_1d(total_params)
 JIT_ADAM = _jit_adam(total_params)
 
-JIT_RMSNORM_FWD(empty_array((BLOCK_SIZE, N_EMBED)), empty_array((BLOCK_SIZE, 1)), empty_array((BLOCK_SIZE, N_EMBED)), RMS_INV_N, RMS_EPS)
-JIT_RMSNORM_BWD(empty_array((BLOCK_SIZE, N_EMBED)), empty_array((BLOCK_SIZE, N_EMBED)), empty_array((BLOCK_SIZE, N_EMBED)), empty_array((BLOCK_SIZE, 1)), RMS_INV_N)
-JIT_ATTN_FWD(
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((BLOCK_SIZE, 1)),
-    empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)),
-    empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)),
-    empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)),
-    empty_array((N_HEAD, BLOCK_SIZE, BLOCK_SIZE)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((N_EMBED, N_EMBED)),
-    empty_array((N_EMBED, N_EMBED)),
-    empty_array((N_EMBED, N_EMBED)),
-    empty_array((N_EMBED, N_EMBED)),
-)
-JIT_ATTN_BWD(
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((N_EMBED, N_EMBED)),
-    empty_array((N_EMBED, N_EMBED)),
-    empty_array((N_EMBED, N_EMBED)),
-    empty_array((N_EMBED, N_EMBED)),
-    empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((BLOCK_SIZE, 1)),
-    empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)),
-    empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)),
-    empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)),
-    empty_array((N_HEAD, BLOCK_SIZE, BLOCK_SIZE)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((N_EMBED, N_EMBED)),
-    empty_array((N_EMBED, N_EMBED)),
-    empty_array((N_EMBED, N_EMBED)),
-    empty_array((N_EMBED, N_EMBED)),
-)
-JIT_MLP_FWD(
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((BLOCK_SIZE, 1)),
-    empty_array((BLOCK_SIZE, 4 * N_EMBED)),
-    empty_array((BLOCK_SIZE, 4 * N_EMBED)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((4 * N_EMBED, N_EMBED)),
-    empty_array((N_EMBED, 4 * N_EMBED)),
-    RMS_INV_N,
-    RMS_EPS,
-)
-JIT_MLP_BWD(
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((4 * N_EMBED, N_EMBED)),
-    empty_array((N_EMBED, 4 * N_EMBED)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((BLOCK_SIZE, 1)),
-    empty_array((BLOCK_SIZE, 4 * N_EMBED)),
-    empty_array((BLOCK_SIZE, 4 * N_EMBED)),
-    empty_array((4 * N_EMBED, N_EMBED)),
-    empty_array((N_EMBED, 4 * N_EMBED)),
-    RMS_INV_N,
-)
-JIT_LOGITS(empty_array((BLOCK_SIZE, len(uchars) + 1)), empty_array((BLOCK_SIZE, N_EMBED)), empty_array((len(uchars) + 1, N_EMBED)))
-_jit_softmax_2d(BLOCK_SIZE, len(uchars) + 1)(empty_array((BLOCK_SIZE, len(uchars) + 1)), empty_array((BLOCK_SIZE, len(uchars) + 1)))
-JIT_LM_HEAD_BWD(
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((len(uchars) + 1, N_EMBED)),
-    empty_array((BLOCK_SIZE, len(uchars) + 1)),
-    empty_array((BLOCK_SIZE, N_EMBED)),
-    empty_array((len(uchars) + 1, N_EMBED)),
-)
-JIT_ZERO_GRADS(empty_array((total_params,)))
-JIT_ADAM(
-    empty_array((total_params,)),
-    empty_array((total_params,)),
-    empty_array((total_params,)),
-    empty_array((total_params,)),
-    ADAM_B1,
-    ADAM_B2,
-    ADAM_EPS,
-    empty_array((1,)),
-    empty_array((1,)),
-    empty_array((1,)),
-)
+JIT_RMSNORM_FWD._raw(empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, 1)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, RMS_INV_N.ctypes.data, RMS_EPS.ctypes.data)
+JIT_RMSNORM_BWD._raw(empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, 1)).ctypes.data, RMS_INV_N.ctypes.data)
+JIT_ATTN_FWD._raw(empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, 1)).ctypes.data, empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)).ctypes.data, empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)).ctypes.data, empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)).ctypes.data, empty_array((N_HEAD, BLOCK_SIZE, BLOCK_SIZE)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((N_EMBED, N_EMBED)).ctypes.data, empty_array((N_EMBED, N_EMBED)).ctypes.data, empty_array((N_EMBED, N_EMBED)).ctypes.data, empty_array((N_EMBED, N_EMBED)).ctypes.data)
+JIT_ATTN_BWD._raw(empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((N_EMBED, N_EMBED)).ctypes.data, empty_array((N_EMBED, N_EMBED)).ctypes.data, empty_array((N_EMBED, N_EMBED)).ctypes.data, empty_array((N_EMBED, N_EMBED)).ctypes.data, empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, 1)).ctypes.data, empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)).ctypes.data, empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)).ctypes.data, empty_array((N_HEAD, BLOCK_SIZE, HEAD_DIM)).ctypes.data, empty_array((N_HEAD, BLOCK_SIZE, BLOCK_SIZE)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((N_EMBED, N_EMBED)).ctypes.data, empty_array((N_EMBED, N_EMBED)).ctypes.data, empty_array((N_EMBED, N_EMBED)).ctypes.data, empty_array((N_EMBED, N_EMBED)).ctypes.data)
+JIT_MLP_FWD._raw(empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, 1)).ctypes.data, empty_array((BLOCK_SIZE, 4 * N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, 4 * N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((4 * N_EMBED, N_EMBED)).ctypes.data, empty_array((N_EMBED, 4 * N_EMBED)).ctypes.data, RMS_INV_N.ctypes.data, RMS_EPS.ctypes.data)
+JIT_MLP_BWD._raw(empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((4 * N_EMBED, N_EMBED)).ctypes.data, empty_array((N_EMBED, 4 * N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, 1)).ctypes.data, empty_array((BLOCK_SIZE, 4 * N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, 4 * N_EMBED)).ctypes.data, empty_array((4 * N_EMBED, N_EMBED)).ctypes.data, empty_array((N_EMBED, 4 * N_EMBED)).ctypes.data, RMS_INV_N.ctypes.data)
+JIT_LOGITS._raw(empty_array((BLOCK_SIZE, len(uchars) + 1)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((len(uchars) + 1, N_EMBED)).ctypes.data)
+_jit_softmax_2d(BLOCK_SIZE, len(uchars) + 1)._raw(empty_array((BLOCK_SIZE, len(uchars) + 1)).ctypes.data, empty_array((BLOCK_SIZE, len(uchars) + 1)).ctypes.data)
+JIT_LM_HEAD_BWD._raw(empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((len(uchars) + 1, N_EMBED)).ctypes.data, empty_array((BLOCK_SIZE, len(uchars) + 1)).ctypes.data, empty_array((BLOCK_SIZE, N_EMBED)).ctypes.data, empty_array((len(uchars) + 1, N_EMBED)).ctypes.data)
+JIT_ZERO_GRADS._raw(empty_array((total_params,)).ctypes.data)
+JIT_ADAM._raw(empty_array((total_params,)).ctypes.data, empty_array((total_params,)).ctypes.data, empty_array((total_params,)).ctypes.data, empty_array((total_params,)).ctypes.data, ADAM_B1.ctypes.data, ADAM_B2.ctypes.data, ADAM_EPS.ctypes.data, empty_array((1,)).ctypes.data, empty_array((1,)).ctypes.data, empty_array((1,)).ctypes.data)
 
 step_times = []
 for step in range(NUM_STEPS):

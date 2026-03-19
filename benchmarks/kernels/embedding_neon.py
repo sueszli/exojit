@@ -9,7 +9,7 @@ from kernels.add_neon import neon_loadu_f32x4, neon_storeu_f32x4
 from exojit.main import jit
 from exojit.patches_exo import NEON
 
-_PAR_MIN_ELEMENTS = 524288
+PAR_MIN_ELEMENTS = 524288
 
 
 @proc
@@ -49,4 +49,4 @@ def _embedding_neon_par(D: size, out: f32[D] @ DRAM, row: f32[D] @ DRAM):
 @cache
 def embedding_neon(d: int) -> Callable[..., None]:
     assert d % 16 == 0
-    return jit((_embedding_neon_par if d >= _PAR_MIN_ELEMENTS else _embedding_neon).partial_eval(D=d))
+    return jit((_embedding_neon_par if d >= PAR_MIN_ELEMENTS else _embedding_neon).partial_eval(D=d), raw=True)

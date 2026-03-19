@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import gc as _gc
+import re
 from copy import deepcopy
 from typing import Any
 
 import numpy as np
-from _utils import _call, compile_exo, compile_mlir
+from _utils import compile_exo, compile_mlir
 from exo.API import Procedure
 
 from exojit.main import jit, to_mlir
@@ -22,10 +23,14 @@ def assert_match(proc: Procedure, **kwargs: Any) -> None:
     ir = proc._loopir_proc
     module = to_mlir(proc)
     jit_fn = jit(proc)
+    jit_kwargs = deepcopy(kwargs)
+    jit_args = [jit_kwargs[re.sub(r"_\d+$", "", str(arg.name))] for arg in ir.args]
+    jit_fn(*jit_args)
+    exo_c = compile_exo(proc)(**kwargs)
     results = {
-        "exo_c": compile_exo(proc)(**kwargs),
+        "exo_c": exo_c,
         "xdsl_mlir": compile_mlir(proc, module)(**kwargs),
-        "jit": _call(jit_fn, ir, deepcopy(kwargs)),
+        "jit": {name: np.asarray(jit_kwargs[name], dtype=exo_c[name].dtype) for name in exo_c},
     }
 
     ref = results["exo_c"]

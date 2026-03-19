@@ -6,6 +6,7 @@ dependencies = [
     "exo-lang==1.0.0",
     "xdsl==0.57.3",
     "click",
+    "cffi",
     "lit",
     "numpy",
     "pytest",
