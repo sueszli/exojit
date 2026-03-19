@@ -1,8 +1,6 @@
 # /// script
 # requires-python = "==3.14.*"
-# dependencies = [
-#   "exojit @ git+https://github.com/sueszli/exojit.git",
-# ]
+# dependencies = []
 # ///
 
 import ctypes
@@ -329,6 +327,26 @@ def gather_rows(src: Tensor, row_ids: Tensor) -> Tensor:
     for i in range(rows):
         row = int(row_ids._buf[row_ids._offset + i * row_ids._strides[0]])
         ctypes.memmove(out.ctypes.data + i * row_bytes, src.ctypes.data + row * row_bytes, row_bytes)
+    return out
+
+
+def gather_add_rows(src: Tensor, row_ids: Tensor, addend: Tensor) -> Tensor:
+    if src.ndim != 2 or row_ids.ndim != 1 or addend.ndim != 2:
+        raise TypeError("gather_add_rows expects a 2D source, 1D row ids, and 2D addend")
+    if addend.shape != (row_ids.shape[0], src.shape[1]):
+        raise ValueError("shape mismatch in gather_add_rows")
+    rows = row_ids.shape[0]
+    cols = src.shape[1]
+    out = Tensor((rows, cols), dtype=src.dtype)
+    row_bytes = cols * ctypes.sizeof(src._ctype)
+    for i in range(rows):
+        row = int(row_ids._buf[row_ids._offset + i * row_ids._strides[0]])
+        src_off = src.ctypes.data + row * row_bytes
+        add_off = addend.ctypes.data + i * row_bytes
+        out_off = out.ctypes.data + i * row_bytes
+        ctypes.memmove(out_off, src_off, row_bytes)
+        for j in range(cols):
+            out._buf[out._offset + i * cols + j] += addend._buf[addend._offset + i * cols + j]
     return out
 
 
@@ -981,7 +999,7 @@ def mlp_bwd(dx: Tensor, grads: dict, fc1: Tensor, fc2: Tensor, c: MlpCache, li: 
 
 
 def forward(params: dict, input_ids: Tensor, target_ids: Tensor, loss_mask: Tensor) -> tuple[float, FwdCache]:
-    emb = add_tensors(gather_rows(params["wte"], input_ids), params["wpe"])
+    emb = gather_add_rows(params["wte"], input_ids, params["wpe"])
     x, rms_init = rmsnorm_fwd(emb)
 
     layer_caches = []
