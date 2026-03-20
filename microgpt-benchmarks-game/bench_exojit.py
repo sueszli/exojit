@@ -297,20 +297,6 @@ def bind_layout(cls: type[LayoutT], flat: Tensor, layout: tuple[tuple[int, ...],
     return cls(*views)
 
 
-def param_layout(vocab_size: int) -> tuple[tuple[int, ...], ...]:
-    return (
-        (vocab_size, N_EMBED),
-        (BLOCK_SIZE, N_EMBED),
-        (vocab_size, N_EMBED),
-        (N_EMBED, N_EMBED),
-        (N_EMBED, N_EMBED),
-        (N_EMBED, N_EMBED),
-        (N_EMBED, N_EMBED),
-        (4 * N_EMBED, N_EMBED),
-        (N_EMBED, 4 * N_EMBED),
-    )
-
-
 def scratch_layout(vocab_size: int) -> tuple[tuple[int, ...], ...]:
     return (
         (BLOCK_SIZE, N_EMBED),
@@ -377,7 +363,17 @@ if __name__ == "__main__":
     uchars = sorted(set("".join(docs)))
     vocab_size = len(uchars) + 1
 
-    params_layout = param_layout(vocab_size)
+    params_layout = (
+        (vocab_size, N_EMBED),
+        (BLOCK_SIZE, N_EMBED),
+        (vocab_size, N_EMBED),
+        (N_EMBED, N_EMBED),
+        (N_EMBED, N_EMBED),
+        (N_EMBED, N_EMBED),
+        (N_EMBED, N_EMBED),
+        (4 * N_EMBED, N_EMBED),
+        (N_EMBED, 4 * N_EMBED),
+    )
     flat_params = empty((layout_numel(params_layout),))
     params = bind_layout(Params, flat_params, params_layout)
     for _, tensor in named_params(params):
