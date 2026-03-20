@@ -5,10 +5,8 @@ import random
 import sys
 import time
 from collections import namedtuple
-from dataclasses import dataclass
 from math import prod
 from pathlib import Path
-from typing import TypeVar
 
 repo = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo))
@@ -212,67 +210,9 @@ def bwd(vocab_size: size, dx1: f64[BLOCK_SIZE, N_EMBED] @ DRAM, g_lm_head: f64[v
     embed_rms_bwd(vocab_size, g_wte, g_wpe, dx1, emb, rms_init, inv_n, input_ids)
 
 
-@dataclass(frozen=True)
-class TokenBatch:
-    input_ids: Tensor
-    target_ids: Tensor
-    loss_mask: Tensor
-    inv_sum_mask: Tensor
-
-
-@dataclass(frozen=True)
-class Params:
-    wte: Tensor
-    wpe: Tensor
-    lm_head: Tensor
-    attn_wq: Tensor
-    attn_wk: Tensor
-    attn_wv: Tensor
-    attn_wo: Tensor
-    mlp_fc1: Tensor
-    mlp_fc2: Tensor
-
-
-@dataclass(frozen=True)
-class Scratch:
-    emb: Tensor
-    rms_init: Tensor
-    x0: Tensor
-    x1: Tensor
-    logits: Tensor
-    attn_xn: Tensor
-    attn_rms: Tensor
-    q: Tensor
-    k: Tensor
-    v: Tensor
-    attn_w: Tensor
-    out_flat: Tensor
-    mlp_xn: Tensor
-    mlp_rms: Tensor
-    h_pre: Tensor
-    h: Tensor
-    dh: Tensor
-    dh_pre: Tensor
-    dx0: Tensor
-    dx1: Tensor
-    dattn_out: Tensor
-
-
-@dataclass(frozen=True)
-class Scalars:
-    opt_lr: Tensor
-    opt_bc1: Tensor
-    opt_bc2: Tensor
-    rms_inv_n: Tensor
-
-
-@dataclass(frozen=True)
-class OptState:
-    m: Tensor
-    v: Tensor
-
-
-LayoutT = TypeVar("LayoutT")
+PARAMS_FIELDS = ("wte", "wpe", "lm_head", "attn_wq", "attn_wk", "attn_wv", "attn_wo", "mlp_fc1", "mlp_fc2")
+SCRATCH_FIELDS = ("emb", "rms_init", "x0", "x1", "logits", "attn_xn", "attn_rms", "q", "k", "v", "attn_w", "out_flat", "mlp_xn", "mlp_rms", "h_pre", "h", "dh", "dh_pre", "dx0", "dx1", "dattn_out")
+SCALARS_FIELDS = ("opt_lr", "opt_bc1", "opt_bc2", "rms_inv_n")
 
 
 def init_normal_(tensor: Tensor, *, scale: float) -> None:
@@ -288,13 +228,13 @@ def layout_numel(layout: tuple[tuple[int, ...], ...]) -> int:
     return sum(prod(shape) for shape in layout)
 
 
-def bind_layout(cls: type[LayoutT], flat: Tensor, layout: tuple[tuple[int, ...], ...]) -> LayoutT:
+def bind_layout(fields: tuple[str, ...], flat: Tensor, layout: tuple[tuple[int, ...], ...]) -> dict[str, Tensor]:
     offset = 0
-    views = []
-    for shape in layout:
-        views.append(flat.view(shape, offset=offset))
+    result = {}
+    for name, shape in zip(fields, layout):
+        result[name] = flat.view(shape, offset=offset)
         offset += prod(shape)
-    return cls(*views)
+    return result
 
 
 def scratch_layout(vocab_size: int) -> tuple[tuple[int, ...], ...]:
@@ -323,21 +263,21 @@ def scratch_layout(vocab_size: int) -> tuple[tuple[int, ...], ...]:
     )
 
 
-def named_params(params: Params) -> tuple[tuple[str, Tensor], ...]:
+def named_params(params: dict[str, Tensor]) -> tuple[tuple[str, Tensor], ...]:
     return (
-        ("wte", params.wte),
-        ("wpe", params.wpe),
-        ("lm_head", params.lm_head),
-        ("layer0.attn_wq", params.attn_wq),
-        ("layer0.attn_wk", params.attn_wk),
-        ("layer0.attn_wv", params.attn_wv),
-        ("layer0.attn_wo", params.attn_wo),
-        ("layer0.mlp_fc1", params.mlp_fc1),
-        ("layer0.mlp_fc2", params.mlp_fc2),
+        ("wte", params["wte"]),
+        ("wpe", params["wpe"]),
+        ("lm_head", params["lm_head"]),
+        ("layer0.attn_wq", params["attn_wq"]),
+        ("layer0.attn_wk", params["attn_wk"]),
+        ("layer0.attn_wv", params["attn_wv"]),
+        ("layer0.attn_wo", params["attn_wo"]),
+        ("layer0.mlp_fc1", params["mlp_fc1"]),
+        ("layer0.mlp_fc2", params["mlp_fc2"]),
     )
 
 
-def tokenize(doc: str, c2i: dict[str, int], bos: int) -> TokenBatch:
+def tokenize(doc: str, c2i: dict[str, int], bos: int) -> dict[str, Tensor]:
     tokens = [bos] + [c2i[ch] for ch in doc] + [bos]
     n = min(BLOCK_SIZE, len(tokens) - 1)
     inputs = zeros((BLOCK_SIZE,), dtype=int)
@@ -349,7 +289,7 @@ def tokenize(doc: str, c2i: dict[str, int], bos: int) -> TokenBatch:
         loss_mask[i] = 1.0
     inv_sum_mask = empty((1,))
     inv_sum_mask[0] = 1.0 / max(1, n)
-    return TokenBatch(inputs, targets, loss_mask, inv_sum_mask)
+    return {"input_ids": inputs, "target_ids": targets, "loss_mask": loss_mask, "inv_sum_mask": inv_sum_mask}
 
 
 if __name__ == "__main__":
@@ -375,17 +315,17 @@ if __name__ == "__main__":
         (N_EMBED, 4 * N_EMBED),
     )
     flat_params = empty((layout_numel(params_layout),))
-    params = bind_layout(Params, flat_params, params_layout)
+    params = bind_layout(PARAMS_FIELDS, flat_params, params_layout)
     for _, tensor in named_params(params):
         init_normal_(tensor, scale=0.08)
 
     flat_grads = zeros((flat_params.numel,))
-    grads = bind_layout(Params, flat_grads, params_layout)
-    opt_state = OptState(m=zeros((flat_params.numel,)), v=zeros((flat_params.numel,)))
+    grads = bind_layout(PARAMS_FIELDS, flat_grads, params_layout)
+    opt_state = {"m": zeros((flat_params.numel,)), "v": zeros((flat_params.numel,))}
 
-    scratch = bind_layout(Scratch, empty((layout_numel(scratch_layout(vocab_size)),)), scratch_layout(vocab_size))
-    scalars = bind_layout(Scalars, empty((layout_numel(SCALAR_LAYOUT),)), SCALAR_LAYOUT)
-    scalars.rms_inv_n[0] = 1.0 / N_EMBED
+    scratch = bind_layout(SCRATCH_FIELDS, empty((layout_numel(scratch_layout(vocab_size)),)), scratch_layout(vocab_size))
+    scalars = bind_layout(SCALARS_FIELDS, empty((layout_numel(SCALAR_LAYOUT),)), SCALAR_LAYOUT)
+    scalars["rms_inv_n"][0] = 1.0 / N_EMBED
 
     adam_step = jit(simplify(adam.partial_eval(N=flat_params.numel)))._raw
 
@@ -393,8 +333,8 @@ if __name__ == "__main__":
     bos = vocab_size - 1
     tokenized = [tokenize(doc, c2i, bos) for doc in docs]
 
-    g_wte_bytes = grads.wte.numel * grads.wte.itemsize
-    g_wpe_bytes = grads.wpe.numel * grads.wpe.itemsize
+    g_wte_bytes = grads["wte"].numel * grads["wte"].itemsize
+    g_wpe_bytes = grads["wpe"].numel * grads["wpe"].itemsize
     lr_t = [0.01 * (1.0 - step / num_steps) for step in range(num_steps)]
     bc1 = [1.0 - 0.85 ** (step + 1) for step in range(num_steps)]
     bc2 = [1.0 - 0.99 ** (step + 1) for step in range(num_steps)]
@@ -403,19 +343,19 @@ if __name__ == "__main__":
     step_times = []
 
     for step in range(num_steps):
-        scalars.opt_lr[0] = lr_t[step]
-        scalars.opt_bc1[0] = bc1[step]
-        scalars.opt_bc2[0] = bc2[step]
+        scalars["opt_lr"][0] = lr_t[step]
+        scalars["opt_bc1"][0] = bc1[step]
+        scalars["opt_bc2"][0] = bc2[step]
         batch = tokenized[step % len(tokenized)]
-        memset(grads.wte.ptr, 0, g_wte_bytes)
-        memset(grads.wpe.ptr, 0, g_wpe_bytes)
+        memset(grads["wte"].ptr, 0, g_wte_bytes)
+        memset(grads["wpe"].ptr, 0, g_wpe_bytes)
         t0 = perf_counter()
 
-        fwd_step(vocab_size, scratch.emb.ptr, scratch.x0.ptr, scratch.rms_init.ptr, scratch.x1.ptr, scratch.attn_xn.ptr, scratch.attn_rms.ptr, scratch.q.ptr, scratch.k.ptr, scratch.v.ptr, scratch.attn_w.ptr, scratch.out_flat.ptr, scratch.mlp_xn.ptr, scratch.mlp_rms.ptr, scratch.h_pre.ptr, scratch.h.ptr, scratch.dx0.ptr, params.wte.ptr, params.wpe.ptr, params.attn_wq.ptr, params.attn_wk.ptr, params.attn_wv.ptr, params.attn_wo.ptr, params.mlp_fc1.ptr, params.mlp_fc2.ptr, scalars.rms_inv_n.ptr, batch.input_ids.ptr)
+        fwd_step(vocab_size, scratch["emb"].ptr, scratch["x0"].ptr, scratch["rms_init"].ptr, scratch["x1"].ptr, scratch["attn_xn"].ptr, scratch["attn_rms"].ptr, scratch["q"].ptr, scratch["k"].ptr, scratch["v"].ptr, scratch["attn_w"].ptr, scratch["out_flat"].ptr, scratch["mlp_xn"].ptr, scratch["mlp_rms"].ptr, scratch["h_pre"].ptr, scratch["h"].ptr, scratch["dx0"].ptr, params["wte"].ptr, params["wpe"].ptr, params["attn_wq"].ptr, params["attn_wk"].ptr, params["attn_wv"].ptr, params["attn_wo"].ptr, params["mlp_fc1"].ptr, params["mlp_fc2"].ptr, scalars["rms_inv_n"].ptr, batch["input_ids"].ptr)
 
-        bwd_step(vocab_size, scratch.dx1.ptr, grads.lm_head.ptr, scratch.logits.ptr, scratch.dx0.ptr, params.lm_head.ptr, batch.loss_mask.ptr, batch.inv_sum_mask.ptr, batch.target_ids.ptr, grads.mlp_fc2.ptr, grads.mlp_fc1.ptr, scratch.dh.ptr, scratch.dh_pre.ptr, grads.attn_wq.ptr, grads.attn_wk.ptr, grads.attn_wv.ptr, grads.attn_wo.ptr, scratch.dattn_out.ptr, grads.wte.ptr, grads.wpe.ptr, scratch.emb.ptr, scratch.rms_init.ptr, scratch.x0.ptr, scratch.attn_xn.ptr, scratch.attn_rms.ptr, scratch.q.ptr, scratch.k.ptr, scratch.v.ptr, scratch.attn_w.ptr, scratch.out_flat.ptr, scratch.x1.ptr, scratch.mlp_xn.ptr, scratch.mlp_rms.ptr, scratch.h_pre.ptr, scratch.h.ptr, params.attn_wq.ptr, params.attn_wk.ptr, params.attn_wv.ptr, params.attn_wo.ptr, params.mlp_fc1.ptr, params.mlp_fc2.ptr, scalars.rms_inv_n.ptr, batch.input_ids.ptr)
+        bwd_step(vocab_size, scratch["dx1"].ptr, grads["lm_head"].ptr, scratch["logits"].ptr, scratch["dx0"].ptr, params["lm_head"].ptr, batch["loss_mask"].ptr, batch["inv_sum_mask"].ptr, batch["target_ids"].ptr, grads["mlp_fc2"].ptr, grads["mlp_fc1"].ptr, scratch["dh"].ptr, scratch["dh_pre"].ptr, grads["attn_wq"].ptr, grads["attn_wk"].ptr, grads["attn_wv"].ptr, grads["attn_wo"].ptr, scratch["dattn_out"].ptr, grads["wte"].ptr, grads["wpe"].ptr, scratch["emb"].ptr, scratch["rms_init"].ptr, scratch["x0"].ptr, scratch["attn_xn"].ptr, scratch["attn_rms"].ptr, scratch["q"].ptr, scratch["k"].ptr, scratch["v"].ptr, scratch["attn_w"].ptr, scratch["out_flat"].ptr, scratch["x1"].ptr, scratch["mlp_xn"].ptr, scratch["mlp_rms"].ptr, scratch["h_pre"].ptr, scratch["h"].ptr, params["attn_wq"].ptr, params["attn_wk"].ptr, params["attn_wv"].ptr, params["attn_wo"].ptr, params["mlp_fc1"].ptr, params["mlp_fc2"].ptr, scalars["rms_inv_n"].ptr, batch["input_ids"].ptr)
 
-        adam_step(flat_params.ptr, flat_grads.ptr, opt_state.m.ptr, opt_state.v.ptr, scalars.opt_lr.ptr, scalars.opt_bc1.ptr, scalars.opt_bc2.ptr)
+        adam_step(flat_params.ptr, flat_grads.ptr, opt_state["m"].ptr, opt_state["v"].ptr, scalars["opt_lr"].ptr, scalars["opt_bc1"].ptr, scalars["opt_bc2"].ptr)
 
         step_times.append(perf_counter() - t0)
 
