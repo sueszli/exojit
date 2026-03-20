@@ -4,8 +4,7 @@ from collections import namedtuple
 from pathlib import Path
 
 import numpy as np
-from utils.times import save_times
-from utils.weights import assert_weights_match
+from utils import assert_weights_match, save_times
 
 random.seed(42)
 

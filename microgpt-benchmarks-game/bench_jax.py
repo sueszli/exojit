@@ -12,8 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from utils.times import save_times
-from utils.weights import assert_weights_match
+from utils import assert_weights_match, save_times
 
 jax.config.update("jax_enable_x64", True)
 random.seed(42)
