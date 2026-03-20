@@ -66,7 +66,7 @@ def relu_bwd(M: size, N: size, out: f64[M, N] @ DRAM, dout: f64[M, N] @ DRAM, x_
 
 
 @proc
-def rmsnorm(M: size, N: size, out: f64[M, N] @ DRAM, rms: f64[M, 1] @ DRAM, x: f64[M, N] @ DRAM, inv_n: f64[1] @ DRAM, eps: f64[1] @ DRAM):
+def rmsnorm(M: size, N: size, out: f64[M, N] @ DRAM, rms: f64[M, 1] @ DRAM, x: f64[M, N] @ DRAM, inv_n: f64[1] @ DRAM):
     # out = x / sqrt(mean(x^2) + eps)
     for i in seq(0, M):
         sumsq: f64 @ Stack
@@ -74,7 +74,7 @@ def rmsnorm(M: size, N: size, out: f64[M, N] @ DRAM, rms: f64[M, 1] @ DRAM, x: f
         sumsq = 0.0
         for j in seq(0, N):
             sumsq += x[i, j] * x[i, j]
-        scale = 1.0 / sqrt(sumsq * inv_n[0] + eps[0])
+        scale = 1.0 / sqrt(sumsq * inv_n[0] + 1e-5)
         rms[i, 0] = scale
         for j in seq(0, N):
             out[i, j] = x[i, j] * scale

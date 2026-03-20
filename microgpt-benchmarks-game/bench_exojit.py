@@ -46,14 +46,14 @@ def lm_head_step_fused(vocab_size: size, dx: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dw
 
 
 @proc
-def embed_rms_fwd(vocab_size: size, emb: f64[BLOCK_SIZE, N_EMBED] @ DRAM, out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, wte: f64[vocab_size, N_EMBED] @ DRAM, wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, inv_n: f64[1] @ DRAM, eps: f64[1] @ DRAM, input_ids: size[BLOCK_SIZE] @ DRAM):
+def embed_rms_fwd(vocab_size: size, emb: f64[BLOCK_SIZE, N_EMBED] @ DRAM, out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, wte: f64[vocab_size, N_EMBED] @ DRAM, wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, inv_n: f64[1] @ DRAM, input_ids: size[BLOCK_SIZE] @ DRAM):
     for t in seq(0, BLOCK_SIZE):
         for e in seq(0, N_EMBED):
             emb[t, e] = wpe[t, e]
             for v in seq(0, vocab_size):
                 if v == input_ids[t]:
                     emb[t, e] += wte[v, e]
-    rmsnorm(BLOCK_SIZE, N_EMBED, out, rms, emb, inv_n, eps)
+    rmsnorm(BLOCK_SIZE, N_EMBED, out, rms, emb, inv_n)
 
 
 @proc
@@ -77,8 +77,8 @@ def embed_rms_bwd(vocab_size: size, g_wte: f64[vocab_size, N_EMBED] @ DRAM, g_wp
 
 
 @proc
-def attn_fwd_fused(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, xn: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, q: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, k: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, v: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, attn_w: f64[N_HEAD * BLOCK_SIZE, BLOCK_SIZE] @ DRAM, out_flat: f64[BLOCK_SIZE, N_EMBED] @ DRAM, x: f64[BLOCK_SIZE, N_EMBED] @ DRAM, wq: f64[N_EMBED, N_EMBED] @ DRAM, wk: f64[N_EMBED, N_EMBED] @ DRAM, wv: f64[N_EMBED, N_EMBED] @ DRAM, wo: f64[N_EMBED, N_EMBED] @ DRAM, inv_n: f64[1] @ DRAM, eps: f64[1] @ DRAM):
-    rmsnorm(BLOCK_SIZE, N_EMBED, xn, rms, x, inv_n, eps)
+def attn_fwd_fused(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, xn: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, q: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, k: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, v: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, attn_w: f64[N_HEAD * BLOCK_SIZE, BLOCK_SIZE] @ DRAM, out_flat: f64[BLOCK_SIZE, N_EMBED] @ DRAM, x: f64[BLOCK_SIZE, N_EMBED] @ DRAM, wq: f64[N_EMBED, N_EMBED] @ DRAM, wk: f64[N_EMBED, N_EMBED] @ DRAM, wv: f64[N_EMBED, N_EMBED] @ DRAM, wo: f64[N_EMBED, N_EMBED] @ DRAM, inv_n: f64[1] @ DRAM):
+    rmsnorm(BLOCK_SIZE, N_EMBED, xn, rms, x, inv_n)
 
     for h in seq(0, N_HEAD):
         for t in seq(0, BLOCK_SIZE):
@@ -126,8 +126,8 @@ def attn_fwd_fused(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, xn: f64[BLOCK_SIZE, N_E
 
 
 @proc
-def mlp_fwd_fused(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, xn: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, h_pre: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, h: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, x: f64[BLOCK_SIZE, N_EMBED] @ DRAM, fc1: f64[4 * N_EMBED, N_EMBED] @ DRAM, fc2: f64[N_EMBED, 4 * N_EMBED] @ DRAM, inv_n: f64[1] @ DRAM, eps: f64[1] @ DRAM):
-    rmsnorm(BLOCK_SIZE, N_EMBED, xn, rms, x, inv_n, eps)
+def mlp_fwd_fused(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, xn: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, h_pre: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, h: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, x: f64[BLOCK_SIZE, N_EMBED] @ DRAM, fc1: f64[4 * N_EMBED, N_EMBED] @ DRAM, fc2: f64[N_EMBED, 4 * N_EMBED] @ DRAM, inv_n: f64[1] @ DRAM):
+    rmsnorm(BLOCK_SIZE, N_EMBED, xn, rms, x, inv_n)
     matmul_right_t(BLOCK_SIZE, 4 * N_EMBED, N_EMBED, h_pre, xn, fc1)
     relu(BLOCK_SIZE, 4 * N_EMBED, h, h_pre)
     matmul_right_t(BLOCK_SIZE, N_EMBED, 4 * N_EMBED, out, h, fc2)
@@ -258,7 +258,6 @@ class Scalars:
     opt_bc1: Tensor
     opt_bc2: Tensor
     rms_inv_n: Tensor
-    rms_eps: Tensor
 
 
 @dataclass(frozen=True)
@@ -276,7 +275,7 @@ def init_normal_(tensor: Tensor, *, scale: float) -> None:
         flat[i] = random.gauss(0.0, scale)
 
 
-SCALAR_LAYOUT = ((1,), (1,), (1,), (1,), (1,))
+SCALAR_LAYOUT = ((1,), (1,), (1,), (1,))
 
 
 def layout_numel(layout: tuple[tuple[int, ...], ...]) -> int:
@@ -394,7 +393,6 @@ if __name__ == "__main__":
     scratch = bind_layout(Scratch, empty((layout_numel(scratch_layout(vocab_size)),)), scratch_layout(vocab_size))
     scalars = bind_layout(Scalars, empty((layout_numel(SCALAR_LAYOUT),)), SCALAR_LAYOUT)
     scalars.rms_inv_n[0] = 1.0 / N_EMBED
-    scalars.rms_eps[0] = 1e-5
 
     lm_head_step = jit(lm_head_step_fused, raw=True)
     embed_rms_fwd_step = jit(embed_rms_fwd, raw=True)
@@ -423,11 +421,11 @@ if __name__ == "__main__":
         memset(grads.wpe.ptr, 0, g_wpe_bytes)
         t0 = perf_counter()
 
-        embed_rms_fwd_step(vocab_size, scratch.emb.ptr, scratch.x0.ptr, scratch.rms_init.ptr, params.wte.ptr, params.wpe.ptr, scalars.rms_inv_n.ptr, scalars.rms_eps.ptr, batch.input_ids.ptr)
+        embed_rms_fwd_step(vocab_size, scratch.emb.ptr, scratch.x0.ptr, scratch.rms_init.ptr, params.wte.ptr, params.wpe.ptr, scalars.rms_inv_n.ptr, batch.input_ids.ptr)
 
-        attn_fwd(scratch.x1.ptr, scratch.attn_xn.ptr, scratch.attn_rms.ptr, scratch.q.ptr, scratch.k.ptr, scratch.v.ptr, scratch.attn_w.ptr, scratch.out_flat.ptr, scratch.x0.ptr, params.attn_wq.ptr, params.attn_wk.ptr, params.attn_wv.ptr, params.attn_wo.ptr, scalars.rms_inv_n.ptr, scalars.rms_eps.ptr)
+        attn_fwd(scratch.x1.ptr, scratch.attn_xn.ptr, scratch.attn_rms.ptr, scratch.q.ptr, scratch.k.ptr, scratch.v.ptr, scratch.attn_w.ptr, scratch.out_flat.ptr, scratch.x0.ptr, params.attn_wq.ptr, params.attn_wk.ptr, params.attn_wv.ptr, params.attn_wo.ptr, scalars.rms_inv_n.ptr)
 
-        mlp_fwd(scratch.dx0.ptr, scratch.mlp_xn.ptr, scratch.mlp_rms.ptr, scratch.h_pre.ptr, scratch.h.ptr, scratch.x1.ptr, params.mlp_fc1.ptr, params.mlp_fc2.ptr, scalars.rms_inv_n.ptr, scalars.rms_eps.ptr)
+        mlp_fwd(scratch.dx0.ptr, scratch.mlp_xn.ptr, scratch.mlp_rms.ptr, scratch.h_pre.ptr, scratch.h.ptr, scratch.x1.ptr, params.mlp_fc1.ptr, params.mlp_fc2.ptr, scalars.rms_inv_n.ptr)
 
         lm_head_step(vocab_size, scratch.dx1.ptr, grads.lm_head.ptr, scratch.logits.ptr, scratch.dx0.ptr, params.lm_head.ptr, batch.loss_mask.ptr, batch.inv_sum_mask.ptr, batch.target_ids.ptr)
 
