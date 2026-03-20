@@ -415,6 +415,14 @@ class Buf:
     def view(self, n, off=0):
         return Buf(n, float, self._a, self._o + off)
 
+    def partition(self, shapes: dict[str, tuple]) -> dict[str, "Buf"]:
+        off = 0
+        d: dict[str, Buf] = {}
+        for name, shape in shapes.items():
+            d[name] = self.view(prod(shape), off)
+            off += prod(shape)
+        return d
+
     def __getitem__(self, i):
         return self._a[self._o + i]
 
@@ -489,27 +497,18 @@ SCRATCH_SHAPES: dict[str, tuple] = {
 }
 
 
-def bind(shapes: dict[str, tuple], flat: Buf) -> dict[str, Buf]:
-    off = 0
-    d: dict[str, Buf] = {}
-    for name, shape in shapes.items():
-        d[name] = flat.view(prod(shape), off)
-        off += prod(shape)
-    return d
-
-
 if __name__ == "__main__":
     flat_params = Buf(sum(prod(s) for s in PARAMS_SHAPES.values()))
-    params = bind(PARAMS_SHAPES, flat_params)
+    params = flat_params.partition(PARAMS_SHAPES)
     for buf in params.values():
         for i in range(buf.n):
             buf[i] = random.gauss(0.0, 0.08)
 
     flat_grads = Buf(flat_params.n)
-    grads = bind(PARAMS_SHAPES, flat_grads)
+    grads = flat_grads.partition(PARAMS_SHAPES)
     opt_m, opt_v = Buf(flat_params.n), Buf(flat_params.n)
 
-    scratch = bind(SCRATCH_SHAPES, Buf(sum(prod(s) for s in SCRATCH_SHAPES.values())))
+    scratch = Buf(sum(prod(s) for s in SCRATCH_SHAPES.values())).partition(SCRATCH_SHAPES)
     opt_lr, opt_bc1, opt_bc2 = Buf(1), Buf(1), Buf(1)
 
     args = {
@@ -532,7 +531,6 @@ if __name__ == "__main__":
     bc1 = [1.0 - 0.9 ** (s + 1) for s in range(NUM_STEPS)]
     bc2 = [1.0 - 0.999 ** (s + 1) for s in range(NUM_STEPS)]
 
-    memset, perf_counter = ctypes.memset, time.perf_counter
     step_times = []
     for step, (lr, b1, b2) in enumerate(zip(lr_t, bc1, bc2)):
         opt_lr[0] = lr
@@ -540,11 +538,11 @@ if __name__ == "__main__":
         opt_bc2[0] = b2
         batch = tokenized[step % len(tokenized)]
         for ptr, n in grads_to_clear:
-            memset(ptr, 0, n)
-        t0 = perf_counter()
+            ctypes.memset(ptr, 0, n)
+        t0 = time.perf_counter()
         args.update({k: batch[k].ptr for k in ("loss_mask", "inv_sum_mask", "input_ids", "target_ids")})
         train_step(**args)
-        step_times.append(perf_counter() - t0)
+        step_times.append(time.perf_counter() - t0)
 
     save_times(step_times)
     W = namedtuple("W", ["data"])
