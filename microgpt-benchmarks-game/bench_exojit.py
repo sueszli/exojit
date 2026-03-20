@@ -20,9 +20,8 @@ sys.path.insert(0, str(repo))
 from exo import *
 from exo.libs.externs import expf, select
 from exo.stdlib.scheduling import simplify
-from microgpt_kernels import embed_rms_bwd_tokens, embed_rms_fwd_tokens, lm_head_step_fused
-from utils.exo_alloc import Tensor, empty, full, normal, pack_tensors, tensor_ptrs, view_tensors, zeros_like
-from utils.exo_kernels import adam, add, fill, matmul_left_t, matmul_right_t, relu, rmsnorm, rmsnorm_bwd
+from utils.exo_alloc import Tensor, alloc_layout, empty, full, view_layout, zeros_like
+from utils.exo_kernels import adam, add, fill, matmul, matmul_left_t, matmul_right_t, relu, rmsnorm, rmsnorm_bwd
 from utils.times import save_times
 from utils.weights import assert_weights_match
 
@@ -43,6 +42,218 @@ class TokenBatch:
     target_ids: np.ndarray
     loss_mask: np.ndarray
     inv_sum_mask: np.ndarray
+
+
+@dataclass(frozen=True)
+class Params:
+    wte: Tensor
+    wpe: Tensor
+    lm_head: Tensor
+    attn_wq: Tensor
+    attn_wk: Tensor
+    attn_wv: Tensor
+    attn_wo: Tensor
+    mlp_fc1: Tensor
+    mlp_fc2: Tensor
+
+
+@dataclass(frozen=True)
+class Scratch:
+    emb: Tensor
+    rms_init: Tensor
+    x0: Tensor
+    x1: Tensor
+    logits: Tensor
+    attn_xn: Tensor
+    attn_rms: Tensor
+    q: Tensor
+    k: Tensor
+    v: Tensor
+    attn_w: Tensor
+    out_flat: Tensor
+    mlp_xn: Tensor
+    mlp_rms: Tensor
+    h_pre: Tensor
+    h: Tensor
+    dx0: Tensor
+    dx1: Tensor
+    dattn_out: Tensor
+
+
+@dataclass(frozen=True)
+class Scalars:
+    opt_lr: Tensor
+    opt_bc1: Tensor
+    opt_bc2: Tensor
+    zero: Tensor
+    one: Tensor
+    rms_inv_n: Tensor
+    rms_eps: Tensor
+    adam_b1: Tensor
+    adam_b2: Tensor
+    adam_eps: Tensor
+
+
+def init_normal_(tensor: Tensor, *, scale: float) -> None:
+    flat = tensor.view((tensor.numel,))
+    for i in range(tensor.numel):
+        flat[i] = random.gauss(0.0, scale)
+
+
+def param_layout(vocab_size: int) -> dict[str, tuple[int, ...]]:
+    return {
+        "wte": (vocab_size, N_EMBED),
+        "wpe": (BLOCK_SIZE, N_EMBED),
+        "lm_head": (vocab_size, N_EMBED),
+        "attn_wq": (N_EMBED, N_EMBED),
+        "attn_wk": (N_EMBED, N_EMBED),
+        "attn_wv": (N_EMBED, N_EMBED),
+        "attn_wo": (N_EMBED, N_EMBED),
+        "mlp_fc1": (4 * N_EMBED, N_EMBED),
+        "mlp_fc2": (N_EMBED, 4 * N_EMBED),
+    }
+
+
+def scratch_layout(vocab_size: int) -> dict[str, tuple[int, ...]]:
+    return {
+        "emb": (BLOCK_SIZE, N_EMBED),
+        "rms_init": (BLOCK_SIZE, 1),
+        "x0": (BLOCK_SIZE, N_EMBED),
+        "x1": (BLOCK_SIZE, N_EMBED),
+        "logits": (BLOCK_SIZE, vocab_size),
+        "attn_xn": (BLOCK_SIZE, N_EMBED),
+        "attn_rms": (BLOCK_SIZE, 1),
+        "q": (N_HEAD, BLOCK_SIZE, HEAD_DIM),
+        "k": (N_HEAD, BLOCK_SIZE, HEAD_DIM),
+        "v": (N_HEAD, BLOCK_SIZE, HEAD_DIM),
+        "attn_w": (N_HEAD, BLOCK_SIZE, BLOCK_SIZE),
+        "out_flat": (BLOCK_SIZE, N_EMBED),
+        "mlp_xn": (BLOCK_SIZE, N_EMBED),
+        "mlp_rms": (BLOCK_SIZE, 1),
+        "h_pre": (BLOCK_SIZE, 4 * N_EMBED),
+        "h": (BLOCK_SIZE, 4 * N_EMBED),
+        "dx0": (BLOCK_SIZE, N_EMBED),
+        "dx1": (BLOCK_SIZE, N_EMBED),
+        "dattn_out": (N_HEAD, BLOCK_SIZE, HEAD_DIM),
+    }
+
+
+def bind_params(views: dict[str, Tensor]) -> Params:
+    return Params(
+        wte=views["wte"],
+        wpe=views["wpe"],
+        lm_head=views["lm_head"],
+        attn_wq=views["attn_wq"],
+        attn_wk=views["attn_wk"],
+        attn_wv=views["attn_wv"],
+        attn_wo=views["attn_wo"],
+        mlp_fc1=views["mlp_fc1"],
+        mlp_fc2=views["mlp_fc2"],
+    )
+
+
+def bind_scratch(views: dict[str, Tensor]) -> Scratch:
+    return Scratch(
+        emb=views["emb"],
+        rms_init=views["rms_init"],
+        x0=views["x0"],
+        x1=views["x1"],
+        logits=views["logits"],
+        attn_xn=views["attn_xn"],
+        attn_rms=views["attn_rms"],
+        q=views["q"],
+        k=views["k"],
+        v=views["v"],
+        attn_w=views["attn_w"],
+        out_flat=views["out_flat"],
+        mlp_xn=views["mlp_xn"],
+        mlp_rms=views["mlp_rms"],
+        h_pre=views["h_pre"],
+        h=views["h"],
+        dx0=views["dx0"],
+        dx1=views["dx1"],
+        dattn_out=views["dattn_out"],
+    )
+
+
+def params_dict(params: Params) -> dict[str, Tensor]:
+    return {
+        "wte": params.wte,
+        "wpe": params.wpe,
+        "lm_head": params.lm_head,
+        "layer0.attn_wq": params.attn_wq,
+        "layer0.attn_wk": params.attn_wk,
+        "layer0.attn_wv": params.attn_wv,
+        "layer0.attn_wo": params.attn_wo,
+        "layer0.mlp_fc1": params.mlp_fc1,
+        "layer0.mlp_fc2": params.mlp_fc2,
+    }
+
+
+def build_token_kernels(vocab_size: int):
+    matmul_kernel = matmul
+    matmul_left_t_kernel = matmul_left_t
+    matmul_right_t_kernel = matmul_right_t
+    rmsnorm_kernel = rmsnorm
+    select_kernel = select
+    expf_kernel = expf
+
+    @proc
+    def lm_head_step(dx: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dweight: f64[vocab_size, N_EMBED] @ DRAM, logits: f64[BLOCK_SIZE, vocab_size] @ DRAM, x: f64[BLOCK_SIZE, N_EMBED] @ DRAM, lm_head: f64[vocab_size, N_EMBED] @ DRAM, loss_mask: f64[BLOCK_SIZE] @ DRAM, inv_sum_mask: f64[1] @ DRAM, zero: f64[1] @ DRAM, one: f64[1] @ DRAM, target_ids: size[BLOCK_SIZE] @ DRAM):
+        matmul_right_t_kernel(BLOCK_SIZE, vocab_size, N_EMBED, logits, x, lm_head, zero)
+        for t in seq(0, BLOCK_SIZE):
+            mx: f64 @ Stack
+            sum_val: f64 @ Stack
+            scale: f64 @ Stack
+            val: f64 @ Stack
+            inv_denom: f64 @ Stack
+            mx = logits[t, 0]
+            for v_idx in seq(1, vocab_size):
+                mx = select_kernel(mx, logits[t, v_idx], logits[t, v_idx], mx)
+            sum_val = zero[0]
+            for v_idx in seq(0, vocab_size):
+                val = expf_kernel(logits[t, v_idx] - mx)
+                logits[t, v_idx] = val
+                sum_val += val
+            inv_denom = one[0] / sum_val
+            scale = loss_mask[t] * inv_sum_mask[0] * inv_denom
+            for v_idx in seq(0, vocab_size):
+                logits[t, v_idx] = logits[t, v_idx] * scale
+                if v_idx == target_ids[t]:
+                    logits[t, v_idx] += -inv_sum_mask[0] * loss_mask[t]
+        matmul_left_t_kernel(BLOCK_SIZE, vocab_size, N_EMBED, dweight, logits, x, zero)
+        matmul_kernel(BLOCK_SIZE, N_EMBED, vocab_size, dx, logits, lm_head, zero)
+
+    @proc
+    def embed_rms_fwd(emb: f64[BLOCK_SIZE, N_EMBED] @ DRAM, out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, wte: f64[vocab_size, N_EMBED] @ DRAM, wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, zero: f64[1] @ DRAM, one: f64[1] @ DRAM, inv_n: f64[1] @ DRAM, eps: f64[1] @ DRAM, input_ids: size[BLOCK_SIZE] @ DRAM):
+        for t in seq(0, BLOCK_SIZE):
+            for e in seq(0, N_EMBED):
+                emb[t, e] = wpe[t, e]
+                for v in seq(0, vocab_size):
+                    if v == input_ids[t]:
+                        emb[t, e] += wte[v, e]
+        rmsnorm_kernel(BLOCK_SIZE, N_EMBED, out, rms, emb, zero, one, inv_n, eps)
+
+    @proc
+    def embed_rms_bwd(g_wte: f64[vocab_size, N_EMBED] @ DRAM, g_wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dout: f64[BLOCK_SIZE, N_EMBED] @ DRAM, x: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, zero: f64[1] @ DRAM, inv_n: f64[1] @ DRAM, input_ids: size[BLOCK_SIZE] @ DRAM):
+        for t in seq(0, BLOCK_SIZE):
+            dot: f64 @ Stack
+            scale: f64 @ Stack
+            corr: f64 @ Stack
+            dot = zero[0]
+            scale = rms[t, 0]
+            for e in seq(0, N_EMBED):
+                dot += dout[t, e] * x[t, e]
+            corr = scale * scale * scale * inv_n[0] * dot
+            for e in seq(0, N_EMBED):
+                dx: f64 @ Stack
+                dx = dout[t, e] * scale - x[t, e] * corr
+                g_wpe[t, e] = dx
+                for v in seq(0, vocab_size):
+                    if v == input_ids[t]:
+                        g_wte[v, e] += dx
+
+    return lm_head_step, embed_rms_fwd, embed_rms_bwd
 
 
 @proc
@@ -209,14 +420,14 @@ def tokenize(doc: str, c2i: dict[str, int], bos: int) -> TokenBatch:
     return TokenBatch(inputs, targets, loss_mask, inv_sum_mask)
 
 
-def wrap_state_dict(state_dict: dict[str, Tensor]) -> dict[str, list[list[object]]]:
+def wrap_state_dict(params: Params) -> dict[str, list[list[object]]]:
     class W:
         __slots__ = ("data",)
 
         def __init__(self, data: float):
             self.data = data
 
-    return {name: [[W(float(tensor[i, j])) for j in range(tensor.shape[1])] for i in range(tensor.shape[0])] for name, tensor in state_dict.items()}
+    return {name: [[W(float(tensor[i, j])) for j in range(tensor.shape[1])] for i in range(tensor.shape[0])] for name, tensor in params_dict(params).items()}
 
 
 def main() -> None:
@@ -229,155 +440,127 @@ def main() -> None:
     uchars = sorted(set("".join(docs)))
     vocab_size = len(uchars) + 1
 
-    state_dict = {
-        "wte": normal((vocab_size, N_EMBED), scale=0.08),
-        "wpe": normal((BLOCK_SIZE, N_EMBED), scale=0.08),
-        "lm_head": normal((vocab_size, N_EMBED), scale=0.08),
-    }
-    for name, shape in (
-        ("layer0.attn_wq", (N_EMBED, N_EMBED)),
-        ("layer0.attn_wk", (N_EMBED, N_EMBED)),
-        ("layer0.attn_wv", (N_EMBED, N_EMBED)),
-        ("layer0.attn_wo", (N_EMBED, N_EMBED)),
-        ("layer0.mlp_fc1", (4 * N_EMBED, N_EMBED)),
-        ("layer0.mlp_fc2", (N_EMBED, 4 * N_EMBED)),
-    ):
-        state_dict[name] = normal(shape, scale=0.08)
+    flat_params, param_views = alloc_layout(param_layout(vocab_size))
+    params = bind_params(param_views)
+    for tensor in params_dict(params).values():
+        init_normal_(tensor, scale=0.08)
 
-    flat_params, state_dict, elt_bytes = pack_tensors(state_dict)
-    flat_grads, opt_m, opt_v = zeros_like(flat_params), zeros_like(flat_params), zeros_like(flat_params)
-    grads = view_tensors(flat_grads, state_dict)
+    flat_grads = zeros_like(flat_params)
+    grads = bind_params(view_layout(flat_grads, param_layout(vocab_size)))
+    opt_m = zeros_like(flat_params)
+    opt_v = zeros_like(flat_params)
 
-    opt_lr, opt_bc1, opt_bc2 = empty((1,)), empty((1,)), empty((1,))
-    zero, one, rms_inv_n, rms_eps, adam_b1, adam_b2, adam_eps = (full((1,), x) for x in (0.0, 1.0, 1.0 / N_EMBED, 1e-5, 0.85, 0.99, 1e-8))
+    _, scratch_views = alloc_layout(scratch_layout(vocab_size))
+    scratch = bind_scratch(scratch_views)
+    scalars = Scalars(
+        opt_lr=empty((1,)),
+        opt_bc1=empty((1,)),
+        opt_bc2=empty((1,)),
+        zero=full((1,), 0.0),
+        one=full((1,), 1.0),
+        rms_inv_n=full((1,), 1.0 / N_EMBED),
+        rms_eps=full((1,), 1e-5),
+        adam_b1=full((1,), 0.85),
+        adam_b2=full((1,), 0.99),
+        adam_eps=full((1,), 1e-8),
+    )
 
-    scratch = {
-        name: empty(shape, dtype=float)
-        for name, shape in (
-            ("emb", (BLOCK_SIZE, N_EMBED)),
-            ("rms_init", (BLOCK_SIZE, 1)),
-            ("x0", (BLOCK_SIZE, N_EMBED)),
-            ("x1", (BLOCK_SIZE, N_EMBED)),
-            ("logits", (BLOCK_SIZE, vocab_size)),
-            ("attn_xn", (BLOCK_SIZE, N_EMBED)),
-            ("attn_rms", (BLOCK_SIZE, 1)),
-            ("q", (N_HEAD, BLOCK_SIZE, HEAD_DIM)),
-            ("k", (N_HEAD, BLOCK_SIZE, HEAD_DIM)),
-            ("v_buf", (N_HEAD, BLOCK_SIZE, HEAD_DIM)),
-            ("attn_w", (N_HEAD, BLOCK_SIZE, BLOCK_SIZE)),
-            ("out_flat", (BLOCK_SIZE, N_EMBED)),
-            ("mlp_xn", (BLOCK_SIZE, N_EMBED)),
-            ("mlp_rms", (BLOCK_SIZE, 1)),
-            ("h_pre", (BLOCK_SIZE, 4 * N_EMBED)),
-            ("h_buf", (BLOCK_SIZE, 4 * N_EMBED)),
-            ("dx0", (BLOCK_SIZE, N_EMBED)),
-            ("dx1", (BLOCK_SIZE, N_EMBED)),
-            ("dattn_out", (N_HEAD, BLOCK_SIZE, HEAD_DIM)),
-        )
-    }
-
-    lm_head_step = jit(simplify(lm_head_step_fused.partial_eval(BLOCK_SIZE=BLOCK_SIZE, N_EMBED=N_EMBED, V=vocab_size)), raw=True)
-    embed_rms_fwd = jit(simplify(embed_rms_fwd_tokens.partial_eval(BLOCK_SIZE=BLOCK_SIZE, N_EMBED=N_EMBED, V=vocab_size)), raw=True)
-    embed_rms_bwd = jit(simplify(embed_rms_bwd_tokens.partial_eval(BLOCK_SIZE=BLOCK_SIZE, N_EMBED=N_EMBED, V=vocab_size)), raw=True)
-    adam_step = jit(simplify(adam.partial_eval(N=flat_params._size)))._raw
-
-    ptrs = {
-        "param": tensor_ptrs(state_dict),
-        "grad": tensor_ptrs(grads),
-        "scratch": tensor_ptrs(scratch),
-    }
-    p, g, s = ptrs["param"], ptrs["grad"], ptrs["scratch"]
+    lm_head_step_proc, embed_rms_fwd_proc, embed_rms_bwd_proc = build_token_kernels(vocab_size)
+    lm_head_step = jit(lm_head_step_proc, raw=True)
+    embed_rms_fwd = jit(embed_rms_fwd_proc, raw=True)
+    embed_rms_bwd = jit(embed_rms_bwd_proc, raw=True)
+    adam_step = jit(simplify(adam.partial_eval(N=flat_params.numel)))._raw
 
     attn_fwd_args = (
-        s["x1"],
-        s["attn_xn"],
-        s["attn_rms"],
-        s["q"],
-        s["k"],
-        s["v_buf"],
-        s["attn_w"],
-        s["out_flat"],
-        s["x0"],
-        p["layer0.attn_wq"],
-        p["layer0.attn_wk"],
-        p["layer0.attn_wv"],
-        p["layer0.attn_wo"],
-        zero.ctypes.data,
-        one.ctypes.data,
-        rms_inv_n.ctypes.data,
-        rms_eps.ctypes.data,
+        scratch.x1.ptr,
+        scratch.attn_xn.ptr,
+        scratch.attn_rms.ptr,
+        scratch.q.ptr,
+        scratch.k.ptr,
+        scratch.v.ptr,
+        scratch.attn_w.ptr,
+        scratch.out_flat.ptr,
+        scratch.x0.ptr,
+        params.attn_wq.ptr,
+        params.attn_wk.ptr,
+        params.attn_wv.ptr,
+        params.attn_wo.ptr,
+        scalars.zero.ptr,
+        scalars.one.ptr,
+        scalars.rms_inv_n.ptr,
+        scalars.rms_eps.ptr,
     )
     mlp_fwd_args = (
-        s["dx0"],
-        s["mlp_xn"],
-        s["mlp_rms"],
-        s["h_pre"],
-        s["h_buf"],
-        s["x1"],
-        p["layer0.mlp_fc1"],
-        p["layer0.mlp_fc2"],
-        zero.ctypes.data,
-        one.ctypes.data,
-        rms_inv_n.ctypes.data,
-        rms_eps.ctypes.data,
+        scratch.dx0.ptr,
+        scratch.mlp_xn.ptr,
+        scratch.mlp_rms.ptr,
+        scratch.h_pre.ptr,
+        scratch.h.ptr,
+        scratch.x1.ptr,
+        params.mlp_fc1.ptr,
+        params.mlp_fc2.ptr,
+        scalars.zero.ptr,
+        scalars.one.ptr,
+        scalars.rms_inv_n.ptr,
+        scalars.rms_eps.ptr,
     )
     mlp_bwd_args = (
-        s["dx0"],
-        g["layer0.mlp_fc1"],
-        g["layer0.mlp_fc2"],
-        s["dx1"],
-        s["x1"],
-        s["mlp_xn"],
-        s["mlp_rms"],
-        s["h_pre"],
-        s["h_buf"],
-        p["layer0.mlp_fc1"],
-        p["layer0.mlp_fc2"],
-        zero.ctypes.data,
-        rms_inv_n.ctypes.data,
+        scratch.dx0.ptr,
+        grads.mlp_fc1.ptr,
+        grads.mlp_fc2.ptr,
+        scratch.dx1.ptr,
+        scratch.x1.ptr,
+        scratch.mlp_xn.ptr,
+        scratch.mlp_rms.ptr,
+        scratch.h_pre.ptr,
+        scratch.h.ptr,
+        params.mlp_fc1.ptr,
+        params.mlp_fc2.ptr,
+        scalars.zero.ptr,
+        scalars.rms_inv_n.ptr,
     )
     attn_bwd_args = (
-        s["dx1"],
-        g["layer0.attn_wq"],
-        g["layer0.attn_wk"],
-        g["layer0.attn_wv"],
-        g["layer0.attn_wo"],
-        s["dattn_out"],
-        s["dx0"],
-        s["x0"],
-        s["attn_xn"],
-        s["attn_rms"],
-        s["q"],
-        s["k"],
-        s["v_buf"],
-        s["attn_w"],
-        s["out_flat"],
-        p["layer0.attn_wq"],
-        p["layer0.attn_wk"],
-        p["layer0.attn_wv"],
-        p["layer0.attn_wo"],
-        zero.ctypes.data,
-        rms_inv_n.ctypes.data,
+        scratch.dx1.ptr,
+        grads.attn_wq.ptr,
+        grads.attn_wk.ptr,
+        grads.attn_wv.ptr,
+        grads.attn_wo.ptr,
+        scratch.dattn_out.ptr,
+        scratch.dx0.ptr,
+        scratch.x0.ptr,
+        scratch.attn_xn.ptr,
+        scratch.attn_rms.ptr,
+        scratch.q.ptr,
+        scratch.k.ptr,
+        scratch.v.ptr,
+        scratch.attn_w.ptr,
+        scratch.out_flat.ptr,
+        params.attn_wq.ptr,
+        params.attn_wk.ptr,
+        params.attn_wv.ptr,
+        params.attn_wo.ptr,
+        scalars.zero.ptr,
+        scalars.rms_inv_n.ptr,
     )
     adam_args = (
-        flat_params.ctypes.data,
-        flat_grads.ctypes.data,
-        opt_m.ctypes.data,
-        opt_v.ctypes.data,
-        adam_b1.ctypes.data,
-        adam_b2.ctypes.data,
-        adam_eps.ctypes.data,
-        opt_lr.ctypes.data,
-        opt_bc1.ctypes.data,
-        opt_bc2.ctypes.data,
+        flat_params.ptr,
+        flat_grads.ptr,
+        opt_m.ptr,
+        opt_v.ptr,
+        scalars.adam_b1.ptr,
+        scalars.adam_b2.ptr,
+        scalars.adam_eps.ptr,
+        scalars.opt_lr.ptr,
+        scalars.opt_bc1.ptr,
+        scalars.opt_bc2.ptr,
     )
 
     c2i = {ch: i for i, ch in enumerate(uchars)}
     bos = vocab_size - 1
     tokenized = [tokenize(doc, c2i, bos) for doc in docs]
 
-    g_wte_bytes = grads["wte"]._size * elt_bytes
-    g_wpe_bytes = grads["wpe"]._size * elt_bytes
+    g_wte_bytes = grads.wte.numel * grads.wte.itemsize
+    g_wpe_bytes = grads.wpe.numel * grads.wpe.itemsize
     lr_t = [0.01 * (1.0 - step / num_steps) for step in range(num_steps)]
     bc1 = [1.0 - 0.85 ** (step + 1) for step in range(num_steps)]
     bc2 = [1.0 - 0.99 ** (step + 1) for step in range(num_steps)]
@@ -386,46 +569,46 @@ def main() -> None:
     step_times = []
 
     for step in range(num_steps):
-        opt_lr._buf[0] = lr_t[step]
-        opt_bc1._buf[0] = bc1[step]
-        opt_bc2._buf[0] = bc2[step]
+        scalars.opt_lr[0] = lr_t[step]
+        scalars.opt_bc1[0] = bc1[step]
+        scalars.opt_bc2[0] = bc2[step]
         batch = tokenized[step % len(tokenized)]
         embed_args = (
-            s["emb"],
-            s["x0"],
-            s["rms_init"],
-            p["wte"],
-            p["wpe"],
-            zero.ctypes.data,
-            one.ctypes.data,
-            rms_inv_n.ctypes.data,
-            rms_eps.ctypes.data,
+            scratch.emb.ptr,
+            scratch.x0.ptr,
+            scratch.rms_init.ptr,
+            params.wte.ptr,
+            params.wpe.ptr,
+            scalars.zero.ptr,
+            scalars.one.ptr,
+            scalars.rms_inv_n.ptr,
+            scalars.rms_eps.ptr,
             batch.input_ids.ctypes.data,
         )
         lm_head_args = (
-            s["dx1"],
-            g["lm_head"],
-            s["logits"],
-            s["dx0"],
-            p["lm_head"],
+            scratch.dx1.ptr,
+            grads.lm_head.ptr,
+            scratch.logits.ptr,
+            scratch.dx0.ptr,
+            params.lm_head.ptr,
             batch.loss_mask.ctypes.data,
             batch.inv_sum_mask.ctypes.data,
-            zero.ctypes.data,
-            one.ctypes.data,
+            scalars.zero.ptr,
+            scalars.one.ptr,
             batch.target_ids.ctypes.data,
         )
         embed_bwd_args = (
-            g["wte"],
-            g["wpe"],
-            s["dx1"],
-            s["emb"],
-            s["rms_init"],
-            zero.ctypes.data,
-            rms_inv_n.ctypes.data,
+            grads.wte.ptr,
+            grads.wpe.ptr,
+            scratch.dx1.ptr,
+            scratch.emb.ptr,
+            scratch.rms_init.ptr,
+            scalars.zero.ptr,
+            scalars.rms_inv_n.ptr,
             batch.input_ids.ctypes.data,
         )
-        memset(g["wte"], 0, g_wte_bytes)
-        memset(g["wpe"], 0, g_wpe_bytes)
+        memset(grads.wte.ptr, 0, g_wte_bytes)
+        memset(grads.wpe.ptr, 0, g_wpe_bytes)
         t0 = perf_counter()
         embed_rms_fwd(*embed_args)
         attn_fwd(*attn_fwd_args)
@@ -438,7 +621,7 @@ def main() -> None:
         step_times.append(perf_counter() - t0)
 
     save_times(step_times)
-    assert_weights_match(wrap_state_dict(state_dict))
+    assert_weights_match(wrap_state_dict(params))
 
 
 if __name__ == "__main__":

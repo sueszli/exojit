@@ -48,6 +48,22 @@ class Tensor:
     def ctypes(self) -> Ptr:
         return Ptr(ctypes.addressof(self._buf) + self._offset * ctypes.sizeof(self._ctype))
 
+    @property
+    def ptr(self) -> int:
+        return self.ctypes.data
+
+    @property
+    def numel(self) -> int:
+        return self._size
+
+    @property
+    def itemsize(self) -> int:
+        return ctypes.sizeof(self._ctype)
+
+    def view(self, shape: tuple[int, ...], *, offset: int = 0) -> Tensor:
+        # shared-buffer view starting at element offset
+        return Tensor(shape, dtype=self.dtype, buffer=self._buf, offset=self._offset + offset)
+
     def flat_index(self, key: int | tuple[int, ...]) -> int:
         if not isinstance(key, tuple):
             key = (key,)
@@ -90,7 +106,7 @@ def zeros_like(x: Tensor) -> Tensor:
 
 def reshape(x: Tensor, shape: tuple[int, ...], *, offset: int = 0) -> Tensor:
     # shared-buffer reshape view
-    return Tensor(shape, dtype=x.dtype, buffer=x._buf, offset=x._offset + offset)
+    return x.view(shape, offset=offset)
 
 
 def normal(shape: tuple[int, ...], loc: float = 0.0, scale: float = 1.0) -> Tensor:
@@ -103,16 +119,16 @@ def normal(shape: tuple[int, ...], loc: float = 0.0, scale: float = 1.0) -> Tens
 
 def pack_tensors(tensors: dict[str, Tensor]) -> tuple[Tensor, dict[str, Tensor], int]:
     # flatten tensors into one shared storage block and return typed views
-    total = sum(t._size for t in tensors.values())
+    total = sum(t.numel for t in tensors.values())
     flat = empty((total,), dtype=float)
-    flat_ptr = flat.ctypes.data
-    elt_bytes = ctypes.sizeof(flat._ctype)
+    flat_ptr = flat.ptr
+    elt_bytes = flat.itemsize
     offset = 0
     views = {}
     for name, tensor in tensors.items():
-        ctypes.memmove(flat_ptr + offset * elt_bytes, tensor.ctypes.data, tensor._size * elt_bytes)
+        ctypes.memmove(flat_ptr + offset * elt_bytes, tensor.ptr, tensor.numel * elt_bytes)
         views[name] = reshape(flat, tensor.shape, offset=offset)
-        offset += tensor._size
+        offset += tensor.numel
     return flat, views, elt_bytes
 
 
@@ -122,10 +138,27 @@ def view_tensors(flat: Tensor, tensors: dict[str, Tensor]) -> dict[str, Tensor]:
     views = {}
     for name, tensor in tensors.items():
         views[name] = reshape(flat, tensor.shape, offset=offset)
-        offset += tensor._size
+        offset += tensor.numel
     return views
 
 
 def tensor_ptrs(tensors: dict[str, Tensor]) -> dict[str, int]:
     # expose raw data pointers for raw-jit entry points
-    return {name: tensor.ctypes.data for name, tensor in tensors.items()}
+    return {name: tensor.ptr for name, tensor in tensors.items()}
+
+
+def alloc_layout(spec: dict[str, tuple[int, ...]], dtype: type[float] | type[int] = float) -> tuple[Tensor, dict[str, Tensor]]:
+    # allocate one flat buffer and typed views over it
+    total = sum(prod(shape) for shape in spec.values())
+    flat = empty((total,), dtype=dtype)
+    return flat, view_layout(flat, spec)
+
+
+def view_layout(flat: Tensor, spec: dict[str, tuple[int, ...]]) -> dict[str, Tensor]:
+    # create named views over an existing flat buffer
+    offset = 0
+    views = {}
+    for name, shape in spec.items():
+        views[name] = flat.view(shape, offset=offset)
+        offset += prod(shape)
+    return views
