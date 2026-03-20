@@ -8,18 +8,84 @@ from collections import namedtuple
 from math import prod
 from pathlib import Path
 
+import numpy as np
+
 repo = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo))
 
 from exo import *
 from exo.stdlib.scheduling import simplify
-from utils.exo_alloc import Tensor, empty, zeros
 from utils.exo_kernels import adam, add, matmul, matmul_left_t, matmul_right_t, relu, relu_bwd, rmsnorm, rmsnorm_bwd, softmax
 from utils.times import save_times
 from utils.weights import assert_weights_match
 
 from exojit.main import jit
 from exojit.patches_exo import Stack
+
+
+class Tensor:
+    __slots__ = ("shape", "dtype", "_buf", "_off", "numel", "itemsize", "ptr")
+
+    def __init__(self, shape, dtype=float, _buf=None, _off=0, fill=None):
+        self.shape = tuple(shape)
+        self.dtype = float if dtype in (float, np.float64) else int
+        self.numel = prod(self.shape)
+        ctype = ctypes.c_double if self.dtype is float else ctypes.c_int64
+        self.itemsize = ctypes.sizeof(ctype)
+
+        if _buf is None:
+            self._buf = (ctype * self.numel)()
+            self._off = 0
+        else:
+            self._buf = _buf
+            self._off = _off
+
+        self.ptr = ctypes.addressof(self._buf) + self._off * self.itemsize
+
+        if fill not in (None, 0, 0.0):
+            for i in range(self.numel):
+                self._buf[self._off + i] = fill
+
+    def view(self, shape, *, offset=0):
+        return Tensor(shape, dtype=self.dtype, _buf=self._buf, _off=self._off + offset)
+
+    def __getitem__(self, key):
+        if isinstance(key, tuple):
+            if len(key) == 1:
+                idx = key[0]
+            elif len(key) == 2:
+                idx = key[0] * self.shape[1] + key[1]
+            elif len(key) == 3:
+                idx = (key[0] * self.shape[1] + key[1]) * self.shape[2] + key[2]
+            else:
+                raise ValueError(key)
+        else:
+            idx = key
+        return self._buf[self._off + idx]
+
+    def __setitem__(self, key, value):
+        if isinstance(key, tuple):
+            if len(key) == 1:
+                idx = key[0]
+            elif len(key) == 2:
+                idx = key[0] * self.shape[1] + key[1]
+            elif len(key) == 3:
+                idx = (key[0] * self.shape[1] + key[1]) * self.shape[2] + key[2]
+            else:
+                raise ValueError(key)
+        else:
+            idx = key
+        self._buf[self._off + idx] = value
+
+
+def empty(shape, dtype=float):
+    return Tensor(shape, dtype=dtype)
+
+
+def zeros(shape, dtype=float):
+    dtype = float if dtype in (float, np.float64) else int
+    return Tensor(shape, dtype=dtype, fill=0 if dtype is int else 0.0)
+
 
 N_EMBED = 16
 BLOCK_SIZE = 16
