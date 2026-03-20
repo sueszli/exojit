@@ -545,20 +545,20 @@ memset = ctypes.memset
 perf_counter = time.perf_counter
 step_times = []
 
-for step, (lr, b1, b2) in enumerate(zip(lr_t, bc1, bc2)):
-    scalars["opt_lr"][0] = lr
-    scalars["opt_bc1"][0] = b1
-    scalars["opt_bc2"][0] = b2
-    batch = tokenized[step % len(tokenized)]
-    for ptr, n in grads_to_clear:
-        memset(ptr, 0, n)
-    t0 = perf_counter()
-    args.update({k: batch[k].ptr for k in ("loss_mask", "inv_sum_mask", "input_ids", "target_ids")})
-    train_step(**args)
-    step_times.append(perf_counter() - t0)
-
 
 if __name__ == "__main__":
+    for step, (lr, b1, b2) in enumerate(zip(lr_t, bc1, bc2)):
+        scalars["opt_lr"][0] = lr
+        scalars["opt_bc1"][0] = b1
+        scalars["opt_bc2"][0] = b2
+        batch = tokenized[step % len(tokenized)]
+        for ptr, n in grads_to_clear:
+            memset(ptr, 0, n)
+        t0 = perf_counter()
+        args.update({k: batch[k].ptr for k in ("loss_mask", "inv_sum_mask", "input_ids", "target_ids")})
+        train_step(**args)
+        step_times.append(perf_counter() - t0)
+
     save_times(step_times)
     W = namedtuple("W", ["data"])
     assert_weights_match({name: [[W(float(buf[i * cols + j])) for j in range(cols)] for i in range(buf.n // cols)] for name, buf, cols in named_params(params, params_layout)})
