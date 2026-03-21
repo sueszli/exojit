@@ -1,5 +1,6 @@
 # /// script
 # requires-python = "==3.14.*"
+# dependencies = ["polars"]
 # ///
 
 import csv
@@ -66,40 +67,47 @@ def print_times(path: Path) -> None:
     mean = sum(times) / n
     variance = sum((x - mean) ** 2 for x in times) / (n - 1) if n > 1 else 0
     stddev = math.sqrt(variance)
-    print(f"'{path.stem}'")
-    print(f"  Time (mean \u00b1 \u03c3):    {mean:8.0f} \u03bcs \u00b1 {stddev:8.0f} \u03bcs")
-    print(f"  Range (min \u2026 max):  {min(times):8.0f} \u03bcs \u2026 {max(times):8.0f} \u03bcs")
-    print()
+    print(f"  {path.stem}: mean={mean:.0f}\u03bcs \u00b1{stddev:.0f} min={min(times):.0f} max={max(times):.0f} ({n} runs)")
 
 
 def print_times_all() -> None:
+    import polars as pl
+
     if not TIMES_DIR.exists():
         return
 
-    entries = []
+    rows = []
     for path in sorted(TIMES_DIR.glob("*.csv")):
-        with open(path) as f:
-            times = [float(row["time_ms"]) for row in csv.DictReader(f)]
-        if times:
-            entries.append((path.stem, sum(times) / len(times)))
-    if not entries:
+        t: list[float] = (pl.read_csv(path)["time_ms"].cast(pl.Float64) * 1000).to_list()
+        if not t:
+            continue
+        n, mean = len(t), sum(t) / len(t)
+        sigma = math.sqrt(sum((x - mean) ** 2 for x in t) / (n - 1)) if n > 1 else 0
+        rows.append({"name": path.stem, "mean": int(mean), "sigma": int(sigma), "min": int(min(t)), "max": int(max(t))})
+    if not rows:
         return
-    entries.sort(key=lambda x: x[1], reverse=False)
 
-    original_ms = next((mean for name, mean in entries if name == "original"), max(mean for _, mean in entries))
-    speedups = [(name, original_ms / mean) for name, mean in entries]
-    max_speedup = max(s for _, s in speedups)
-    bar_width = 60
-    name_width = max(len(name) for name, _ in speedups)
+    rows.sort(key=lambda r: r["mean"])
+
+    original_mean = next((r["mean"] for r in rows if r["name"] == "original"), max(r["mean"] for r in rows))
+    speedups = {r["name"]: original_mean / r["mean"] for r in rows}
+    max_speedup = max(speedups.values())
+    name_width = max(len(r["name"]) for r in rows)
 
     print("\n# speedup over original version\n")
-    for name, speedup in speedups:
-        bar = "▇" * round(speedup / max_speedup * bar_width) or "▏"
-        print(f"  {name:<{name_width}}  {bar} {speedup:.0f}x")
+    for r in sorted(rows, key=lambda r: -speedups[r["name"]]):
+        bar = "▇" * round(speedups[r["name"]] / max_speedup * 60) or "▏"
+        print(f"  {r['name']:<{name_width}}  {bar} {speedups[r['name']]:.0f}x")
+
+    cols = ["name", "mean \u03bcs", "\u00b1\u03c3", "min", "max"]
+    table_rows = [[r["name"], r["mean"], r["sigma"], r["min"], r["max"]] for r in rows]
+    col_w = [max(len(str(cols[i])), max(len(str(row[i])) for row in table_rows)) for i in range(len(cols))]
 
     print("\n\n# leaderboard\n")
-    for name, _ in entries:
-        print_times(TIMES_DIR / f"{name}.csv")
+    print("  " + "  ".join(f"{cols[i]:<{col_w[i]}}" for i in range(len(cols))))
+    print("  " + "  ".join("\u2500" * col_w[i] for i in range(len(cols))))
+    for row in table_rows:
+        print("  " + "  ".join(f"{str(row[i]):>{col_w[i]}}" if i > 0 else f"{row[i]:<{col_w[i]}}" for i in range(len(cols))))
 
 
 if __name__ == "__main__":
