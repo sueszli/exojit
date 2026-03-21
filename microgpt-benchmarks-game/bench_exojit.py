@@ -465,18 +465,17 @@ SCRATCH_SHAPES: dict[str, tuple] = {
 }
 
 
-if __name__ == "__main__":
-    partition = lambda shapes, arr: {name: (ctypes.c_double * prod(shape)).from_buffer(arr, off * 8) for (name, shape), off in zip(shapes.items(), accumulate((prod(s) for s in shapes.values()), initial=0))}
+def partition(shapes, arr):
+    return {name: (ctypes.c_double * prod(shape)).from_buffer(arr, off * 8) for (name, shape), off in zip(shapes.items(), accumulate((prod(s) for s in shapes.values()), initial=0))}
 
-    flat_params = (ctypes.c_double * sum(prod(s) for s in PARAMS_SHAPES.values()))()
-    for i in range(len(flat_params)):
-        flat_params[i] = random.gauss(0.0, 0.08)
+
+if __name__ == "__main__":
+    n = sum(prod(s) for s in PARAMS_SHAPES.values())
+    flat_params = (ctypes.c_double * n)(*(random.gauss(0.0, 0.08) for _ in range(n)))
     params = partition(PARAMS_SHAPES, flat_params)
 
-    flat_grads = (ctypes.c_double * len(flat_params))()
+    flat_grads, opt_m, opt_v = ((ctypes.c_double * n)() for _ in range(3))
     grads = partition(PARAMS_SHAPES, flat_grads)
-    opt_m = (ctypes.c_double * len(flat_params))()
-    opt_v = (ctypes.c_double * len(flat_params))()
 
     scratch = partition(SCRATCH_SHAPES, (ctypes.c_double * sum(prod(s) for s in SCRATCH_SHAPES.values()))())
     opt_lr = (ctypes.c_double * 1)()
