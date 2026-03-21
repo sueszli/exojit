@@ -3,13 +3,10 @@ set -euox pipefail
 cd "$(dirname "$0")"
 
 [ -f weights.json ] || uv run original.py
+
 for file in *.py; do
   [[ "$file" == "utils.py" || "$file" == "original.py" ]] || uv run "$file"
 done
-
-# 
-# print
-# 
 
 rm README
 toilet -t -f pagga "microgpt benchmarks game" >> README
