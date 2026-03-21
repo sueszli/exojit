@@ -1,6 +1,8 @@
 # /// script
 # requires-python = "==3.14.*"
-# dependencies = ["tqdm"]
+# dependencies = [
+#   "exojit @ git+https://github.com/sueszli/exojit",
+# ]
 # ///
 
 from __future__ import annotations
@@ -145,13 +147,13 @@ def rmsnorm_bwd(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dx: f64[BLOCK_SIZE, N_EMBE
 
 
 @proc
-def cross_entropy_bwd(M: size, N: size, probs: f64[M, N] @ DRAM, target_ids: size[M] @ DRAM, loss_mask: f64[M] @ DRAM, inv_sum_mask: f64[1] @ DRAM):
-    for t in seq(0, M):
+def cross_entropy_bwd(N: size, step: index, probs: f64[BLOCK_SIZE, N] @ DRAM, all_target_ids: size[NUM_STEPS * BLOCK_SIZE] @ DRAM, loss_mask: f64[BLOCK_SIZE] @ DRAM, inv_sum_mask: f64[1] @ DRAM):
+    for t in seq(0, BLOCK_SIZE):
         scale: f64 @ Stack
         scale = loss_mask[t] * inv_sum_mask[0]
         for v_idx in seq(0, N):
             probs[t, v_idx] = probs[t, v_idx] * scale
-            if v_idx == target_ids[t]:
+            if v_idx == all_target_ids[step * BLOCK_SIZE + t]:
                 probs[t, v_idx] += -inv_sum_mask[0] * loss_mask[t]
 
 
@@ -259,18 +261,18 @@ def adam(N: size, param: f64[N] @ DRAM, grad: f64[N] @ DRAM, m: f64[N] @ DRAM, v
 
 
 @proc
-def embed_layer(vocab_size: size, emb: f64[BLOCK_SIZE, N_EMBED] @ DRAM, out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, wte: f64[vocab_size, N_EMBED] @ DRAM, wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, input_ids: size[BLOCK_SIZE] @ DRAM):
+def embed_layer(vocab_size: size, step: index, emb: f64[BLOCK_SIZE, N_EMBED] @ DRAM, out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, wte: f64[vocab_size, N_EMBED] @ DRAM, wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, all_input_ids: size[NUM_STEPS * BLOCK_SIZE] @ DRAM):
     for t in seq(0, BLOCK_SIZE):
         for e in seq(0, N_EMBED):
             emb[t, e] = wpe[t, e]
             for v in seq(0, vocab_size):
-                if v == input_ids[t]:
+                if v == all_input_ids[step * BLOCK_SIZE + t]:
                     emb[t, e] += wte[v, e]
     rmsnorm(out, rms, emb)
 
 
 @proc
-def embed_layer_bwd(vocab_size: size, g_wte: f64[vocab_size, N_EMBED] @ DRAM, g_wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dout: f64[BLOCK_SIZE, N_EMBED] @ DRAM, x: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, input_ids: size[BLOCK_SIZE] @ DRAM):
+def embed_layer_bwd(vocab_size: size, step: index, g_wte: f64[vocab_size, N_EMBED] @ DRAM, g_wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dout: f64[BLOCK_SIZE, N_EMBED] @ DRAM, x: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, all_input_ids: size[NUM_STEPS * BLOCK_SIZE] @ DRAM):
     for t in seq(0, BLOCK_SIZE):
         dot: f64 @ Stack
         scale: f64 @ Stack
@@ -285,7 +287,7 @@ def embed_layer_bwd(vocab_size: size, g_wte: f64[vocab_size, N_EMBED] @ DRAM, g_
             dx = dout[t, e] * scale - x[t, e] * corr
             g_wpe[t, e] = dx
             for v in seq(0, vocab_size):
-                if v == input_ids[t]:
+                if v == all_input_ids[step * BLOCK_SIZE + t]:
                     g_wte[v, e] += dx
 
 
@@ -388,19 +390,32 @@ def mlp_layer_bwd(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dfc1: f64[4 * N_EMBED, N
 
 
 @jit(optimize=simplify, raw=True)
-def train_step(vocab_size: size, total_params: size, emb: f64[BLOCK_SIZE, N_EMBED] @ DRAM, x0: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms_init: f64[BLOCK_SIZE, 1] @ DRAM, x1: f64[BLOCK_SIZE, N_EMBED] @ DRAM, attn_xn: f64[BLOCK_SIZE, N_EMBED] @ DRAM, attn_rms: f64[BLOCK_SIZE, 1] @ DRAM, q: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, k: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, v: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, attn_w: f64[N_HEAD, BLOCK_SIZE, BLOCK_SIZE] @ DRAM, attn_out: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, out_flat: f64[BLOCK_SIZE, N_EMBED] @ DRAM, mlp_xn: f64[BLOCK_SIZE, N_EMBED] @ DRAM, mlp_rms: f64[BLOCK_SIZE, 1] @ DRAM, h_pre: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, h: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, dx0: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dx1: f64[BLOCK_SIZE, N_EMBED] @ DRAM, logits: f64[BLOCK_SIZE, vocab_size] @ DRAM, dq: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dk: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dv: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dattn_out: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dh: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, dh_pre: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, wte: f64[vocab_size, N_EMBED] @ DRAM, wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, lm_head: f64[vocab_size, N_EMBED] @ DRAM, attn_wq: f64[N_EMBED, N_EMBED] @ DRAM, attn_wk: f64[N_EMBED, N_EMBED] @ DRAM, attn_wv: f64[N_EMBED, N_EMBED] @ DRAM, attn_wo: f64[N_EMBED, N_EMBED] @ DRAM, mlp_fc1: f64[4 * N_EMBED, N_EMBED] @ DRAM, mlp_fc2: f64[N_EMBED, 4 * N_EMBED] @ DRAM, g_wte: f64[vocab_size, N_EMBED] @ DRAM, g_wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, g_lm_head: f64[vocab_size, N_EMBED] @ DRAM, g_attn_wq: f64[N_EMBED, N_EMBED] @ DRAM, g_attn_wk: f64[N_EMBED, N_EMBED] @ DRAM, g_attn_wv: f64[N_EMBED, N_EMBED] @ DRAM, g_attn_wo: f64[N_EMBED, N_EMBED] @ DRAM, g_mlp_fc1: f64[4 * N_EMBED, N_EMBED] @ DRAM, g_mlp_fc2: f64[N_EMBED, 4 * N_EMBED] @ DRAM, flat_params: f64[total_params] @ DRAM, flat_grads: f64[total_params] @ DRAM, opt_m: f64[total_params] @ DRAM, opt_v: f64[total_params] @ DRAM, loss_mask: f64[BLOCK_SIZE] @ DRAM, inv_sum_mask: f64[1] @ DRAM, input_ids: size[BLOCK_SIZE] @ DRAM, target_ids: size[BLOCK_SIZE] @ DRAM, lr: f64[1] @ DRAM, beta1_t: f64[1] @ DRAM, beta2_t: f64[1] @ DRAM):
-    embed_layer(vocab_size, emb, x0, rms_init, wte, wpe, input_ids)
-    attention_layer(x1, attn_xn, attn_rms, q, k, v, attn_w, attn_out, out_flat, x0, attn_wq, attn_wk, attn_wv, attn_wo)
-    mlp_layer(dx0, mlp_xn, mlp_rms, h_pre, h, x1, mlp_fc1, mlp_fc2)
-    matmul_right_t(BLOCK_SIZE, vocab_size, N_EMBED, logits, dx0, lm_head)
-    softmax(BLOCK_SIZE, vocab_size, logits)
-    cross_entropy_bwd(BLOCK_SIZE, vocab_size, logits, target_ids, loss_mask, inv_sum_mask)
-    matmul_left_t(BLOCK_SIZE, vocab_size, N_EMBED, g_lm_head, logits, dx0)
-    matmul(BLOCK_SIZE, N_EMBED, vocab_size, dx1, logits, lm_head)
-    mlp_layer_bwd(dx0, g_mlp_fc1, g_mlp_fc2, dh, dh_pre, dx1, x1, mlp_xn, mlp_rms, h_pre, h, mlp_fc1, mlp_fc2)
-    attention_layer_bwd(dx1, g_attn_wq, g_attn_wk, g_attn_wv, g_attn_wo, dattn_out, dx0, x0, attn_xn, attn_rms, q, k, v, attn_w, out_flat, dq, dk, dv, attn_wq, attn_wk, attn_wv, attn_wo)
-    embed_layer_bwd(vocab_size, g_wte, g_wpe, dx1, emb, rms_init, input_ids)
-    adam(total_params, flat_params, flat_grads, opt_m, opt_v, lr, beta1_t, beta2_t)
+def train_loop(vocab_size: size, total_params: size, emb: f64[BLOCK_SIZE, N_EMBED] @ DRAM, x0: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms_init: f64[BLOCK_SIZE, 1] @ DRAM, x1: f64[BLOCK_SIZE, N_EMBED] @ DRAM, attn_xn: f64[BLOCK_SIZE, N_EMBED] @ DRAM, attn_rms: f64[BLOCK_SIZE, 1] @ DRAM, q: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, k: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, v: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, attn_w: f64[N_HEAD, BLOCK_SIZE, BLOCK_SIZE] @ DRAM, attn_out: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, out_flat: f64[BLOCK_SIZE, N_EMBED] @ DRAM, mlp_xn: f64[BLOCK_SIZE, N_EMBED] @ DRAM, mlp_rms: f64[BLOCK_SIZE, 1] @ DRAM, h_pre: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, h: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, dx0: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dx1: f64[BLOCK_SIZE, N_EMBED] @ DRAM, logits: f64[BLOCK_SIZE, vocab_size] @ DRAM, dq: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dk: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dv: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dattn_out: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dh: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, dh_pre: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, wte: f64[vocab_size, N_EMBED] @ DRAM, wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, lm_head: f64[vocab_size, N_EMBED] @ DRAM, attn_wq: f64[N_EMBED, N_EMBED] @ DRAM, attn_wk: f64[N_EMBED, N_EMBED] @ DRAM, attn_wv: f64[N_EMBED, N_EMBED] @ DRAM, attn_wo: f64[N_EMBED, N_EMBED] @ DRAM, mlp_fc1: f64[4 * N_EMBED, N_EMBED] @ DRAM, mlp_fc2: f64[N_EMBED, 4 * N_EMBED] @ DRAM, g_wte: f64[vocab_size, N_EMBED] @ DRAM, g_wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, g_lm_head: f64[vocab_size, N_EMBED] @ DRAM, g_attn_wq: f64[N_EMBED, N_EMBED] @ DRAM, g_attn_wk: f64[N_EMBED, N_EMBED] @ DRAM, g_attn_wv: f64[N_EMBED, N_EMBED] @ DRAM, g_attn_wo: f64[N_EMBED, N_EMBED] @ DRAM, g_mlp_fc1: f64[4 * N_EMBED, N_EMBED] @ DRAM, g_mlp_fc2: f64[N_EMBED, 4 * N_EMBED] @ DRAM, flat_params: f64[total_params] @ DRAM, flat_grads: f64[total_params] @ DRAM, opt_m: f64[total_params] @ DRAM, opt_v: f64[total_params] @ DRAM, loss_mask: f64[BLOCK_SIZE] @ DRAM, inv_sum_mask: f64[1] @ DRAM, lr: f64[1] @ DRAM, beta1_t: f64[1] @ DRAM, beta2_t: f64[1] @ DRAM, all_input_ids: size[NUM_STEPS * BLOCK_SIZE] @ DRAM, all_target_ids: size[NUM_STEPS * BLOCK_SIZE] @ DRAM, all_loss_mask: f64[NUM_STEPS * BLOCK_SIZE] @ DRAM, all_inv_sum_mask: f64[NUM_STEPS] @ DRAM, all_lr: f64[NUM_STEPS] @ DRAM, all_beta1_t: f64[NUM_STEPS] @ DRAM, all_beta2_t: f64[NUM_STEPS] @ DRAM):
+    for step in seq(0, NUM_STEPS):
+        for t in seq(0, BLOCK_SIZE):
+            loss_mask[t] = all_loss_mask[step * BLOCK_SIZE + t]
+        inv_sum_mask[0] = all_inv_sum_mask[step]
+        lr[0] = all_lr[step]
+        beta1_t[0] = all_beta1_t[step]
+        beta2_t[0] = all_beta2_t[step]
+        for i in seq(0, vocab_size):
+            for j in seq(0, N_EMBED):
+                g_wte[i, j] = 0.0
+        for i in seq(0, BLOCK_SIZE):
+            for j in seq(0, N_EMBED):
+                g_wpe[i, j] = 0.0
+        embed_layer(vocab_size, step, emb, x0, rms_init, wte, wpe, all_input_ids)
+        attention_layer(x1, attn_xn, attn_rms, q, k, v, attn_w, attn_out, out_flat, x0, attn_wq, attn_wk, attn_wv, attn_wo)
+        mlp_layer(dx0, mlp_xn, mlp_rms, h_pre, h, x1, mlp_fc1, mlp_fc2)
+        matmul_right_t(BLOCK_SIZE, vocab_size, N_EMBED, logits, dx0, lm_head)
+        softmax(BLOCK_SIZE, vocab_size, logits)
+        cross_entropy_bwd(vocab_size, step, logits, all_target_ids, loss_mask, inv_sum_mask)
+        matmul_left_t(BLOCK_SIZE, vocab_size, N_EMBED, g_lm_head, logits, dx0)
+        matmul(BLOCK_SIZE, N_EMBED, vocab_size, dx1, logits, lm_head)
+        mlp_layer_bwd(dx0, g_mlp_fc1, g_mlp_fc2, dh, dh_pre, dx1, x1, mlp_xn, mlp_rms, h_pre, h, mlp_fc1, mlp_fc2)
+        attention_layer_bwd(dx1, g_attn_wq, g_attn_wk, g_attn_wv, g_attn_wo, dattn_out, dx0, x0, attn_xn, attn_rms, q, k, v, attn_w, out_flat, dq, dk, dv, attn_wq, attn_wk, attn_wv, attn_wo)
+        embed_layer_bwd(vocab_size, step, g_wte, g_wpe, dx1, emb, rms_init, all_input_ids)
+        adam(total_params, flat_params, flat_grads, opt_m, opt_v, lr, beta1_t, beta2_t)
 
 
 def tokenize(docs: list[str], uchars: list[str]) -> list[dict]:
@@ -469,17 +484,27 @@ SCRATCH_SHAPES: dict[str, tuple] = {
     "dv": (N_HEAD, BLOCK_SIZE, HEAD_DIM),
 }
 
+
 partition = lambda shapes, arr: {name: (ctypes.c_double * prod(shape)).from_buffer(arr, off * 8) for (name, shape), off in zip(shapes.items(), accumulate((prod(s) for s in shapes.values()), initial=0))}
 
 n = sum(prod(s) for s in PARAMS_SHAPES.values())
 flat_params = (ctypes.c_double * n)(*(random.gauss(0.0, 0.08) for _ in range(n)))
 params = partition(PARAMS_SHAPES, flat_params)
-
 flat_grads, opt_m, opt_v = ((ctypes.c_double * n)() for _ in range(3))
 grads = partition(PARAMS_SHAPES, flat_grads)
-
 scratch = partition(SCRATCH_SHAPES, (ctypes.c_double * sum(prod(s) for s in SCRATCH_SHAPES.values()))())
-opt_lr, opt_bc1, opt_bc2 = ((ctypes.c_double * 1)() for _ in range(3))
+opt_lr, opt_bc1, opt_bc2, cur_inv_sum_mask = ((ctypes.c_double * 1)() for _ in range(4))
+cur_loss_mask = (ctypes.c_double * BLOCK_SIZE)()
+
+all_lr = (ctypes.c_double * NUM_STEPS)(*(0.01 * (1.0 - s / NUM_STEPS) for s in range(NUM_STEPS)))
+all_beta1_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - 0.9 ** (s + 1) for s in range(NUM_STEPS)))
+all_beta2_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - 0.999 ** (s + 1) for s in range(NUM_STEPS)))
+
+batches = [tokenized[s % len(tokenized)] for s in range(NUM_STEPS)]
+all_input_ids = (ctypes.c_int64 * (NUM_STEPS * BLOCK_SIZE))(*(v for b in batches for v in b["input_ids"]))
+all_target_ids = (ctypes.c_int64 * (NUM_STEPS * BLOCK_SIZE))(*(v for b in batches for v in b["target_ids"]))
+all_loss_mask = (ctypes.c_double * (NUM_STEPS * BLOCK_SIZE))(*(v for b in batches for v in b["loss_mask"]))
+all_inv_sum_mask = (ctypes.c_double * NUM_STEPS)(*(b["inv_sum_mask"][0] for b in batches))
 
 static_args = {
     "vocab_size": vocab_size,
@@ -491,23 +516,24 @@ static_args = {
     "flat_grads": ctypes.addressof(flat_grads),
     "opt_m": ctypes.addressof(opt_m),
     "opt_v": ctypes.addressof(opt_v),
+    "loss_mask": ctypes.addressof(cur_loss_mask),
+    "inv_sum_mask": ctypes.addressof(cur_inv_sum_mask),
     "lr": ctypes.addressof(opt_lr),
     "beta1_t": ctypes.addressof(opt_bc1),
     "beta2_t": ctypes.addressof(opt_bc2),
+    "all_input_ids": ctypes.addressof(all_input_ids),
+    "all_target_ids": ctypes.addressof(all_target_ids),
+    "all_loss_mask": ctypes.addressof(all_loss_mask),
+    "all_inv_sum_mask": ctypes.addressof(all_inv_sum_mask),
+    "all_lr": ctypes.addressof(all_lr),
+    "all_beta1_t": ctypes.addressof(all_beta1_t),
+    "all_beta2_t": ctypes.addressof(all_beta2_t),
 }
 
-step_times = []
-for step in range(NUM_STEPS):
-    opt_lr[0] = 0.01 * (1.0 - step / NUM_STEPS)
-    opt_bc1[0] = 1.0 - 0.9 ** (step + 1)
-    opt_bc2[0] = 1.0 - 0.999 ** (step + 1)
-    batch = tokenized[step % len(tokenized)]
-    ctypes.memset(ctypes.addressof(grads["wte"]), 0, len(grads["wte"]) * 8)
-    ctypes.memset(ctypes.addressof(grads["wpe"]), 0, len(grads["wpe"]) * 8)
-    t0 = time.perf_counter()
-    train_step(**static_args, **{k: ctypes.addressof(batch[k]) for k in ("loss_mask", "inv_sum_mask", "input_ids", "target_ids")})
-    step_times.append(time.perf_counter() - t0)
-
+t0 = time.perf_counter()
+train_loop(**static_args)
+total_time = time.perf_counter() - t0
+step_times = [total_time / NUM_STEPS] * NUM_STEPS
 
 save_times(step_times)
 W = namedtuple("W", ["data"])
