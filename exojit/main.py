@@ -714,7 +714,7 @@ def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
     _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
     ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
     _rewrite([RewriteMemRefTypes()])  # memreftype -> llvm.ptr on all values
-    _rewrite([ConvertVecIntrinsic()])  # vec_*/neon_* calls -> llvm/vector ops
+    _rewrite([ConvertVecIntrinsic()])  # vec_*/neon_* calls -> llvm ops
     ReconcileUnrealizedCastsPass().apply(ctx, module)  # fold paired unrealized casts
     module.verify()
 
@@ -748,13 +748,6 @@ def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
 
 
 class LLVMLiteGenerator:
-    @staticmethod
-    def _add_phis(phi_map: dict[SSAValue, llvmlite.ir.PhiInstr], val_map: dict[SSAValue, llvmlite.ir.Value], block_args, operands, cur_block):
-        # wire block operands into phi nodes for the target block
-        for a, v in zip(block_args, operands):
-            if a in phi_map:
-                phi_map[a].add_incoming(val_map[v], cur_block)
-
     @staticmethod
     def _convert_op(op: Operation, builder: llvmlite.ir.IRBuilder, block_map: dict[Block, llvmlite.ir.Block], phi_map: dict[SSAValue, llvmlite.ir.PhiInstr], val_map: dict[SSAValue, llvmlite.ir.Value]) -> None:
         # translate one xdsl op to llvmlite ir. unmatched ops fall back to xdsl's convert_op
