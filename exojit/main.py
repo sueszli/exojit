@@ -857,9 +857,6 @@ def _load_libomp() -> None:
     llvmlite.binding.load_library_permanently(lib)
 
 
-JIT_SCALAR_TYPES = (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)
-
-
 def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
     # classify each argument once so the C wrapper can take the cheapest safe path
     write_cache: dict[int, frozenset[int]] = {}
@@ -903,26 +900,12 @@ def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
         match arg.type:
             case _ if arg.type.is_tensor_or_window():
                 return 2 if i in written else 1
-            case _ if isinstance(arg.type, JIT_SCALAR_TYPES):
+            case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
                 return 0
             case _:
                 assert False, f"unsupported JIT argument type for {arg.name}: {arg.type}"
 
     return bytes(_kind(i, arg) for i, arg in enumerate(proc.args))
-
-
-JIT_TENSOR_C_TYPES = {
-    "f32": "float",
-    "f64": "double",
-    "i8": "int8_t",
-    "ui8": "uint8_t",
-    "i16": "int16_t",
-    "ui16": "uint16_t",
-    "i32": "int32_t",
-    "index": "int64_t",
-    "size": "int64_t",
-    "bool": "_Bool",
-}
 
 
 def _jit_eval_shape_expr(expr: object, env: dict[object, int]) -> int:
@@ -959,9 +942,21 @@ def _jit_eval_shape_expr(expr: object, env: dict[object, int]) -> int:
 
 def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writable: bool) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], object]:
     # build one argument converter for tensor or window inputs
+    jit_tensor_c_types = {
+        "f32": "float",
+        "f64": "double",
+        "i8": "int8_t",
+        "ui8": "uint8_t",
+        "i16": "int16_t",
+        "ui16": "uint16_t",
+        "i32": "int32_t",
+        "index": "int64_t",
+        "size": "int64_t",
+        "bool": "_Bool",
+    }
     shape = tensor_type.shape()
-    assert (basetype := str(tensor_type.basetype())) in JIT_TENSOR_C_TYPES, f"unsupported JIT tensor dtype: {basetype}"
-    c_type = JIT_TENSOR_C_TYPES[basetype]
+    assert (basetype := str(tensor_type.basetype())) in jit_tensor_c_types, f"unsupported JIT tensor dtype: {basetype}"
+    c_type = jit_tensor_c_types[basetype]
     is_seq = lambda x: isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray, memoryview))
 
     def linearize(value: object) -> tuple[list[object], list[tuple[MutableSequence[object], int]]]:
@@ -1025,7 +1020,7 @@ def _jit_wrap(raw_fn: JitFunc, proc: Procedure, arg_kinds: bytes) -> Callable[..
             case _ if arg.type.is_tensor_or_window():
                 tensor_type = arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type
                 converters.append(_jit_tensor_converter(ffi=ffi, index=i, tensor_type=tensor_type, writable=arg_kinds[i] == 2))
-            case _ if isinstance(arg.type, JIT_SCALAR_TYPES):
+            case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
                 name = arg.name
 
                 def convert(value: object, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=name) -> int:
