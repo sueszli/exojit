@@ -46,27 +46,6 @@ from exojit.jitcall import JitFunc
 from exojit.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from exojit.patches_xdsl_llvm import ExtendedConvertMemRefToPtr, RewriteMemRefTypes
 
-FCMP_PREDICATES: dict[str, tuple[str, bool]] = {  # mlir predicate -> (op, ordered?)
-    "oeq": ("==", True),
-    "ogt": (">", True),
-    "oge": (">=", True),
-    "olt": ("<", True),
-    "ole": ("<=", True),
-    "one": ("!=", True),
-    "ord": ("ord", True),
-    "ueq": ("==", False),
-    "ugt": (">", False),
-    "uge": (">=", False),
-    "ult": ("<", False),
-    "ule": ("<=", False),
-    "une": ("!=", False),
-    "uno": ("uno", False),
-}
-
-#
-# generate xdsl mlir
-#
-
 
 class IRGenerator:
     module: ModuleOp
@@ -240,7 +219,8 @@ class IRGenerator:
     def _cmp_binop(lhs: SSAValue, rhs: SSAValue, op: str, emit: Callable[[Operation], SSAValue]) -> SSAValue:
         P = llvm.ICmpPredicateFlag
         integer_cmp_table = {"==": P.EQ.to_int(), "!=": P.NE.to_int(), "<": P.SLT.to_int(), "<=": P.SLE.to_int(), ">": P.SGT.to_int(), ">=": P.SGE.to_int()}
-        float_cmp_table = {op: pred for pred, (op, ordered) in FCMP_PREDICATES.items() if ordered and op not in ("ord", "uno")}
+        fcmp_predicates: dict[str, tuple[str, bool]] = {"oeq": ("==", True), "ogt": (">", True), "oge": (">=", True), "olt": ("<", True), "ole": ("<=", True), "one": ("!=", True), "ord": ("ord", True), "ueq": ("==", False), "ugt": (">", False), "uge": (">=", False), "ult": ("<", False), "ule": ("<=", False), "une": ("!=", False), "uno": ("uno", False)}
+        float_cmp_table = {op: pred for pred, (op, ordered) in fcmp_predicates.items() if ordered and op not in ("ord", "uno")}
         assert lhs.type == rhs.type
         if lhs.type == i1:
             bool_ops = {"and": llvm.AndOp, "or": llvm.OrOp}
@@ -742,11 +722,6 @@ def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
     return _lower([exo_analyze(proc) for proc in unique_procs])
 
 
-#
-# generate llvmlite ir, then jit compile
-#
-
-
 class LLVMLiteGenerator:
     @staticmethod
     def _convert_op(op: Operation, builder: llvmlite.ir.IRBuilder, block_map: dict[Block, llvmlite.ir.Block], phi_map: dict[SSAValue, llvmlite.ir.PhiInstr], val_map: dict[SSAValue, llvmlite.ir.Value]) -> None:
@@ -982,15 +957,12 @@ def _jit_eval_shape_expr(expr: object, env: dict[object, int]) -> int:
             assert False, f"unsupported dynamic tensor shape expression: {expr}"
 
 
-JIT_SEQUENCE_EXCLUSIONS = (str, bytes, bytearray, memoryview)
-
-
 def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writable: bool) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], object]:
     # build one argument converter for tensor or window inputs
     shape = tensor_type.shape()
     assert (basetype := str(tensor_type.basetype())) in JIT_TENSOR_C_TYPES, f"unsupported JIT tensor dtype: {basetype}"
     c_type = JIT_TENSOR_C_TYPES[basetype]
-    is_seq = lambda x: isinstance(x, Sequence) and not isinstance(x, JIT_SEQUENCE_EXCLUSIONS)
+    is_seq = lambda x: isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray, memoryview))
 
     def linearize(value: object) -> tuple[list[object], list[tuple[MutableSequence[object], int]]]:
         if not is_seq(value):
@@ -1121,11 +1093,6 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
     if optimize:
         proc = optimize(proc)
     return _jit_compile(proc, raw=raw)
-
-
-#
-# cli entry point
-#
 
 
 def _dedup_proc_names(user_module: object) -> list[Procedure]:
