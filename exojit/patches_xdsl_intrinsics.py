@@ -1,8 +1,8 @@
 from collections.abc import Callable
 from typing import ClassVar, TypeAlias
 
-from xdsl.dialects import llvm, vector
-from xdsl.dialects.builtin import DenseIntOrFPElementsAttr, IntegerAttr, VectorType, f32, f64, i64
+from xdsl.dialects import llvm
+from xdsl.dialects.builtin import DenseArrayBase, DenseIntOrFPElementsAttr, IntegerAttr, VectorType, f32, f64, i32, i64
 from xdsl.dialects.llvm import FAbsOp, FNegOp, FSqrtOp, MaskedStoreOp, VectorFMaxOp
 from xdsl.ir import Operation, SSAValue
 from xdsl.pattern_rewriter import PatternRewriter, RewritePattern, op_type_rewrite_pattern
@@ -51,18 +51,27 @@ F32X4 = VectorType(f32, [4])
 F64X2 = VectorType(f64, [2])
 
 
+def _broadcast(scalar: SSAValue, vec_type: VectorType) -> tuple[list[Operation], SSAValue]:
+    n_lanes = vec_type.get_shape()[0]
+    undef = llvm.UndefOp(vec_type)
+    idx = llvm.ConstantOp(IntegerAttr(0, i64), i64)
+    inserted = llvm.InsertElementOp(undef, scalar, idx)
+    shuffled = llvm.ShuffleVectorOp(inserted.res, undef.res, DenseArrayBase.from_list(i32, [0] * n_lanes), vec_type)
+    return [undef, idx, inserted, shuffled], shuffled.res
+
+
 def _make_mask(lane_count: SSAValue, n_lanes: int, *, extend_lane_count: bool = False) -> MaskResult:
     # mask[i] = (i < lane_count), e.g. lane_count=3 -> [T, T, T, F, F, ...]
-    ops = []
+    ops: list[Operation] = []
     indices = llvm.ConstantOp(DenseIntOrFPElementsAttr.from_list(VectorType(i64, [n_lanes]), list(range(n_lanes))), VectorType(i64, [n_lanes]))
     ops.append(indices)
     if extend_lane_count:
         ext = llvm.SExtOp(lane_count, i64)  # i32 -> i64 to match VectorType(i64, ...)
         ops.append(ext)
         lane_count = ext.res
-    broadcast = vector.BroadcastOp(lane_count, VectorType(i64, [n_lanes]))
-    mask = llvm.ICmpOp(indices.result, broadcast.vector, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64))
-    return ops + [broadcast, mask], mask.res
+    bc_ops, bc_val = _broadcast(lane_count, VectorType(i64, [n_lanes]))
+    mask = llvm.ICmpOp(indices.result, bc_val, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64))
+    return ops + bc_ops + [mask], mask.res
 
 
 def _mask_f32x4(lane_count: SSAValue) -> MaskResult:
@@ -119,8 +128,8 @@ def _builder(op_fn: Callable[..., Operation] | None, *arg_indices: int) -> Build
 
 def _build_broadcast(dst: SSAValue, scalar: SSAValue, *, vec_type: VectorType) -> BuildResult:
     # dst[:] = [scalar] * n_lanes
-    broadcast = vector.BroadcastOp(scalar, vec_type)
-    return [broadcast], broadcast.vector
+    ops, val = _broadcast(scalar, vec_type)
+    return ops, val
 
 
 def _build_zero(dst: SSAValue, *, vec_type: VectorType) -> BuildResult:
@@ -156,8 +165,9 @@ def _reduce_handler(vec_type: VectorType) -> Handler:
         acc_val, src_ptr = args[0], args[1]
         assert isinstance(acc_val.owner, llvm.LoadOp)
         src_load = llvm.LoadOp(src_ptr, vec_type)
-        reduce = vector.ReductionOp(src_load.dereferenced_value, vector.CombiningKindAttr([vector.CombiningKindFlag.ADD]), acc=acc_val)
-        return (src_load, reduce, llvm.StoreOp(reduce.dest, acc_val.owner.ptr))
+        elem_type = vec_type.element_type
+        reduce = llvm.CallIntrinsicOp("llvm.vector.reduce.fadd", [acc_val, src_load.dereferenced_value], [elem_type])
+        return (src_load, reduce, llvm.StoreOp(reduce.ress, acc_val.owner.ptr))
 
     return handle
 
@@ -173,7 +183,7 @@ def _build_neon_fmadd(dst: SSAValue, src_a: SSAValue, src_b: SSAValue, *, vec_ty
     load_acc = llvm.LoadOp(dst, vec_type)
     load_a = llvm.LoadOp(src_a, vec_type)
     load_b = llvm.LoadOp(src_b, vec_type)
-    fma = vector.FMAOp(load_a.dereferenced_value, load_b.dereferenced_value, load_acc.dereferenced_value)
+    fma = llvm.FMAOp(load_a.dereferenced_value, load_b.dereferenced_value, load_acc.dereferenced_value)
     return (load_acc, load_a, load_b, fma, llvm.StoreOp(fma.res, dst))
 
 
@@ -181,8 +191,8 @@ def _build_neon_broadcast(dst: SSAValue, scalar_ptr: SSAValue, *, vec_type: Vect
     # dst[:] = [*scalar_ptr] * n_lanes  (scalar_ptr is already !llvm.ptr at this stage of the pipeline)
     elem_type = vec_type.element_type
     load = llvm.LoadOp(scalar_ptr, elem_type)
-    broadcast = vector.BroadcastOp(load.dereferenced_value, vec_type)
-    return (load, broadcast, llvm.StoreOp(broadcast.vector, dst))
+    bc_ops, bc_val = _broadcast(load.dereferenced_value, vec_type)
+    return (load, *bc_ops, llvm.StoreOp(bc_val, dst))
 
 
 def _build_neon_binop(op_cls: type, dst: SSAValue, src_a: SSAValue, src_b: SSAValue, *, vec_type: VectorType) -> tuple[Operation, ...]:
@@ -213,8 +223,8 @@ def _build_neon_zero(dst: SSAValue, *, vec_type: VectorType) -> tuple[Operation,
 
     elem_type = vec_type.element_type
     zero = llvm.ConstantOp(FloatAttr(0.0, elem_type), elem_type)
-    broadcast = vector.BroadcastOp(zero.result, vec_type)
-    return (zero, broadcast, llvm.StoreOp(broadcast.vector, dst))
+    bc_ops, bc_val = _broadcast(zero.result, vec_type)
+    return (zero, *bc_ops, llvm.StoreOp(bc_val, dst))
 
 
 def _make_intrinsics() -> dict[str, Handler]:
@@ -232,9 +242,9 @@ def _make_intrinsics() -> dict[str, Handler]:
         ("mul", _builder(llvm.FMulOp, 1, 2), None, False),  # dst = a * b
         ("neg", _builder(FNegOp, 1), None, False),  # dst = -src
         ("brdcst_scl", _build_broadcast, None, False),
-        ("fmadd2", _builder(vector.FMAOp, 1, 2, 3), None, False),  # dst = a * b + c
-        ("fmadd1", _builder(vector.FMAOp, 1, 2, 3), None, False),  # dst = a * b + c
-        ("fmadd_red", _builder(vector.FMAOp, 1, 2, 0), None, False),  # dst = a * b + dst
+        ("fmadd2", _builder(llvm.FMAOp, 1, 2, 3), None, False),  # dst = a * b + c
+        ("fmadd1", _builder(llvm.FMAOp, 1, 2, 3), None, False),  # dst = a * b + c
+        ("fmadd_red", _builder(llvm.FMAOp, 1, 2, 0), None, False),  # dst = a * b + dst
         ("zero", _build_zero, None, False),
     ]
     for name, builder, pfx_builder, uses_ext in ops:
@@ -312,4 +322,4 @@ class ConvertVecIntrinsic(RewritePattern):
         handler = self._INTRINSICS.get(op.callee.root_reference.data)
         if handler is None:
             return
-        rewriter.replace_matched_op(handler(list(op.args)))
+        rewriter.replace_op(op, handler(list(op.args)))
