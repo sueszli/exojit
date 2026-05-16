@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = "==3.14.*"
 dependencies = [
     "exo-lang==1.0.0",
-    "xdsl @ git+https://github.com/xdslproject/xdsl.git@8a76868b4b15e51c64e2b43b8d843c1deb2be5e6",
+    "xdsl @ git+https://github.com/xdslproject/xdsl.git@e596f41c99e7c20478240b8f386e9e5de6a4ee14",
     "click",
     "cffi",
     "lit",

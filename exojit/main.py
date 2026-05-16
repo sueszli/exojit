@@ -31,7 +31,7 @@ from xdsl.builder import Builder
 from xdsl.context import Context
 from xdsl.dialects import llvm, memref
 from xdsl.dialects.builtin import BoolAttr, Builtin, FloatAttr, IndexType, IntAttr, IntegerAttr, MemRefType, ModuleOp, NoneAttr, StringAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
-from xdsl.dialects.llvm import BrOp, FLogOp, FNegOp, FSqrtOp
+from xdsl.dialects.llvm import BrOp, FCeilOp, FCosOp, FCopySignOp, FExpOp, FExp2Op, FFloorOp, FLog2Op, FLogOp, FNegOp, FPowOp, FSinOp, FSqrtOp, VectorFMaxOp, VectorFMinOp
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
 from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriteWalker
@@ -286,9 +286,8 @@ class IRGenerator:
         return subview.result
 
     def _expr_extern(self, extern: LoopIR.Extern) -> SSAValue:
-        # lower extern function call to func.call with return value
-        if extern.f.name() == "select":
-            # select(a, b, c, d) -> (a < b) ? c : d
+        name = extern.f.name()
+        if name == "select":
             arg_b = self._expr(extern.args[1])
             expected_type = arg_b.type
             arg_a = self._expr(extern.args[0], expected_type)
@@ -296,15 +295,26 @@ class IRGenerator:
             arg_d = self._expr(extern.args[3], expected_type)
             cmp = self._emit(llvm.FCmpOp(arg_a, arg_b, "olt"))
             return self._emit(llvm.SelectOp(cmp, arg_c, arg_d))
-        if extern.f.name() == "sqrt":
-            args = [self._expr(arg) for arg in extern.args]
-            return self._emit(FSqrtOp(args[0]))
-        if extern.f.name() == "log":
-            args = [self._expr(arg) for arg in extern.args]
-            return self._emit(FLogOp(args[0]))
+        unary_intrinsics = {"sqrt": FSqrtOp, "log": FLogOp, "exp": FExpOp, "expf": FExpOp, "sin": FSinOp, "cos": FCosOp, "floor": FFloorOp, "ceil": FCeilOp, "exp2": FExp2Op, "log2": FLog2Op}
+        if (op_cls := unary_intrinsics.get(name)) is not None:
+            return self._emit(op_cls(self._expr(extern.args[0])))
+        binary_intrinsics = {"fmaxf": VectorFMaxOp, "fminf": VectorFMinOp, "pow": FPowOp, "powf": FPowOp, "copysign": FCopySignOp, "copysignf": FCopySignOp}
+        if (op_cls := binary_intrinsics.get(name)) is not None:
+            return self._emit(op_cls(self._expr(extern.args[0]), self._expr(extern.args[1])))
+        if name == "sigmoid":
+            x = self._expr(extern.args[0])
+            neg_x = self._emit(FNegOp(x, fast_math=llvm.FastMathAttr("fast")))
+            exp_neg_x = self._emit(FExpOp(neg_x))
+            one = self._emit(llvm.ConstantOp(FloatAttr(1.0, x.type), x.type))
+            denom = self._emit(llvm.FAddOp(one, exp_neg_x, fast_math=llvm.FastMathAttr("fast")))
+            return self._emit(llvm.FDivOp(one, denom, fast_math=llvm.FastMathAttr("fast")))
+        if name == "relu":
+            x = self._expr(extern.args[0])
+            zero = self._emit(llvm.ConstantOp(FloatAttr(0.0, x.type), x.type))
+            cmp = self._emit(llvm.FCmpOp(x, zero, "ogt"))
+            return self._emit(llvm.SelectOp(cmp, x, zero))
         args = [self._expr(arg) for arg in extern.args]
         output_type = self._to_mlir_type(extern.f.typecheck(extern.args))
-        name = extern.f.name()
         return self._emit(llvm.CallOp(name, *args, return_type=output_type))
 
     def _expr(self, expr: object, expected_type: Attribute | None = None) -> OpResult | SSAValue:
