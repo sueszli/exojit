@@ -6,11 +6,11 @@ from functools import cache
 from exo import *
 
 from exojit.main import jit
-from exojit.patches_exo import NEON
+from exo.platforms.neon import Neon
 
 
 @instr("neon_loadu_f32x4({dst_data}, {src_data});")
-def neon_loadu_f32x4(dst: [f32][4] @ NEON, src: [f32][4] @ DRAM):
+def neon_loadu_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ DRAM):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 4):
@@ -18,7 +18,7 @@ def neon_loadu_f32x4(dst: [f32][4] @ NEON, src: [f32][4] @ DRAM):
 
 
 @instr("neon_storeu_f32x4({dst_data}, {src_data});")
-def neon_storeu_f32x4(dst: [f32][4] @ DRAM, src: [f32][4] @ NEON):
+def neon_storeu_f32x4(dst: [f32][4] @ DRAM, src: [f32][4] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 4):
@@ -26,7 +26,7 @@ def neon_storeu_f32x4(dst: [f32][4] @ DRAM, src: [f32][4] @ NEON):
 
 
 @instr("neon_fmadd_f32x4({dst_data}, {a_data}, {b_data});")
-def neon_fmadd_f32x4(dst: [f32][4] @ NEON, a: [f32][4] @ NEON, b: [f32][4] @ NEON):
+def neon_fmadd_f32x4(dst: [f32][4] @ Neon, a: [f32][4] @ Neon, b: [f32][4] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(a, 0) == 1
     assert stride(b, 0) == 1
@@ -35,7 +35,7 @@ def neon_fmadd_f32x4(dst: [f32][4] @ NEON, a: [f32][4] @ NEON, b: [f32][4] @ NEO
 
 
 @instr("neon_broadcast_f32x4({dst_data}, {src_data});")
-def neon_broadcast_f32x4(dst: [f32][4] @ NEON, src: [f32][1] @ DRAM):
+def neon_broadcast_f32x4(dst: [f32][4] @ Neon, src: [f32][1] @ DRAM):
     assert stride(dst, 0) == 1
     for i in seq(0, 4):
         dst[i] = src[0]
@@ -69,21 +69,21 @@ def matmul_neon(m: int, k: int, n: int) -> Callable[..., None]:
             for jo in seq(0, n_j_tiles):
                 for io in seq(0, m4):
                     for ji in seq(0, bj4):
-                        c0: f32[4] @ NEON
-                        c1: f32[4] @ NEON
-                        c2: f32[4] @ NEON
-                        c3: f32[4] @ NEON
+                        c0: f32[4] @ Neon
+                        c1: f32[4] @ Neon
+                        c2: f32[4] @ Neon
+                        c3: f32[4] @ Neon
                         neon_loadu_f32x4(c0, C[4 * io + 0, bj * jo + 4 * ji : bj * jo + 4 * ji + 4])
                         neon_loadu_f32x4(c1, C[4 * io + 1, bj * jo + 4 * ji : bj * jo + 4 * ji + 4])
                         neon_loadu_f32x4(c2, C[4 * io + 2, bj * jo + 4 * ji : bj * jo + 4 * ji + 4])
                         neon_loadu_f32x4(c3, C[4 * io + 3, bj * jo + 4 * ji : bj * jo + 4 * ji + 4])
                         for ki in seq(0, bk):
-                            b_vec: f32[4] @ NEON
+                            b_vec: f32[4] @ Neon
                             neon_loadu_f32x4(b_vec, B[bk * ko + ki, bj * jo + 4 * ji : bj * jo + 4 * ji + 4])
-                            a0: f32[4] @ NEON
-                            a1: f32[4] @ NEON
-                            a2: f32[4] @ NEON
-                            a3: f32[4] @ NEON
+                            a0: f32[4] @ Neon
+                            a1: f32[4] @ Neon
+                            a2: f32[4] @ Neon
+                            a3: f32[4] @ Neon
                             neon_broadcast_f32x4(a0, A[4 * io + 0, bk * ko + ki : bk * ko + ki + 1])
                             neon_broadcast_f32x4(a1, A[4 * io + 1, bk * ko + ki : bk * ko + ki + 1])
                             neon_broadcast_f32x4(a2, A[4 * io + 2, bk * ko + ki : bk * ko + ki + 1])

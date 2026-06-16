@@ -9,11 +9,12 @@ from exo.stdlib.scheduling import simplify
 from kernels.softmax_neon import neon_loadu_f32x4, neon_storeu_f32x4
 
 from exojit.main import jit
-from exojit.patches_exo import NEON, Stack
+from exo.platforms.neon import Neon
+from exojit.patches_exo import Stack
 
 
 @instr("neon_fmax_acc_f32x4({acc_data}, {src_data});")
-def neon_fmax_acc_f32x4(acc: [f32][4] @ NEON, src: [f32][4] @ NEON):
+def neon_fmax_acc_f32x4(acc: [f32][4] @ Neon, src: [f32][4] @ Neon):
     assert stride(acc, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 4):
@@ -27,14 +28,14 @@ def _jit_max_neon(n: int) -> Callable[..., None]:
 
     @proc
     def _find_max_neon(result: f32[1] @ DRAM, inp: f32[n] @ DRAM):
-        acc0: f32[4] @ NEON
-        acc1: f32[4] @ NEON
+        acc0: f32[4] @ Neon
+        acc1: f32[4] @ Neon
         neon_loadu_f32x4(acc0, inp[0:4])
         neon_loadu_f32x4(acc1, inp[4:8])
 
         for i in seq(0, n8):
-            c0: f32[4] @ NEON
-            c1: f32[4] @ NEON
+            c0: f32[4] @ Neon
+            c1: f32[4] @ Neon
             neon_loadu_f32x4(c0, inp[8 * i : 8 * i + 4])
             neon_loadu_f32x4(c1, inp[8 * i + 4 : 8 * i + 8])
             neon_fmax_acc_f32x4(acc0, c0)

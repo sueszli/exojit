@@ -7,7 +7,7 @@ from exo import *
 from kernels.add_neon import neon_loadu_f32x4, neon_storeu_f32x4
 
 from exojit.main import jit
-from exojit.patches_exo import NEON
+from exo.platforms.neon import Neon
 
 PAR_MIN_ELEMENTS = 524288
 
@@ -15,10 +15,10 @@ PAR_MIN_ELEMENTS = 524288
 @proc
 def _embedding_neon(D: size, out: f32[D] @ DRAM, row: f32[D] @ DRAM):
     for i in seq(0, D / 16):
-        v0: f32[4] @ NEON
-        v1: f32[4] @ NEON
-        v2: f32[4] @ NEON
-        v3: f32[4] @ NEON
+        v0: f32[4] @ Neon
+        v1: f32[4] @ Neon
+        v2: f32[4] @ Neon
+        v3: f32[4] @ Neon
         neon_loadu_f32x4(v0, row[16 * i + 0 : 16 * i + 4])
         neon_loadu_f32x4(v1, row[16 * i + 4 : 16 * i + 8])
         neon_loadu_f32x4(v2, row[16 * i + 8 : 16 * i + 12])
@@ -32,10 +32,10 @@ def _embedding_neon(D: size, out: f32[D] @ DRAM, row: f32[D] @ DRAM):
 @proc
 def _embedding_neon_par(D: size, out: f32[D] @ DRAM, row: f32[D] @ DRAM):
     for i in par(0, D / 16):
-        v0: f32[4] @ NEON
-        v1: f32[4] @ NEON
-        v2: f32[4] @ NEON
-        v3: f32[4] @ NEON
+        v0: f32[4] @ Neon
+        v1: f32[4] @ Neon
+        v2: f32[4] @ Neon
+        v3: f32[4] @ Neon
         neon_loadu_f32x4(v0, row[16 * i + 0 : 16 * i + 4])
         neon_loadu_f32x4(v1, row[16 * i + 4 : 16 * i + 8])
         neon_loadu_f32x4(v2, row[16 * i + 8 : 16 * i + 12])

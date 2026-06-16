@@ -11,9 +11,6 @@ from exo.core.extern import Extern, _EErr
 from exo.core.LoopIR import LoopIR
 from exo.core.memory import Memory
 from exo.core.prelude import Sym
-from exo.platforms.neon import Neon as NEON
-
-__all__ = ["NEON", "Stack", "log"]
 
 
 # exo does `assert isinstance(frame.f_locals, dict)` but PEP 667 (Python 3.14+)

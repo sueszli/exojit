@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from exo import *
 
-from exojit.patches_exo import NEON
+from exo.platforms.neon import Neon
 
 #
 # f32x4 intrinsic declarations
@@ -13,7 +13,7 @@ from exojit.patches_exo import NEON
 
 
 @instr("neon_loadu_f32x4({dst_data}, {src_data});")
-def neon_loadu_f32x4(dst: [f32][4] @ NEON, src: [f32][4] @ DRAM):
+def neon_loadu_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ DRAM):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 4):
@@ -21,7 +21,7 @@ def neon_loadu_f32x4(dst: [f32][4] @ NEON, src: [f32][4] @ DRAM):
 
 
 @instr("neon_storeu_f32x4({dst_data}, {src_data});")
-def neon_storeu_f32x4(dst: [f32][4] @ DRAM, src: [f32][4] @ NEON):
+def neon_storeu_f32x4(dst: [f32][4] @ DRAM, src: [f32][4] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 4):
@@ -29,7 +29,7 @@ def neon_storeu_f32x4(dst: [f32][4] @ DRAM, src: [f32][4] @ NEON):
 
 
 @instr("neon_fmadd_f32x4({dst_data}, {a_data}, {b_data});")
-def neon_fmadd_f32x4(dst: [f32][4] @ NEON, a: [f32][4] @ NEON, b: [f32][4] @ NEON):
+def neon_fmadd_f32x4(dst: [f32][4] @ Neon, a: [f32][4] @ Neon, b: [f32][4] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(a, 0) == 1
     assert stride(b, 0) == 1
@@ -38,7 +38,7 @@ def neon_fmadd_f32x4(dst: [f32][4] @ NEON, a: [f32][4] @ NEON, b: [f32][4] @ NEO
 
 
 @instr("neon_broadcast_f32x4({dst_data}, {src_data});")
-def neon_broadcast_f32x4(dst: [f32][4] @ NEON, src: [f32][1] @ DRAM):
+def neon_broadcast_f32x4(dst: [f32][4] @ Neon, src: [f32][1] @ DRAM):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 4):
@@ -46,7 +46,7 @@ def neon_broadcast_f32x4(dst: [f32][4] @ NEON, src: [f32][1] @ DRAM):
 
 
 @instr("vec_add_f32x4({dst_data}, {a_data}, {b_data});")
-def vec_add_f32x4(dst: [f32][4] @ NEON, a: [f32][4] @ NEON, b: [f32][4] @ NEON):
+def vec_add_f32x4(dst: [f32][4] @ Neon, a: [f32][4] @ Neon, b: [f32][4] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(a, 0) == 1
     assert stride(b, 0) == 1
@@ -55,7 +55,7 @@ def vec_add_f32x4(dst: [f32][4] @ NEON, a: [f32][4] @ NEON, b: [f32][4] @ NEON):
 
 
 @instr("vec_mul_f32x4({dst_data}, {a_data}, {b_data});")
-def vec_mul_f32x4(dst: [f32][4] @ NEON, a: [f32][4] @ NEON, b: [f32][4] @ NEON):
+def vec_mul_f32x4(dst: [f32][4] @ Neon, a: [f32][4] @ Neon, b: [f32][4] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(a, 0) == 1
     assert stride(b, 0) == 1
@@ -64,7 +64,7 @@ def vec_mul_f32x4(dst: [f32][4] @ NEON, a: [f32][4] @ NEON, b: [f32][4] @ NEON):
 
 
 @instr("vec_neg_f32x4({dst_data}, {src_data});")
-def vec_neg_f32x4(dst: [f32][4] @ NEON, src: [f32][4] @ NEON):
+def vec_neg_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 4):
@@ -72,7 +72,7 @@ def vec_neg_f32x4(dst: [f32][4] @ NEON, src: [f32][4] @ NEON):
 
 
 @instr("vec_copy_f32x4({dst_data}, {src_data});")
-def vec_copy_f32x4(dst: [f32][4] @ NEON, src: [f32][4] @ NEON):
+def vec_copy_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 4):
@@ -80,7 +80,7 @@ def vec_copy_f32x4(dst: [f32][4] @ NEON, src: [f32][4] @ NEON):
 
 
 @instr("vec_add_red_f32x4({dst_data}, {src_data});")
-def vec_add_red_f32x4(dst: [f32][4] @ NEON, src: [f32][4] @ NEON):
+def vec_add_red_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 4):
@@ -93,7 +93,7 @@ def vec_add_red_f32x4(dst: [f32][4] @ NEON, src: [f32][4] @ NEON):
 
 
 @instr("neon_loadu_f64x2({dst_data}, {src_data});")
-def neon_loadu_f64x2(dst: [f64][2] @ NEON, src: [f64][2] @ DRAM):
+def neon_loadu_f64x2(dst: [f64][2] @ Neon, src: [f64][2] @ DRAM):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 2):
@@ -101,7 +101,7 @@ def neon_loadu_f64x2(dst: [f64][2] @ NEON, src: [f64][2] @ DRAM):
 
 
 @instr("neon_storeu_f64x2({dst_data}, {src_data});")
-def neon_storeu_f64x2(dst: [f64][2] @ DRAM, src: [f64][2] @ NEON):
+def neon_storeu_f64x2(dst: [f64][2] @ DRAM, src: [f64][2] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 2):
@@ -109,7 +109,7 @@ def neon_storeu_f64x2(dst: [f64][2] @ DRAM, src: [f64][2] @ NEON):
 
 
 @instr("neon_fmadd_f64x2({dst_data}, {a_data}, {b_data});")
-def neon_fmadd_f64x2(dst: [f64][2] @ NEON, a: [f64][2] @ NEON, b: [f64][2] @ NEON):
+def neon_fmadd_f64x2(dst: [f64][2] @ Neon, a: [f64][2] @ Neon, b: [f64][2] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(a, 0) == 1
     assert stride(b, 0) == 1
@@ -118,7 +118,7 @@ def neon_fmadd_f64x2(dst: [f64][2] @ NEON, a: [f64][2] @ NEON, b: [f64][2] @ NEO
 
 
 @instr("neon_broadcast_f64x2({dst_data}, {src_data});")
-def neon_broadcast_f64x2(dst: [f64][2] @ NEON, src: [f64][1] @ DRAM):
+def neon_broadcast_f64x2(dst: [f64][2] @ Neon, src: [f64][1] @ DRAM):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 2):
@@ -126,7 +126,7 @@ def neon_broadcast_f64x2(dst: [f64][2] @ NEON, src: [f64][1] @ DRAM):
 
 
 @instr("vec_add_f64x2({dst_data}, {a_data}, {b_data});")
-def vec_add_f64x2(dst: [f64][2] @ NEON, a: [f64][2] @ NEON, b: [f64][2] @ NEON):
+def vec_add_f64x2(dst: [f64][2] @ Neon, a: [f64][2] @ Neon, b: [f64][2] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(a, 0) == 1
     assert stride(b, 0) == 1
@@ -135,7 +135,7 @@ def vec_add_f64x2(dst: [f64][2] @ NEON, a: [f64][2] @ NEON, b: [f64][2] @ NEON):
 
 
 @instr("vec_mul_f64x2({dst_data}, {a_data}, {b_data});")
-def vec_mul_f64x2(dst: [f64][2] @ NEON, a: [f64][2] @ NEON, b: [f64][2] @ NEON):
+def vec_mul_f64x2(dst: [f64][2] @ Neon, a: [f64][2] @ Neon, b: [f64][2] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(a, 0) == 1
     assert stride(b, 0) == 1
@@ -157,9 +157,9 @@ def vec_mul_f64x2(dst: [f64][2] @ NEON, a: [f64][2] @ NEON, b: [f64][2] @ NEON):
 
 @proc
 def test_add_f32(out: f32[4] @ DRAM, x: f32[4] @ DRAM, y: f32[4] @ DRAM):
-    a: f32[4] @ NEON
-    b: f32[4] @ NEON
-    c: f32[4] @ NEON
+    a: f32[4] @ Neon
+    b: f32[4] @ Neon
+    c: f32[4] @ Neon
     neon_loadu_f32x4(a, x[0:4])
     neon_loadu_f32x4(b, y[0:4])
     vec_add_f32x4(c, a, b)
@@ -180,9 +180,9 @@ def test_add_f32(out: f32[4] @ DRAM, x: f32[4] @ DRAM, y: f32[4] @ DRAM):
 
 @proc
 def test_add_f64(out: f64[2] @ DRAM, x: f64[2] @ DRAM, y: f64[2] @ DRAM):
-    a: f64[2] @ NEON
-    b: f64[2] @ NEON
-    c: f64[2] @ NEON
+    a: f64[2] @ Neon
+    b: f64[2] @ Neon
+    c: f64[2] @ Neon
     neon_loadu_f64x2(a, x[0:2])
     neon_loadu_f64x2(b, y[0:2])
     vec_add_f64x2(c, a, b)
@@ -203,8 +203,8 @@ def test_add_f64(out: f64[2] @ DRAM, x: f64[2] @ DRAM, y: f64[2] @ DRAM):
 
 @proc
 def test_add_red_f32(dst: f32[4] @ DRAM, src: f32[4] @ DRAM):
-    vd: f32[4] @ NEON
-    vs: f32[4] @ NEON
+    vd: f32[4] @ Neon
+    vs: f32[4] @ Neon
     neon_loadu_f32x4(vd, dst[0:4])
     neon_loadu_f32x4(vs, src[0:4])
     vec_add_red_f32x4(vd, vs)
@@ -223,7 +223,7 @@ def test_add_red_f32(dst: f32[4] @ DRAM, src: f32[4] @ DRAM):
 
 @proc
 def test_broadcast_f64(out: f64[2] @ DRAM, s: f64[1] @ DRAM):
-    v: f64[2] @ NEON
+    v: f64[2] @ Neon
     neon_broadcast_f64x2(v, s[0:1])
     neon_storeu_f64x2(out[0:2], v)
 
@@ -240,8 +240,8 @@ def test_broadcast_f64(out: f64[2] @ DRAM, s: f64[1] @ DRAM):
 
 @proc
 def test_copy_f32(out: f32[4] @ DRAM, x: f32[4] @ DRAM):
-    a: f32[4] @ NEON
-    b: f32[4] @ NEON
+    a: f32[4] @ Neon
+    b: f32[4] @ Neon
     neon_loadu_f32x4(a, x[0:4])
     vec_copy_f32x4(b, a)
     neon_storeu_f32x4(out[0:4], b)
@@ -262,9 +262,9 @@ def test_copy_f32(out: f32[4] @ DRAM, x: f32[4] @ DRAM):
 
 @proc
 def test_fma_f32(dst: f32[4] @ DRAM, a: f32[4] @ DRAM, b: f32[4] @ DRAM):
-    vd: f32[4] @ NEON
-    va: f32[4] @ NEON
-    vb: f32[4] @ NEON
+    vd: f32[4] @ Neon
+    va: f32[4] @ Neon
+    vb: f32[4] @ Neon
     neon_loadu_f32x4(vd, dst[0:4])
     neon_loadu_f32x4(va, a[0:4])
     neon_loadu_f32x4(vb, b[0:4])
@@ -287,9 +287,9 @@ def test_fma_f32(dst: f32[4] @ DRAM, a: f32[4] @ DRAM, b: f32[4] @ DRAM):
 
 @proc
 def test_fma_f64(dst: f64[2] @ DRAM, a: f64[2] @ DRAM, b: f64[2] @ DRAM):
-    vd: f64[2] @ NEON
-    va: f64[2] @ NEON
-    vb: f64[2] @ NEON
+    vd: f64[2] @ Neon
+    va: f64[2] @ Neon
+    vb: f64[2] @ Neon
     neon_loadu_f64x2(vd, dst[0:2])
     neon_loadu_f64x2(va, a[0:2])
     neon_loadu_f64x2(vb, b[0:2])
@@ -312,9 +312,9 @@ def test_fma_f64(dst: f64[2] @ DRAM, a: f64[2] @ DRAM, b: f64[2] @ DRAM):
 @proc
 def test_loop_add_f32(out: f32[16] @ DRAM, x: f32[16] @ DRAM, y: f32[16] @ DRAM):
     for j in seq(0, 4):
-        a: f32[4] @ NEON
-        b: f32[4] @ NEON
-        c: f32[4] @ NEON
+        a: f32[4] @ Neon
+        b: f32[4] @ Neon
+        c: f32[4] @ Neon
         neon_loadu_f32x4(a, x[4 * j : 4 * j + 4])
         neon_loadu_f32x4(b, y[4 * j : 4 * j + 4])
         vec_add_f32x4(c, a, b)
@@ -335,9 +335,9 @@ def test_loop_add_f32(out: f32[16] @ DRAM, x: f32[16] @ DRAM, y: f32[16] @ DRAM)
 
 @proc
 def test_mul_f32(out: f32[4] @ DRAM, x: f32[4] @ DRAM, y: f32[4] @ DRAM):
-    a: f32[4] @ NEON
-    b: f32[4] @ NEON
-    c: f32[4] @ NEON
+    a: f32[4] @ Neon
+    b: f32[4] @ Neon
+    c: f32[4] @ Neon
     neon_loadu_f32x4(a, x[0:4])
     neon_loadu_f32x4(b, y[0:4])
     vec_mul_f32x4(c, a, b)
@@ -358,9 +358,9 @@ def test_mul_f32(out: f32[4] @ DRAM, x: f32[4] @ DRAM, y: f32[4] @ DRAM):
 
 @proc
 def test_mul_f64(out: f64[2] @ DRAM, x: f64[2] @ DRAM, y: f64[2] @ DRAM):
-    a: f64[2] @ NEON
-    b: f64[2] @ NEON
-    c: f64[2] @ NEON
+    a: f64[2] @ Neon
+    b: f64[2] @ Neon
+    c: f64[2] @ Neon
     neon_loadu_f64x2(a, x[0:2])
     neon_loadu_f64x2(b, y[0:2])
     vec_mul_f64x2(c, a, b)
@@ -380,8 +380,8 @@ def test_mul_f64(out: f64[2] @ DRAM, x: f64[2] @ DRAM, y: f64[2] @ DRAM):
 
 @proc
 def test_neg_f32(out: f32[4] @ DRAM, x: f32[4] @ DRAM):
-    a: f32[4] @ NEON
-    b: f32[4] @ NEON
+    a: f32[4] @ Neon
+    b: f32[4] @ Neon
     neon_loadu_f32x4(a, x[0:4])
     vec_neg_f32x4(b, a)
     neon_storeu_f32x4(out[0:4], b)
@@ -399,9 +399,9 @@ def test_neg_f32(out: f32[4] @ DRAM, x: f32[4] @ DRAM):
 
 @proc
 def test_saxpy_f32(y: f32[4] @ DRAM, a: f32[1] @ DRAM, x: f32[4] @ DRAM):
-    va: f32[4] @ NEON
-    vx: f32[4] @ NEON
-    vy: f32[4] @ NEON
+    va: f32[4] @ Neon
+    vx: f32[4] @ Neon
+    vy: f32[4] @ Neon
     neon_broadcast_f32x4(va, a[0:1])
     neon_loadu_f32x4(vx, x[0:4])
     neon_loadu_f32x4(vy, y[0:4])
@@ -424,11 +424,11 @@ def test_saxpy_f32(y: f32[4] @ DRAM, a: f32[1] @ DRAM, x: f32[4] @ DRAM):
 
 @proc
 def test_saxpy_loop(y: f32[16] @ DRAM, a: f32[1] @ DRAM, x: f32[16] @ DRAM):
-    va: f32[4] @ NEON
+    va: f32[4] @ Neon
     neon_broadcast_f32x4(va, a[0:1])
     for j in seq(0, 4):
-        vx: f32[4] @ NEON
-        vy: f32[4] @ NEON
+        vx: f32[4] @ Neon
+        vy: f32[4] @ Neon
         neon_loadu_f32x4(vx, x[4 * j : 4 * j + 4])
         neon_loadu_f32x4(vy, y[4 * j : 4 * j + 4])
         neon_fmadd_f32x4(vy, va, vx)

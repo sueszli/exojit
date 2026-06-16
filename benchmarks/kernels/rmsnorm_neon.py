@@ -7,7 +7,7 @@ from exo import *
 from kernels.softmax_neon import neon_add_acc_f32x4, neon_broadcast_f32x4, neon_loadu_f32x4, neon_mul_f32x4, neon_square_f32x4, neon_storeu_f32x4
 
 from exojit.main import jit
-from exojit.patches_exo import NEON
+from exo.platforms.neon import Neon
 
 PAR_MIN_ELEMENTS = 524288
 
@@ -20,28 +20,28 @@ def _rmsnorm_sumsq_neon(N: size, result: f32[1] @ DRAM, inp: f32[N] @ DRAM):
     zero_buf[2] = 0.0
     zero_buf[3] = 0.0
 
-    acc0: f32[4] @ NEON
-    acc1: f32[4] @ NEON
-    acc2: f32[4] @ NEON
-    acc3: f32[4] @ NEON
+    acc0: f32[4] @ Neon
+    acc1: f32[4] @ Neon
+    acc2: f32[4] @ Neon
+    acc3: f32[4] @ Neon
     neon_loadu_f32x4(acc0, zero_buf[0:4])
     neon_loadu_f32x4(acc1, zero_buf[0:4])
     neon_loadu_f32x4(acc2, zero_buf[0:4])
     neon_loadu_f32x4(acc3, zero_buf[0:4])
 
     for i in seq(0, N / 16):
-        v0: f32[4] @ NEON
-        v1: f32[4] @ NEON
-        v2: f32[4] @ NEON
-        v3: f32[4] @ NEON
+        v0: f32[4] @ Neon
+        v1: f32[4] @ Neon
+        v2: f32[4] @ Neon
+        v3: f32[4] @ Neon
         neon_loadu_f32x4(v0, inp[16 * i : 16 * i + 4])
         neon_loadu_f32x4(v1, inp[16 * i + 4 : 16 * i + 8])
         neon_loadu_f32x4(v2, inp[16 * i + 8 : 16 * i + 12])
         neon_loadu_f32x4(v3, inp[16 * i + 12 : 16 * i + 16])
-        sq0: f32[4] @ NEON
-        sq1: f32[4] @ NEON
-        sq2: f32[4] @ NEON
-        sq3: f32[4] @ NEON
+        sq0: f32[4] @ Neon
+        sq1: f32[4] @ Neon
+        sq2: f32[4] @ Neon
+        sq3: f32[4] @ Neon
         neon_square_f32x4(sq0, v0)
         neon_square_f32x4(sq1, v1)
         neon_square_f32x4(sq2, v2)
@@ -67,22 +67,22 @@ def _rmsnorm_sumsq_neon(N: size, result: f32[1] @ DRAM, inp: f32[N] @ DRAM):
 
 @proc
 def _rmsnorm_scale_neon(N: size, out: f32[N] @ DRAM, inp: f32[N] @ DRAM, scale: f32[1] @ DRAM):
-    scale_v: f32[4] @ NEON
+    scale_v: f32[4] @ Neon
     neon_broadcast_f32x4(scale_v, scale[0:1])
 
     for i in seq(0, N / 16):
-        v0: f32[4] @ NEON
-        v1: f32[4] @ NEON
-        v2: f32[4] @ NEON
-        v3: f32[4] @ NEON
+        v0: f32[4] @ Neon
+        v1: f32[4] @ Neon
+        v2: f32[4] @ Neon
+        v3: f32[4] @ Neon
         neon_loadu_f32x4(v0, inp[16 * i + 0 : 16 * i + 4])
         neon_loadu_f32x4(v1, inp[16 * i + 4 : 16 * i + 8])
         neon_loadu_f32x4(v2, inp[16 * i + 8 : 16 * i + 12])
         neon_loadu_f32x4(v3, inp[16 * i + 12 : 16 * i + 16])
-        r0: f32[4] @ NEON
-        r1: f32[4] @ NEON
-        r2: f32[4] @ NEON
-        r3: f32[4] @ NEON
+        r0: f32[4] @ Neon
+        r1: f32[4] @ Neon
+        r2: f32[4] @ Neon
+        r3: f32[4] @ Neon
         neon_mul_f32x4(r0, v0, scale_v)
         neon_mul_f32x4(r1, v1, scale_v)
         neon_mul_f32x4(r2, v2, scale_v)
@@ -95,22 +95,22 @@ def _rmsnorm_scale_neon(N: size, out: f32[N] @ DRAM, inp: f32[N] @ DRAM, scale: 
 
 @proc
 def _rmsnorm_scale_neon_par(N: size, out: f32[N] @ DRAM, inp: f32[N] @ DRAM, scale: f32[1] @ DRAM):
-    scale_v: f32[4] @ NEON
+    scale_v: f32[4] @ Neon
     neon_broadcast_f32x4(scale_v, scale[0:1])
 
     for i in par(0, N / 16):
-        v0: f32[4] @ NEON
-        v1: f32[4] @ NEON
-        v2: f32[4] @ NEON
-        v3: f32[4] @ NEON
+        v0: f32[4] @ Neon
+        v1: f32[4] @ Neon
+        v2: f32[4] @ Neon
+        v3: f32[4] @ Neon
         neon_loadu_f32x4(v0, inp[16 * i + 0 : 16 * i + 4])
         neon_loadu_f32x4(v1, inp[16 * i + 4 : 16 * i + 8])
         neon_loadu_f32x4(v2, inp[16 * i + 8 : 16 * i + 12])
         neon_loadu_f32x4(v3, inp[16 * i + 12 : 16 * i + 16])
-        r0: f32[4] @ NEON
-        r1: f32[4] @ NEON
-        r2: f32[4] @ NEON
-        r3: f32[4] @ NEON
+        r0: f32[4] @ Neon
+        r1: f32[4] @ Neon
+        r2: f32[4] @ Neon
+        r3: f32[4] @ Neon
         neon_mul_f32x4(r0, v0, scale_v)
         neon_mul_f32x4(r1, v1, scale_v)
         neon_mul_f32x4(r2, v2, scale_v)

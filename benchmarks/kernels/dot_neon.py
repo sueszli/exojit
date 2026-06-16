@@ -7,7 +7,7 @@ from exo import *
 from kernels.softmax_neon import neon_add_acc_f32x4, neon_fmadd_f32x4, neon_loadu_f32x4, neon_storeu_f32x4
 
 from exojit.main import jit
-from exojit.patches_exo import NEON
+from exo.platforms.neon import Neon
 
 
 @cache
@@ -23,24 +23,24 @@ def dot_neon(n: int) -> Callable[..., None]:
         zero_buf[2] = 0.0
         zero_buf[3] = 0.0
 
-        acc0: f32[4] @ NEON
-        acc1: f32[4] @ NEON
-        acc2: f32[4] @ NEON
-        acc3: f32[4] @ NEON
+        acc0: f32[4] @ Neon
+        acc1: f32[4] @ Neon
+        acc2: f32[4] @ Neon
+        acc3: f32[4] @ Neon
         neon_loadu_f32x4(acc0, zero_buf[0:4])
         neon_loadu_f32x4(acc1, zero_buf[0:4])
         neon_loadu_f32x4(acc2, zero_buf[0:4])
         neon_loadu_f32x4(acc3, zero_buf[0:4])
 
         for i in seq(0, n16):
-            q0: f32[4] @ NEON
-            q1: f32[4] @ NEON
-            q2: f32[4] @ NEON
-            q3: f32[4] @ NEON
-            k0: f32[4] @ NEON
-            k1: f32[4] @ NEON
-            k2: f32[4] @ NEON
-            k3: f32[4] @ NEON
+            q0: f32[4] @ Neon
+            q1: f32[4] @ Neon
+            q2: f32[4] @ Neon
+            q3: f32[4] @ Neon
+            k0: f32[4] @ Neon
+            k1: f32[4] @ Neon
+            k2: f32[4] @ Neon
+            k3: f32[4] @ Neon
             neon_loadu_f32x4(q0, q[16 * i : 16 * i + 4])
             neon_loadu_f32x4(q1, q[16 * i + 4 : 16 * i + 8])
             neon_loadu_f32x4(q2, q[16 * i + 8 : 16 * i + 12])

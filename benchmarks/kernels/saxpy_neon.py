@@ -6,13 +6,13 @@ from functools import cache
 from exo import *
 
 from exojit.main import jit
-from exojit.patches_exo import NEON
+from exo.platforms.neon import Neon
 
 PAR_MIN_ELEMENTS = 524288
 
 
 @instr("neon_loadu_f32x4({dst_data}, {src_data});")
-def neon_loadu_f32x4(dst: [f32][4] @ NEON, src: [f32][4] @ DRAM):
+def neon_loadu_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ DRAM):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 4):
@@ -20,7 +20,7 @@ def neon_loadu_f32x4(dst: [f32][4] @ NEON, src: [f32][4] @ DRAM):
 
 
 @instr("neon_storeu_f32x4({dst_data}, {src_data});")
-def neon_storeu_f32x4(dst: [f32][4] @ DRAM, src: [f32][4] @ NEON):
+def neon_storeu_f32x4(dst: [f32][4] @ DRAM, src: [f32][4] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(src, 0) == 1
     for i in seq(0, 4):
@@ -28,7 +28,7 @@ def neon_storeu_f32x4(dst: [f32][4] @ DRAM, src: [f32][4] @ NEON):
 
 
 @instr("neon_fmadd_f32x4({dst_data}, {a_data}, {b_data});")
-def neon_fmadd_f32x4(dst: [f32][4] @ NEON, a: [f32][4] @ NEON, b: [f32][4] @ NEON):
+def neon_fmadd_f32x4(dst: [f32][4] @ Neon, a: [f32][4] @ Neon, b: [f32][4] @ Neon):
     assert stride(dst, 0) == 1
     assert stride(a, 0) == 1
     assert stride(b, 0) == 1
@@ -37,7 +37,7 @@ def neon_fmadd_f32x4(dst: [f32][4] @ NEON, a: [f32][4] @ NEON, b: [f32][4] @ NEO
 
 
 @instr("neon_broadcast_f32x4({dst_data}, {src_data});")
-def neon_broadcast_f32x4(dst: [f32][4] @ NEON, src: [f32][1] @ DRAM):
+def neon_broadcast_f32x4(dst: [f32][4] @ Neon, src: [f32][1] @ DRAM):
     assert stride(dst, 0) == 1
     for i in seq(0, 4):
         dst[i] = src[0]
@@ -45,17 +45,17 @@ def neon_broadcast_f32x4(dst: [f32][4] @ NEON, src: [f32][1] @ DRAM):
 
 @proc
 def _saxpy_neon(N: size, y: f32[N] @ DRAM, x: f32[N] @ DRAM, a: f32[1] @ DRAM):
-    a_vec: f32[4] @ NEON
+    a_vec: f32[4] @ Neon
     neon_broadcast_f32x4(a_vec, a[0:1])
     for i in seq(0, N / 16):
-        x0: f32[4] @ NEON
-        x1: f32[4] @ NEON
-        x2: f32[4] @ NEON
-        x3: f32[4] @ NEON
-        y0: f32[4] @ NEON
-        y1: f32[4] @ NEON
-        y2: f32[4] @ NEON
-        y3: f32[4] @ NEON
+        x0: f32[4] @ Neon
+        x1: f32[4] @ Neon
+        x2: f32[4] @ Neon
+        x3: f32[4] @ Neon
+        y0: f32[4] @ Neon
+        y1: f32[4] @ Neon
+        y2: f32[4] @ Neon
+        y3: f32[4] @ Neon
         neon_loadu_f32x4(x0, x[16 * i + 0 : 16 * i + 4])
         neon_loadu_f32x4(x1, x[16 * i + 4 : 16 * i + 8])
         neon_loadu_f32x4(x2, x[16 * i + 8 : 16 * i + 12])
@@ -76,17 +76,17 @@ def _saxpy_neon(N: size, y: f32[N] @ DRAM, x: f32[N] @ DRAM, a: f32[1] @ DRAM):
 
 @proc
 def _saxpy_neon_par(N: size, y: f32[N] @ DRAM, x: f32[N] @ DRAM, a: f32[1] @ DRAM):
-    a_vec: f32[4] @ NEON
+    a_vec: f32[4] @ Neon
     neon_broadcast_f32x4(a_vec, a[0:1])
     for i in par(0, N / 16):
-        x0: f32[4] @ NEON
-        x1: f32[4] @ NEON
-        x2: f32[4] @ NEON
-        x3: f32[4] @ NEON
-        y0: f32[4] @ NEON
-        y1: f32[4] @ NEON
-        y2: f32[4] @ NEON
-        y3: f32[4] @ NEON
+        x0: f32[4] @ Neon
+        x1: f32[4] @ Neon
+        x2: f32[4] @ Neon
+        x3: f32[4] @ Neon
+        y0: f32[4] @ Neon
+        y1: f32[4] @ Neon
+        y2: f32[4] @ Neon
+        y3: f32[4] @ Neon
         neon_loadu_f32x4(x0, x[16 * i + 0 : 16 * i + 4])
         neon_loadu_f32x4(x1, x[16 * i + 4 : 16 * i + 8])
         neon_loadu_f32x4(x2, x[16 * i + 8 : 16 * i + 12])

@@ -7,7 +7,7 @@ from exo import *
 from kernels.softmax_neon import neon_add_acc_f32x4, neon_broadcast_f32x4, neon_fmadd_f32x4, neon_loadu_f32x4, neon_mul_f32x4, neon_square_f32x4, neon_storeu_f32x4, neon_sub_f32x4
 
 from exojit.main import jit
-from exojit.patches_exo import NEON
+from exo.platforms.neon import Neon
 
 
 @cache
@@ -26,9 +26,9 @@ def cross_entropy_neon(n: int) -> Callable[..., None]:
         C[5] = 1.0
         C[6] = 1.0
 
-        inv32_v: f32[4] @ NEON
-        c5_v: f32[4] @ NEON
-        max_v: f32[4] @ NEON
+        inv32_v: f32[4] @ Neon
+        c5_v: f32[4] @ Neon
+        max_v: f32[4] @ Neon
         neon_broadcast_f32x4(inv32_v, C[0:1])
         neon_broadcast_f32x4(c5_v, C[1:2])
         neon_broadcast_f32x4(max_v, mx[0:1])
@@ -38,24 +38,24 @@ def cross_entropy_neon(n: int) -> Callable[..., None]:
         sum_buf[1] = 0.0
         sum_buf[2] = 0.0
         sum_buf[3] = 0.0
-        sum_v: f32[4] @ NEON
+        sum_v: f32[4] @ Neon
         neon_loadu_f32x4(sum_v, sum_buf[0:4])
 
         for i in seq(0, n4):
-            x: f32[4] @ NEON
+            x: f32[4] @ Neon
             neon_loadu_f32x4(x, inp[4 * i : 4 * i + 4])
 
-            t: f32[4] @ NEON
+            t: f32[4] @ Neon
             neon_sub_f32x4(t, x, max_v)
 
-            y: f32[4] @ NEON
+            y: f32[4] @ Neon
             neon_mul_f32x4(y, t, inv32_v)
 
-            h: f32[4] @ NEON
+            h: f32[4] @ Neon
             neon_broadcast_f32x4(h, C[2:3])
             neon_fmadd_f32x4(h, c5_v, y)
 
-            g: f32[4] @ NEON
+            g: f32[4] @ Neon
             neon_broadcast_f32x4(g, C[3:4])
             neon_fmadd_f32x4(g, h, y)
 
@@ -68,15 +68,15 @@ def cross_entropy_neon(n: int) -> Callable[..., None]:
             neon_broadcast_f32x4(h, C[6:7])
             neon_fmadd_f32x4(h, g, y)
 
-            sq1: f32[4] @ NEON
+            sq1: f32[4] @ Neon
             neon_square_f32x4(sq1, h)
-            sq2: f32[4] @ NEON
+            sq2: f32[4] @ Neon
             neon_square_f32x4(sq2, sq1)
-            sq3: f32[4] @ NEON
+            sq3: f32[4] @ Neon
             neon_square_f32x4(sq3, sq2)
-            sq4: f32[4] @ NEON
+            sq4: f32[4] @ Neon
             neon_square_f32x4(sq4, sq3)
-            sq5: f32[4] @ NEON
+            sq5: f32[4] @ Neon
             neon_square_f32x4(sq5, sq4)
 
             neon_add_acc_f32x4(sum_v, sq5)
