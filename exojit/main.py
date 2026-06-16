@@ -664,6 +664,13 @@ class IRGenerator:
         # declare external malloc/free for dram alloc/free lowering
         self._insert_at_module(llvm.FuncOp("malloc", llvm.LLVMFunctionType([i64], llvm.LLVMPointerType()), llvm.LinkageAttr("external")))
         self._insert_at_module(llvm.FuncOp("free", llvm.LLVMFunctionType([llvm.LLVMPointerType()]), llvm.LinkageAttr("external")))
+        if self._par_counter:
+            # OMP runtime entrypoints emitted by par() lowering; only declared when actually
+            # used so non-parallel modules' MLIR output stays stable for filecheck tests.
+            ptr = llvm.LLVMPointerType()
+            self._insert_at_module(llvm.FuncOp("__kmpc_fork_call", llvm.LLVMFunctionType([ptr, i32, ptr], is_variadic=True), llvm.LinkageAttr("external")))
+            self._insert_at_module(llvm.FuncOp("__kmpc_for_static_init_8", llvm.LLVMFunctionType([ptr, i32, i32, ptr, ptr, ptr, ptr, i64, i64]), llvm.LinkageAttr("external")))
+            self._insert_at_module(llvm.FuncOp("__kmpc_for_static_fini", llvm.LLVMFunctionType([ptr, i32]), llvm.LinkageAttr("external")))
         return self.module
 
 
@@ -755,7 +762,7 @@ class LLVMLiteGenerator:
 
         for op in func_ops:
             assert isinstance(op, llvm.FuncOp)
-            ftype = llvmlite.ir.FunctionType(convert_type(op.function_type.output), [convert_type(t) for t in op.function_type.inputs])
+            ftype = llvmlite.ir.FunctionType(convert_type(op.function_type.output), [convert_type(t) for t in op.function_type.inputs], var_arg=op.function_type.is_variadic)
             fn = llvmlite.ir.Function(llvm_module, ftype, name=op.sym_name.data)
 
             # mark all pointer args as noalias for vectorization
@@ -846,10 +853,19 @@ def _disk_cache(name: object, generate: Callable[[], str]) -> str:
 def _load_libomp() -> None:
     if sys.platform != "darwin":
         return llvmlite.binding.load_library_permanently("libgomp.so.1")
-    lib = "/opt/homebrew/opt/libomp/lib/libomp.dylib"
-    if not Path(lib).exists():
-        lib = subprocess.run(["brew", "--prefix", "libomp"], capture_output=True, text=True, check=True).stdout.strip() + "/lib/libomp.dylib"
-    llvmlite.binding.load_library_permanently(lib)
+    # macOS doesn't ship libomp; try standalone brew first, then LLVM's bundled copy
+    candidates = ["/opt/homebrew/opt/libomp/lib/libomp.dylib"]
+    for pkg in ("libomp", "llvm"):
+        try:
+            prefix = subprocess.run(["brew", "--prefix", pkg], capture_output=True, text=True, check=True).stdout.strip()
+            candidates.append(f"{prefix}/lib/libomp.dylib")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    for lib in candidates:
+        if Path(lib).exists():
+            llvmlite.binding.load_library_permanently(lib)
+            return
+    raise RuntimeError(f"libomp.dylib not found; install via `brew install libomp` or `brew install llvm`. Tried: {candidates}")
 
 
 def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
