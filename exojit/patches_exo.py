@@ -7,7 +7,6 @@ from collections import ChainMap
 import exo.API as _exo_api
 import exo.frontend.boundscheck as _boundscheck
 import exo.frontend.pyparser as _pyparser
-from exo.core.extern import Extern, _EErr
 from exo.core.LoopIR import LoopIR
 from exo.core.prelude import Sym
 
@@ -84,23 +83,3 @@ def patched_parse_stmt_block(self, stmts):
 _pyparser.Parser.parse_stmt_block = patched_parse_stmt_block
 
 
-class Log(Extern):
-    def __init__(self):
-        super().__init__("log")
-
-    def typecheck(self, args):
-        if len(args) != 1:
-            raise _EErr(f"expected 1 argument, got {len(args)}")
-        atyp = args[0].type
-        if not atyp.is_real_scalar():
-            raise _EErr(f"expected argument 1 to be a real scalar value, but got type {atyp}")
-        return atyp
-
-    def globl(self, prim_type):
-        return "#include <math.h>"
-
-    def compile(self, args, prim_type):
-        return f"log(({prim_type})({args[0]}))"
-
-
-log = Log()
