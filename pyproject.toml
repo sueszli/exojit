@@ -8,6 +8,7 @@ dependencies = [
     "click",
     "cffi",
     "lit",
+    "filecheck",
     "numpy",
     "pytest",
     "pytest-xdist",
