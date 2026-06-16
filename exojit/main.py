@@ -295,9 +295,6 @@ class IRGenerator:
             arg_d = self._expr(extern.args[3], expected_type)
             cmp = self._emit(llvm.FCmpOp(arg_a, arg_b, "olt"))
             return self._emit(llvm.SelectOp(cmp, arg_c, arg_d))
-        # exo's _Expf compiles to C `expf((prim_type)(arg))` — the C `expf` function
-        # always operates at f32, narrowing the input and widening the result. Mirror
-        # that by routing `expf` through f32 even if the surrounding type is f64.
         if name == "expf":
             x = self._expr(extern.args[0])
             x32 = x if x.type == f32 else self._emit(FPTruncOp(x, f32))
@@ -673,8 +670,6 @@ class IRGenerator:
         self._insert_at_module(llvm.FuncOp("malloc", llvm.LLVMFunctionType([i64], llvm.LLVMPointerType()), llvm.LinkageAttr("external")))
         self._insert_at_module(llvm.FuncOp("free", llvm.LLVMFunctionType([llvm.LLVMPointerType()]), llvm.LinkageAttr("external")))
         if self._par_counter:
-            # OMP runtime entrypoints emitted by par() lowering; only declared when actually
-            # used so non-parallel modules' MLIR output stays stable for filecheck tests.
             ptr = llvm.LLVMPointerType()
             self._insert_at_module(llvm.FuncOp("__kmpc_fork_call", llvm.LLVMFunctionType([ptr, i32, ptr], is_variadic=True), llvm.LinkageAttr("external")))
             self._insert_at_module(llvm.FuncOp("__kmpc_for_static_init_8", llvm.LLVMFunctionType([ptr, i32, i32, ptr, ptr, ptr, ptr, i64, i64]), llvm.LinkageAttr("external")))
@@ -863,7 +858,6 @@ def _disk_cache(name: object, generate: Callable[[], str]) -> str:
 def _load_libomp() -> None:
     if sys.platform != "darwin":
         return llvmlite.binding.load_library_permanently("libgomp.so.1")
-    # macOS doesn't ship libomp; try standalone brew first, then LLVM's bundled copy
     candidates = ["/opt/homebrew/opt/libomp/lib/libomp.dylib"]
     for pkg in ("libomp", "llvm"):
         try:

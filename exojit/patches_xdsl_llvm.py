@@ -14,9 +14,6 @@ from xdsl.transforms.convert_memref_to_ptr import ConvertCastOp
 from xdsl.utils.hints import isa
 
 
-# xdsl's llvm dialect ships `llvm.fpext` (widening) but not its sibling `llvm.fptrunc`
-# (narrowing). Define it here so we can lower `expf(double)` correctly: narrow to f32,
-# call llvm.exp, widen back — matching exo C codegen `expf((prim_type)(arg))` semantics.
 @irdl_op_definition
 class FPTruncOp(GenericCastOp):
     name = "llvm.fptrunc"
