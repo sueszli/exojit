@@ -5,12 +5,21 @@ from typing import Callable
 from xdsl.context import Context
 from xdsl.dialects import builtin, llvm, memref
 from xdsl.dialects.builtin import DYNAMIC_INDEX, IntegerAttr, MemRefType, UnrealizedConversionCastOp, i64
-from xdsl.dialects.llvm import GEP_USE_SSA_VAL, LLVMPointerType
+from xdsl.dialects.llvm import GEP_USE_SSA_VAL, GenericCastOp, LLVMPointerType
 from xdsl.ir import BlockArgument, OpResult, SSAValue
+from xdsl.irdl import irdl_op_definition
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
 from xdsl.transforms.convert_memref_to_ptr import ConvertCastOp
 from xdsl.utils.hints import isa
+
+
+# xdsl's llvm dialect ships `llvm.fpext` (widening) but not its sibling `llvm.fptrunc`
+# (narrowing). Define it here so we can lower `expf(double)` correctly: narrow to f32,
+# call llvm.exp, widen back — matching exo C codegen `expf((prim_type)(arg))` semantics.
+@irdl_op_definition
+class FPTruncOp(GenericCastOp):
+    name = "llvm.fptrunc"
 
 # `memref` -> `llvm.ptr` lowering: replace structured memory ops with raw pointer arithmetic
 #

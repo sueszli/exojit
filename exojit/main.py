@@ -44,7 +44,7 @@ from xdsl.utils.scoped_dict import ScopedDict
 import exojit.patches_exo  # noqa: F401
 from exojit.jitcall import JitFunc
 from exojit.patches_xdsl_intrinsics import ConvertVecIntrinsic
-from exojit.patches_xdsl_llvm import ExtendedConvertMemRefToPtr, RewriteMemRefTypes
+from exojit.patches_xdsl_llvm import ExtendedConvertMemRefToPtr, FPTruncOp, RewriteMemRefTypes
 
 
 class IRGenerator:
@@ -295,7 +295,15 @@ class IRGenerator:
             arg_d = self._expr(extern.args[3], expected_type)
             cmp = self._emit(llvm.FCmpOp(arg_a, arg_b, "olt"))
             return self._emit(llvm.SelectOp(cmp, arg_c, arg_d))
-        unary_intrinsics = {"sqrt": llvm.FSqrtOp, "log": llvm.FLogOp, "exp": llvm.FExpOp, "expf": llvm.FExpOp, "sin": llvm.FSinOp, "cos": llvm.FCosOp, "floor": llvm.FFloorOp, "ceil": llvm.FCeilOp, "exp2": llvm.FExp2Op, "log2": llvm.FLog2Op}
+        # exo's _Expf compiles to C `expf((prim_type)(arg))` — the C `expf` function
+        # always operates at f32, narrowing the input and widening the result. Mirror
+        # that by routing `expf` through f32 even if the surrounding type is f64.
+        if name == "expf":
+            x = self._expr(extern.args[0])
+            x32 = x if x.type == f32 else self._emit(FPTruncOp(x, f32))
+            r32 = self._emit(llvm.FExpOp(x32))
+            return r32 if x.type == f32 else self._emit(llvm.FPExtOp(r32, x.type))
+        unary_intrinsics = {"sqrt": llvm.FSqrtOp, "log": llvm.FLogOp, "exp": llvm.FExpOp, "sin": llvm.FSinOp, "cos": llvm.FCosOp, "floor": llvm.FFloorOp, "ceil": llvm.FCeilOp, "exp2": llvm.FExp2Op, "log2": llvm.FLog2Op}
         if (op_cls := unary_intrinsics.get(name)) is not None:
             return self._emit(op_cls(self._expr(extern.args[0])))
         args = [self._expr(arg) for arg in extern.args]
@@ -733,6 +741,8 @@ class LLVMLiteGenerator:
                 fn = builder.module.get_global(op.callee.string_value())
                 args = [val_map[a] for a in op.args]
                 builder.call(fn, [builder.bitcast(a, fn.ftype.args[i]) if i < len(fn.ftype.args) and a.type != fn.ftype.args[i] else a for i, a in enumerate(args)])
+            case FPTruncOp():
+                val_map[op.results[0]] = builder.fptrunc(val_map[op.arg], convert_type(op.results[0].type))
             case _:
                 _xdsl_convert_op(op, builder, val_map, block_map)
 
