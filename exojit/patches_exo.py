@@ -9,7 +9,6 @@ import exo.frontend.boundscheck as _boundscheck
 import exo.frontend.pyparser as _pyparser
 from exo.core.extern import Extern, _EErr
 from exo.core.LoopIR import LoopIR
-from exo.core.memory import Memory
 from exo.core.prelude import Sym
 
 
@@ -83,35 +82,6 @@ def patched_parse_stmt_block(self, stmts):
 
 
 _pyparser.Parser.parse_stmt_block = patched_parse_stmt_block
-
-
-class Stack(Memory):
-    # stack-allocated memory (uses alloca instead of malloc)
-    # use for small temporaries that don't need heap allocation
-
-    @classmethod
-    def alloc(cls, new_name: str, prim_type: str, shape: tuple[str, ...], srcinfo: object) -> str:
-        c_types = {"float": "float", "double": "double", "int8_t": "int8_t", "int32_t": "int32_t"}
-        c_type = c_types.get(prim_type, prim_type)
-        if not shape:
-            return f"{c_type} {new_name};"
-        return f'{c_type} {new_name}[{"][".join(shape)}];'
-
-    @classmethod
-    def can_read(cls) -> bool:
-        return True
-
-    @classmethod
-    def write(cls, s, lhs: str, rhs: str) -> str:
-        return f"{lhs} = {rhs};"
-
-    @classmethod
-    def reduce(cls, s, lhs: str, rhs: str) -> str:
-        return f"{lhs} += {rhs};"
-
-    @classmethod
-    def free(cls, new_name: str, prim_type: str, shape: tuple[str, ...], srcinfo: object) -> str:
-        return ""
 
 
 class Log(Extern):

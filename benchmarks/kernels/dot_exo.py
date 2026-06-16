@@ -7,12 +7,11 @@ from exo import *
 from exo.stdlib.scheduling import simplify
 
 from exojit.main import jit
-from exojit.patches_exo import Stack
 
 
 @proc
 def _dot(N: size, result: f32[1], q: f32[N], k: f32[N]):
-    acc: f32 @ Stack
+    acc: f32 @ DRAM
     acc = 0.0
     for i in seq(0, N):
         acc += q[i] * k[i]

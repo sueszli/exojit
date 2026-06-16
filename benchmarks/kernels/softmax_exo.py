@@ -10,7 +10,6 @@ from kernels.softmax_neon import neon_loadu_f32x4, neon_storeu_f32x4
 
 from exojit.main import jit
 from exo.platforms.neon import Neon
-from exojit.patches_exo import Stack
 
 
 @instr("neon_fmax_acc_f32x4({acc_data}, {src_data});")
@@ -45,8 +44,8 @@ def _jit_max_neon(n: int) -> Callable[..., None]:
 
         buf: f32[4] @ DRAM
         neon_storeu_f32x4(buf[0:4], acc0)
-        m0: f32 @ Stack
-        m1: f32 @ Stack
+        m0: f32 @ DRAM
+        m1: f32 @ DRAM
         m0 = select(buf[0], buf[1], buf[1], buf[0])
         m1 = select(buf[2], buf[3], buf[3], buf[2])
         result[0] = select(m0, m1, m1, m0)
@@ -56,7 +55,7 @@ def _jit_max_neon(n: int) -> Callable[..., None]:
 
 @proc
 def _find_max(N: size, result: f32[1], inp: f32[N]):
-    acc: f32 @ Stack
+    acc: f32 @ DRAM
     acc = inp[0]
     for i in seq(0, N):
         acc = select(acc, inp[i], inp[i], acc)
@@ -72,19 +71,19 @@ def _jit_max(n: int) -> Callable[..., None]:
 
 @proc
 def _softmax_core(N: size, out: f32[N], inp: f32[N], mx: f32[1]):
-    sum_val: f32 @ Stack
-    t: f32 @ Stack
-    y: f32 @ Stack
-    e5: f32 @ Stack
-    e4: f32 @ Stack
-    e3: f32 @ Stack
-    e2: f32 @ Stack
-    e1: f32 @ Stack
-    s1: f32 @ Stack
-    s2: f32 @ Stack
-    s3: f32 @ Stack
-    s4: f32 @ Stack
-    s5: f32 @ Stack
+    sum_val: f32 @ DRAM
+    t: f32 @ DRAM
+    y: f32 @ DRAM
+    e5: f32 @ DRAM
+    e4: f32 @ DRAM
+    e3: f32 @ DRAM
+    e2: f32 @ DRAM
+    e1: f32 @ DRAM
+    s1: f32 @ DRAM
+    s2: f32 @ DRAM
+    s3: f32 @ DRAM
+    s4: f32 @ DRAM
+    s5: f32 @ DRAM
 
     sum_val = 0.0
     for j in seq(0, N):

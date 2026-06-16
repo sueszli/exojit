@@ -27,8 +27,8 @@ from exo.libs.externs import expf, select, sqrt
 from exo.stdlib.scheduling import simplify
 from utils import assert_weights_match, save_times
 
+from exo.libs.memories import DRAM_STACK
 from exojit.main import jit
-from exojit.patches_exo import Stack
 
 random.seed(42)
 
@@ -61,7 +61,7 @@ def add(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, x: f64[BLOCK_SIZE, N_EMBED] @ DRAM
 def matmul(M: size, N: size, K: size, out: f64[M, N] @ DRAM, x: f64[M, K] @ DRAM, w: f64[K, N] @ DRAM):
     for i in seq(0, M):
         for j in seq(0, N):
-            acc: f64 @ Stack
+            acc: f64 @ DRAM
             acc = 0.0
             for k in seq(0, K):
                 acc += x[i, k] * w[k, j]
@@ -72,7 +72,7 @@ def matmul(M: size, N: size, K: size, out: f64[M, N] @ DRAM, x: f64[M, K] @ DRAM
 def matmul_right_t(M: size, N: size, K: size, out: f64[M, N] @ DRAM, x: f64[M, K] @ DRAM, w: f64[N, K] @ DRAM):
     for i in seq(0, M):
         for j in seq(0, N):
-            acc: f64 @ Stack
+            acc: f64 @ DRAM
             acc = 0.0
             for k in seq(0, K):
                 acc += x[i, k] * w[j, k]
@@ -83,7 +83,7 @@ def matmul_right_t(M: size, N: size, K: size, out: f64[M, N] @ DRAM, x: f64[M, K
 def matmul_left_t(M: size, N: size, K: size, out: f64[N, K] @ DRAM, x: f64[M, N] @ DRAM, w: f64[M, K] @ DRAM):
     for j in seq(0, N):
         for k in seq(0, K):
-            acc: f64 @ Stack
+            acc: f64 @ DRAM
             acc = 0.0
             for i in seq(0, M):
                 acc += x[i, j] * w[i, k]
@@ -93,8 +93,8 @@ def matmul_left_t(M: size, N: size, K: size, out: f64[N, K] @ DRAM, x: f64[M, N]
 @proc
 def softmax(M: size, N: size, x: f64[M, N] @ DRAM):
     for i in seq(0, M):
-        mx: f64 @ Stack
-        sum_val: f64 @ Stack
+        mx: f64 @ DRAM
+        sum_val: f64 @ DRAM
         mx = CAUSAL_MASK_VALUE
         for j in seq(0, N):
             mx = select(mx, x[i, j], x[i, j], mx)
@@ -123,8 +123,8 @@ def relu_bwd(out: f64[BLOCK_SIZE, 4 * N_EMBED] @ DRAM, dout: f64[BLOCK_SIZE, 4 *
 @proc
 def rmsnorm(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, x: f64[BLOCK_SIZE, N_EMBED] @ DRAM):
     for i in seq(0, BLOCK_SIZE):
-        sumsq: f64 @ Stack
-        scale: f64 @ Stack
+        sumsq: f64 @ DRAM
+        scale: f64 @ DRAM
         sumsq = 0.0
         for j in seq(0, N_EMBED):
             sumsq += x[i, j] * x[i, j]
@@ -137,9 +137,9 @@ def rmsnorm(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM
 @proc
 def rmsnorm_bwd(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dx: f64[BLOCK_SIZE, N_EMBED] @ DRAM, x_pre: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM):
     for i in seq(0, BLOCK_SIZE):
-        dot: f64 @ Stack
-        scale: f64 @ Stack
-        corr: f64 @ Stack
+        dot: f64 @ DRAM
+        scale: f64 @ DRAM
+        corr: f64 @ DRAM
         dot = 0.0
         scale = rms[i, 0]
         for j in seq(0, N_EMBED):
@@ -152,7 +152,7 @@ def rmsnorm_bwd(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dx: f64[BLOCK_SIZE, N_EMBE
 @proc
 def cross_entropy_bwd(N: size, step: index, probs: f64[BLOCK_SIZE, N] @ DRAM, all_target_ids: size[NUM_STEPS * BLOCK_SIZE] @ DRAM, loss_mask: f64[BLOCK_SIZE] @ DRAM, inv_sum_mask: f64[1] @ DRAM):
     for t in seq(0, BLOCK_SIZE):
-        scale: f64 @ Stack
+        scale: f64 @ DRAM
         scale = loss_mask[t] * inv_sum_mask[0]
         for v_idx in seq(0, N):
             probs[t, v_idx] = probs[t, v_idx] * scale
@@ -165,7 +165,7 @@ def attention(out: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, q: f64[N_HEAD, BLOC
     for h in seq(0, N_HEAD):
         for t in seq(0, BLOCK_SIZE):
             for s in seq(0, BLOCK_SIZE):
-                logit: f64 @ Stack
+                logit: f64 @ DRAM
                 if s > t:
                     logit = CAUSAL_MASK_VALUE
                 else:
@@ -177,8 +177,8 @@ def attention(out: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, q: f64[N_HEAD, BLOC
 
     for h in seq(0, N_HEAD):
         for t in seq(0, BLOCK_SIZE):
-            mx: f64 @ Stack
-            sum_val: f64 @ Stack
+            mx: f64 @ DRAM
+            sum_val: f64 @ DRAM
             mx = CAUSAL_MASK_VALUE
             for s in seq(0, BLOCK_SIZE):
                 mx = select(mx, attn_w[h, t, s], attn_w[h, t, s], mx)
@@ -192,7 +192,7 @@ def attention(out: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, q: f64[N_HEAD, BLOC
     for h in seq(0, N_HEAD):
         for t in seq(0, BLOCK_SIZE):
             for d in seq(0, HEAD_DIM):
-                acc: f64 @ Stack
+                acc: f64 @ DRAM
                 acc = 0.0
                 for s in seq(0, BLOCK_SIZE):
                     acc += attn_w[h, t, s] * v[h, s, d]
@@ -201,7 +201,7 @@ def attention(out: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, q: f64[N_HEAD, BLOC
 
 @proc
 def attention_bwd(dq: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dk: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dv: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dout: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, q: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, k: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, v: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, attn_w: f64[N_HEAD, BLOCK_SIZE, BLOCK_SIZE] @ DRAM):
-    attn_tmp: f64[BLOCK_SIZE] @ Stack
+    attn_tmp: f64[BLOCK_SIZE] @ DRAM_STACK
     for h in seq(0, N_HEAD):
         for t in seq(0, BLOCK_SIZE):
             for d in seq(0, HEAD_DIM):
@@ -213,10 +213,10 @@ def attention_bwd(dq: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dk: f64[N_HEAD, 
 
     for h in seq(0, N_HEAD):
         for t in seq(0, BLOCK_SIZE):
-            dot: f64 @ Stack
+            dot: f64 @ DRAM
             dot = 0.0
             for s in seq(0, BLOCK_SIZE):
-                dattn_w: f64 @ Stack
+                dattn_w: f64 @ DRAM
                 dattn_w = 0.0
                 for d in seq(0, HEAD_DIM):
                     dattn_w += dout[h, t, d] * v[h, s, d]
@@ -225,7 +225,7 @@ def attention_bwd(dq: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dk: f64[N_HEAD, 
                 dot += dattn_w * attn_w[h, t, s]
 
             for s in seq(0, BLOCK_SIZE):
-                dlogit: f64 @ Stack
+                dlogit: f64 @ DRAM
                 if s > t:
                     dlogit = 0.0
                 else:
@@ -237,17 +237,17 @@ def attention_bwd(dq: f64[N_HEAD, BLOCK_SIZE, HEAD_DIM] @ DRAM, dk: f64[N_HEAD, 
 
 @proc
 def adam(N: size, param: f64[N] @ DRAM, grad: f64[N] @ DRAM, m: f64[N] @ DRAM, v: f64[N] @ DRAM, lr: f64[1] @ DRAM, beta1_t: f64[1] @ DRAM, beta2_t: f64[1] @ DRAM):
-    inv_beta1_t: f64 @ Stack
-    inv_beta2_t: f64 @ Stack
+    inv_beta1_t: f64 @ DRAM
+    inv_beta2_t: f64 @ DRAM
     inv_beta1_t = 1.0 / beta1_t[0]
     inv_beta2_t = 1.0 / beta2_t[0]
 
     for i in seq(0, N):
-        g: f64 @ Stack
-        m_val: f64 @ Stack
-        v_val: f64 @ Stack
-        m_hat: f64 @ Stack
-        v_hat: f64 @ Stack
+        g: f64 @ DRAM
+        m_val: f64 @ DRAM
+        v_val: f64 @ DRAM
+        m_hat: f64 @ DRAM
+        v_hat: f64 @ DRAM
         g = grad[i]
         m_val = 0.9 * m[i] + 0.1 * g
         v_val = 0.999 * v[i] + 0.001 * g * g
@@ -277,16 +277,16 @@ def embed_layer(vocab_size: size, step: index, emb: f64[BLOCK_SIZE, N_EMBED] @ D
 @proc
 def embed_layer_bwd(vocab_size: size, step: index, g_wte: f64[vocab_size, N_EMBED] @ DRAM, g_wpe: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dout: f64[BLOCK_SIZE, N_EMBED] @ DRAM, x: f64[BLOCK_SIZE, N_EMBED] @ DRAM, rms: f64[BLOCK_SIZE, 1] @ DRAM, all_input_ids: size[NUM_STEPS * BLOCK_SIZE] @ DRAM):
     for t in seq(0, BLOCK_SIZE):
-        dot: f64 @ Stack
-        scale: f64 @ Stack
-        corr: f64 @ Stack
+        dot: f64 @ DRAM
+        scale: f64 @ DRAM
+        corr: f64 @ DRAM
         dot = 0.0
         scale = rms[t, 0]
         for e in seq(0, N_EMBED):
             dot += dout[t, e] * x[t, e]
         corr = scale * scale * scale * INV_N * dot
         for e in seq(0, N_EMBED):
-            dx: f64 @ Stack
+            dx: f64 @ DRAM
             dx = dout[t, e] * scale - x[t, e] * corr
             g_wpe[t, e] = dx
             for v in seq(0, vocab_size):
@@ -301,9 +301,9 @@ def attention_layer(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, xn: f64[BLOCK_SIZE, N_
     for h in seq(0, N_HEAD):
         for t in seq(0, BLOCK_SIZE):
             for d in seq(0, HEAD_DIM):
-                acc_q: f64 @ Stack
-                acc_k: f64 @ Stack
-                acc_v: f64 @ Stack
+                acc_q: f64 @ DRAM
+                acc_k: f64 @ DRAM
+                acc_v: f64 @ DRAM
                 acc_q = 0.0
                 acc_k = 0.0
                 acc_v = 0.0
@@ -341,7 +341,7 @@ def attention_layer_bwd(out: f64[BLOCK_SIZE, N_EMBED] @ DRAM, dwq: f64[N_EMBED, 
     for h in seq(0, N_HEAD):
         for t in seq(0, BLOCK_SIZE):
             for d in seq(0, HEAD_DIM):
-                acc: f64 @ Stack
+                acc: f64 @ DRAM
                 acc = 0.0
                 for j in seq(0, N_EMBED):
                     acc += dx[t, j] * wo[j, h * HEAD_DIM + d]

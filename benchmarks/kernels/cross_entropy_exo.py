@@ -7,24 +7,23 @@ from exo import *
 from exo.stdlib.scheduling import simplify
 
 from exojit.main import jit
-from exojit.patches_exo import Stack
 
 
 @proc
 def _sum_exp(N: size, result: f32[1], inp: f32[N], mx: f32[1]):
-    sum_val: f32 @ Stack
-    t: f32 @ Stack
-    y: f32 @ Stack
-    e5: f32 @ Stack
-    e4: f32 @ Stack
-    e3: f32 @ Stack
-    e2: f32 @ Stack
-    e1: f32 @ Stack
-    s1: f32 @ Stack
-    s2: f32 @ Stack
-    s3: f32 @ Stack
-    s4: f32 @ Stack
-    s5: f32 @ Stack
+    sum_val: f32 @ DRAM
+    t: f32 @ DRAM
+    y: f32 @ DRAM
+    e5: f32 @ DRAM
+    e4: f32 @ DRAM
+    e3: f32 @ DRAM
+    e2: f32 @ DRAM
+    e1: f32 @ DRAM
+    s1: f32 @ DRAM
+    s2: f32 @ DRAM
+    s3: f32 @ DRAM
+    s4: f32 @ DRAM
+    s5: f32 @ DRAM
 
     sum_val = 0.0
     for j in seq(0, N):
