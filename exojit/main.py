@@ -1097,9 +1097,11 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
     if proc is None:
         return lambda fn: jit(fn, raw=raw, optimize=optimize)
     if callable(proc) and not isinstance(proc, Procedure):
-        from exo import proc as exo_proc
+        from exo.frontend.pyparser import DummyScope, Parser, get_ast_from_python
 
-        proc = exo_proc(proc)
+        body, src_info = get_ast_from_python(proc)
+        parser = Parser(body, src_info, parent_scope=DummyScope(proc.__globals__, {}), as_func=True)
+        proc = Procedure(parser.result())
     if optimize:
         proc = optimize(proc)
     return _jit_compile(proc, raw=raw)

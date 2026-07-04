@@ -3,7 +3,7 @@ name = "exojit"
 version = "0.1.0"
 requires-python = "==3.14.*"
 dependencies = [
-    "exo-lang==1.0.0",
+    "exo-lang @ git+https://github.com/exo-lang/exo.git@ec75d3c5b229b1519890f836e7badcd46b04c007",
     "xdsl @ git+https://github.com/xdslproject/xdsl.git@e596f41c99e7c20478240b8f386e9e5de6a4ee14",
     "click",
     "cffi",
