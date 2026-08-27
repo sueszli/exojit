@@ -180,13 +180,11 @@ dependencies = [
     { name = "click" },
     { name = "exo-lang" },
     { name = "filecheck" },
-    { name = "filelock" },
     { name = "jax" },
     { name = "lit" },
     { name = "llvmlite" },
     { name = "numba" },
     { name = "numpy" },
-    { name = "plotext" },
     { name = "plotnine" },
     { name = "polars" },
     { name = "pyarrow" },
@@ -204,13 +202,11 @@ requires-dist = [
     { name = "click" },
     { name = "exo-lang", git = "https://github.com/exo-lang/exo.git?rev=ec75d3c5b229b1519890f836e7badcd46b04c007" },
     { name = "filecheck" },
-    { name = "filelock" },
     { name = "jax" },
     { name = "lit" },
     { name = "llvmlite" },
     { name = "numba" },
     { name = "numpy" },
-    { name = "plotext" },
     { name = "plotnine" },
     { name = "polars" },
     { name = "pyarrow" },
@@ -798,15 +794,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1b/04/fea538adf7dbbd6d186f551d595961e564a3b6715bdf276b477460858672/platformdirs-4.9.2.tar.gz", hash = "sha256:9a33809944b9db043ad67ca0db94b14bf452cc6aeaac46a88ea55b26e2e9d291", size = 28394, upload-time = "2026-02-16T03:56:10.574Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/48/31/05e764397056194206169869b50cf2fee4dbbbc71b344705b9c0d878d4d8/platformdirs-4.9.2-py3-none-any.whl", hash = "sha256:9170634f126f8efdae22fb58ae8a0eaa86f38365bc57897a6c4f781d1f5875bd", size = 21168, upload-time = "2026-02-16T03:56:08.891Z" },
-]
-
-[[package]]
-name = "plotext"
-version = "5.3.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c9/d7/f75f397af966fe252d0d34ffd3cae765317fce2134f925f95e7d6725d1ce/plotext-5.3.2.tar.gz", hash = "sha256:52d1e932e67c177bf357a3f0fe6ce14d1a96f7f7d5679d7b455b929df517068e", size = 61967, upload-time = "2024-09-24T15:13:37.728Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f6/1e/12fe7c40cd2099a1f454518754ed229b01beaf3bbb343127f0cc13ce6c22/plotext-5.3.2-py3-none-any.whl", hash = "sha256:394362349c1ddbf319548cfac17ca65e6d5dfc03200c40dfdc0503b3e95a2283", size = 64047, upload-time = "2024-09-24T15:13:36.296Z" },
 ]
 
 [[package]]

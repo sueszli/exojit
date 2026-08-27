@@ -1,6 +1,7 @@
 [project]
 name = "exojit"
 version = "0.1.0"
+license-files = ["LICENSE"]
 requires-python = "==3.14.*"
 dependencies = [
     "exo-lang @ git+https://github.com/exo-lang/exo.git@ec75d3c5b229b1519890f836e7badcd46b04c007",
@@ -15,23 +16,20 @@ dependencies = [
     "pytest-forked",
     "llvmlite",
     "plotnine",
-    "plotext",
     "polars",
     "pyarrow",
     "tqdm",
-    "filelock",
     "jax",
     "numba",
     "torch",
 ]
 
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"
 
-[tool.setuptools.packages.find]
-include = ["exojit*"]
-namespaces = true
+[tool.uv]
+build-backend = { module-root = "", namespace = true }
 
 [tool.pytest.ini_options]
 addopts = "-n auto --forked -v"
