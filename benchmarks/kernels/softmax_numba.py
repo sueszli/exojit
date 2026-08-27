@@ -11,8 +11,7 @@ def _softmax(out, x):
     n = x.shape[0]
     m = x[0]
     for i in range(1, n):
-        if x[i] > m:
-            m = x[i]
+        m = max(m, x[i])
     s = np.float32(0.0)
     for i in nb.prange(n):
         v = np.float32(math.exp(x[i] - m))

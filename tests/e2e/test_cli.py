@@ -9,7 +9,8 @@ from exojit.main import cli
 
 def test_cli_deduplicates_exported_proc_names(tmp_path):
     source = tmp_path / "dup_kernel.py"
-    source.write_text(dedent("""
+    source.write_text(
+        dedent("""
             from exo import *
             from exo.stdlib.scheduling import fission
 
@@ -21,7 +22,8 @@ def test_cli_deduplicates_exported_proc_names(tmp_path):
                         x[i] += 1.0
 
             opt = fission(kernel, kernel.find("for j in _: _").before(), n_lifts=1)
-            """))
+            """)
+    )
 
     result = CliRunner().invoke(cli, [str(source), "--c"])
 
@@ -34,7 +36,8 @@ def test_cli_deduplicates_exported_proc_names(tmp_path):
 
 def test_cli_asm_after_module_level_jit(tmp_path):
     source = tmp_path / "jit_then_asm.py"
-    source.write_text(dedent("""
+    source.write_text(
+        dedent("""
             from exo import *
 
             from exojit.main import jit
@@ -46,7 +49,8 @@ def test_cli_asm_after_module_level_jit(tmp_path):
 
             buf = [0.0, 0.0, 0.0, 0.0]
             jit(fill)(buf)
-            """))
+            """)
+    )
 
     result = CliRunner().invoke(cli, [str(source), "--asm"])
 

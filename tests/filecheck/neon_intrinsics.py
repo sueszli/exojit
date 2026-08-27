@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from exo import *
-
 from exo.platforms.neon import Neon
 
 #

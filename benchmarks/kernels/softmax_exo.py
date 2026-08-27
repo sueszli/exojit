@@ -5,11 +5,11 @@ from functools import cache
 
 from exo import *
 from exo.libs.externs import select
+from exo.platforms.neon import Neon
 from exo.stdlib.scheduling import simplify
 from kernels.softmax_neon import neon_loadu_f32x4, neon_storeu_f32x4
 
 from exojit.main import jit
-from exo.platforms.neon import Neon
 
 
 @instr("neon_fmax_acc_f32x4({acc_data}, {src_data});")

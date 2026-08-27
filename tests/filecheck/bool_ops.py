@@ -46,7 +46,7 @@ from exo import *
 
 @proc
 def bool_ops(out: f32[1] @ DRAM, a: index, b: index, c: index):
-    if a < b and b < c:
+    if a < b < c:
         out[0] = 1.0
     if a < b or b < c:
         out[0] = 2.0

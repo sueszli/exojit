@@ -10,8 +10,7 @@ import numpy as np
 def _ce_max(mx, x):
     m = x[0]
     for i in range(1, x.shape[0]):
-        if x[i] > m:
-            m = x[i]
+        m = max(m, x[i])
     mx[0] = m
 
 

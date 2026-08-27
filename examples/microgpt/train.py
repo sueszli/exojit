@@ -24,10 +24,10 @@ elif (repo.parent.parent / "exojit").is_dir():
 
 from exo import *
 from exo.libs.externs import expf, select, sqrt
+from exo.libs.memories import DRAM_STACK
 from exo.stdlib.scheduling import simplify
 from utils import assert_weights_match, save_times
 
-from exo.libs.memories import DRAM_STACK
 from exojit.main import jit
 
 random.seed(42)

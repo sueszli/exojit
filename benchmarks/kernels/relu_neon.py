@@ -5,9 +5,9 @@ from functools import cache
 
 from exo import *
 from exo.libs.externs import select
+from exo.platforms.neon import Neon
 
 from exojit.main import jit
-from exo.platforms.neon import Neon
 
 PAR_MIN_ELEMENTS = 524288
 

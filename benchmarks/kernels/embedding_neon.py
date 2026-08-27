@@ -4,10 +4,10 @@ from collections.abc import Callable
 from functools import cache
 
 from exo import *
+from exo.platforms.neon import Neon
 from kernels.add_neon import neon_loadu_f32x4, neon_storeu_f32x4
 
 from exojit.main import jit
-from exo.platforms.neon import Neon
 
 PAR_MIN_ELEMENTS = 524288
 

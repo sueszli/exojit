@@ -7,9 +7,9 @@ from copy import deepcopy
 import numpy as np
 import pytest
 from exo import *
+from exo.platforms.neon import Neon
 
 from exojit.main import jit
-from exo.platforms.neon import Neon
 
 pytestmark = pytest.mark.skipif(platform.machine() not in ("arm64", "aarch64"), reason="NEON requires aarch64")
 

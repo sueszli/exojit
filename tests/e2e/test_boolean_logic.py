@@ -9,7 +9,7 @@ def logic_and(out: f32[1] @ DRAM, a: index, b: index, c: index):
     assert a >= 0
     assert b >= 0
     assert c >= 0
-    if a < b and b < c:
+    if a < b < c:
         out[0] = 1.0
     else:
         out[0] = 0.0
