@@ -121,9 +121,8 @@ def test_i8_mul():
 @proc
 def size_gather(out: f64[4] @ DRAM, src: f64[8] @ DRAM, idx: size[4] @ DRAM):
     for i in seq(0, 4):
-        if 0 <= idx[i]:
-            if idx[i] < 8:
-                out[i] = src[idx[i]]
+        if 0 <= idx[i] and idx[i] < 8:
+            out[i] = src[idx[i]]
 
 
 def test_size_gather():

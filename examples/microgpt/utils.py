@@ -22,9 +22,10 @@ def dump_weights(state_dict) -> None:
 def assert_weights_match(state_dict, atol: float = 1e-5) -> None:
     assert WEIGHTS_PATH.exists(), f"weights file not found: {WEIGHTS_PATH}"
 
-    ref = json.load(open(WEIGHTS_PATH))
+    with WEIGHTS_PATH.open() as f:
+        ref = json.load(f)
     cur = {k: [[v.data for v in row] for row in mat] for k, mat in state_dict.items()}
-    assert set(ref) == set(cur), f"key mismatch: ref={set(ref)-set(cur)} cur={set(cur)-set(ref)}"
+    assert set(ref) == set(cur), f"key mismatch: ref={set(ref) - set(cur)} cur={set(cur) - set(ref)}"
 
     for k in ref:
         assert len(ref[k]) == len(cur[k]) and len(ref[k][0]) == len(cur[k][0]), f"shape mismatch '{k}': {len(ref[k])}x{len(ref[k][0])} vs {len(cur[k])}x{len(cur[k][0])}"
@@ -107,7 +108,7 @@ def print_times_all() -> None:
     print("  " + "  ".join(f"{cols[i]:<{col_w[i]}}" for i in range(len(cols))))
     print("  " + "  ".join("\u2500" * col_w[i] for i in range(len(cols))))
     for row in table_rows:
-        print("  " + "  ".join(f"{str(row[i]):>{col_w[i]}}" if i > 0 else f"{row[i]:<{col_w[i]}}" for i in range(len(cols))))
+        print("  " + "  ".join(f"{row[i]!s:>{col_w[i]}}" if i > 0 else f"{row[i]:<{col_w[i]}}" for i in range(len(cols))))
 
 
 if __name__ == "__main__":
