@@ -49,12 +49,6 @@ from exojit.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from exojit.patches_xdsl_llvm import ExtendedConvertMemRefToPtr, FPTruncOp, RewriteMemRefTypes
 
 
-def _abi_type(mlir_type: Attribute) -> Attribute:
-    # llvm.func signatures only accept llvm-compatible types; memrefs become opaque
-    # pointers here and are reconciled against the entry block by RewriteMemRefTypes
-    return llvm.LLVMPointerType() if isinstance(mlir_type, MemRefType) else mlir_type
-
-
 class IRGenerator:
     module: ModuleOp
     builder: Builder
@@ -437,7 +431,7 @@ class IRGenerator:
         oname = f"__omp_outlined_{self._par_counter}"
         self._par_counter += 1
         atypes = [ptr] * 4 + [syms[n].type for n in names]
-        ftype = llvm.LLVMFunctionType([_abi_type(t) for t in atypes], llvm.LLVMVoidType())
+        ftype = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in atypes], llvm.LLVMVoidType())
         with self._scoped_state(inherit=False):
             blk = Block(arg_types=atypes)
             region = Region(blk)
@@ -635,7 +629,13 @@ class IRGenerator:
         elif call.f.name not in self.seen_extern_decls:
             self.seen_extern_decls.add(call.f.name)
             input_types = [SSAValue.get(arg).type for arg in args]
-            self._insert_at_module(llvm.FuncOp(call.f.name, llvm.LLVMFunctionType([_abi_type(t) for t in input_types], llvm.LLVMVoidType()), llvm.LinkageAttr("external")))
+            self._insert_at_module(
+                llvm.FuncOp(
+                    call.f.name,
+                    llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType()),
+                    llvm.LinkageAttr("external"),
+                )
+            )
 
         self.builder.insert(llvm.CallOp(call.f.name, *args))
 
@@ -679,7 +679,7 @@ class IRGenerator:
             if not isinstance(mlir_type, MemRefType) and self._is_mutated(repr(arg.name), procedure.body):
                 mlir_type = MemRefType(mlir_type, [1], NoneAttr())
             input_types.append(mlir_type)
-        func_type = llvm.LLVMFunctionType([_abi_type(t) for t in input_types], llvm.LLVMVoidType())
+        func_type = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType())
 
         with self._scoped_state(inherit=False):
             block = Block(arg_types=input_types)
