@@ -5,11 +5,11 @@
 # CHECK-NEXT:     %2 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %3 = llvm.mlir.constant(8) : i64
 # CHECK-NEXT:     %4 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     llvm.br ^bb0(%2 : i64)
-# CHECK-NEXT:   ^bb0(%5: i64):
+# CHECK-NEXT:     llvm.br ^bb1(%2 : i64)
+# CHECK-NEXT:   ^bb1(%5: i64):
 # CHECK-NEXT:     %6 = llvm.icmp "slt" %5, %3 : i64
-# CHECK-NEXT:     llvm.cond_br %6, ^bb1, ^bb2
-# CHECK-NEXT:   ^bb1:
+# CHECK-NEXT:     llvm.cond_br %6, ^bb2, ^bb3
+# CHECK-NEXT:   ^bb2:
 # CHECK-NEXT:     %7 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %8 = llvm.mlir.constant(1) : i64
 # CHECK-NEXT:     %9 = llvm.mul %5, %8 : i64
@@ -25,8 +25,8 @@
 # CHECK-NEXT:     %19 = llvm.getelementptr inbounds %1[%18] : (!llvm.ptr, i64) -> !llvm.ptr, f32
 # CHECK-NEXT:     llvm.store %16, %19 : f32, !llvm.ptr
 # CHECK-NEXT:     %20 = llvm.add %5, %4 : i64
-# CHECK-NEXT:     llvm.br ^bb0(%20 : i64)
-# CHECK-NEXT:   ^bb2:
+# CHECK-NEXT:     llvm.br ^bb1(%20 : i64)
+# CHECK-NEXT:   ^bb3:
 # CHECK-NEXT:     llvm.return
 # CHECK-NEXT:   }
 # CHECK-NEXT:   llvm.func @malloc(i64) -> !llvm.ptr
