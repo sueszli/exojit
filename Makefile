@@ -13,14 +13,13 @@ precommit-hook:
 
 .PHONY: fmt
 fmt:
-	uvx ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016 exojit tests benchmarks examples setup.py
-	uvx ruff format --line-length 5000 --target-version py314 exojit tests benchmarks examples setup.py
-	! command -v clang-format >/dev/null 2>&1 || find exojit \( -name "*.c" -o -name "*.h" \) -exec clang-format -i {} +
+	uvx ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016 exojit tests benchmarks examples
+	uvx ruff format --line-length 5000 --target-version py314 exojit tests benchmarks examples
 
 .PHONY: lint
 lint:
-	uv run --with vulture vulture --min-confidence 80 exojit tests benchmarks examples setup.py
-	uv run --with pyright pyright exojit setup.py
+	uv run --with vulture vulture --min-confidence 80 exojit tests benchmarks examples
+	uv run --with pyright pyright exojit
 
 .PHONY: tests
 tests:

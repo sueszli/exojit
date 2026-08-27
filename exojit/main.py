@@ -27,7 +27,6 @@ from exo.backend.win_analysis import WindowAnalysis
 from exo.core.LoopIR import LoopIR, T
 from exo.core.prelude import Sym
 from exo.main import load_user_code
-from exojit.jitcall import JitFunc
 from xdsl.backend.llvm.convert_op import convert_op as _xdsl_convert_op
 from xdsl.backend.llvm.convert_type import convert_type
 from xdsl.builder import Builder
@@ -1059,20 +1058,45 @@ def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writab
     return convert
 
 
-_strip_arg_name = lambda name: re.sub(r"_\d+$", "", str(name))
-_resolve_jit_args = lambda names, args, kw: tuple(kw[n] for n in names) if kw else args
+def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
+    mlir_module = to_mlir(proc)
+    ir_text = _disk_cache(hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16], lambda: str(LLVMLiteGenerator.generate(mlir_module)))
+    if "__kmpc_fork_call" in ir_text:  # see https://openmp.llvm.org/doxygen/group__THREADPRIVATE.html
+        _load_libomp()
 
+    mod_ref, tm = _to_llvmlite_moduleref(ir_text)
+    engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
+    engine.finalize_object()
+    engine.run_static_constructors()
 
-def _jit_wrap(raw_fn: JitFunc, proc: Procedure, arg_kinds: bytes) -> Callable[..., None]:
-    ffi = FFI()
-    ffi.cdef("typedef unsigned long uintptr_t;")
+    ffi, kinds = FFI(), _jit_arg_kinds(proc._loopir_proc)
+    fn = ffi.cast(f"void(*)({', '.join('ssize_t' if not kind else 'void *' for kind in kinds) or 'void'})", engine.get_function_address(proc.name()))
+
+    def marshal(args: tuple[object, ...]) -> list[object]:
+        return [arg if not kind else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind == 2) for arg, kind in zip(args, kinds, strict=True)]
+
+    def call(*args) -> None:
+        fn(*marshal(args))
+
+    def bind(*args) -> Callable[[], None]:
+        bound = marshal(args)
+        bound_call = lambda: fn(*bound)
+        cast(Any, bound_call)._engine = engine
+        return bound_call
+
+    cast(Any, call).bind = bind
+    names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in proc._loopir_proc.args]
+    if raw:
+        wrapped = lambda *args, **kwargs: call(*(tuple(kwargs[name] for name in names) if kwargs else args))
+        wrapped.__dict__.update(_raw=call, bind=bind)
+        return wrapped
+
     converters = []
-    arg_names = [_strip_arg_name(arg.name) for arg in proc._loopir_proc.args]
     for i, arg in enumerate(proc._loopir_proc.args):
         match arg.type:
             case T.Tensor() | T.Window():
                 tensor_type = arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type
-                converters.append(_jit_tensor_converter(ffi=ffi, index=i, tensor_type=tensor_type, writable=arg_kinds[i] == 2))
+                converters.append(_jit_tensor_converter(ffi=ffi, index=i, tensor_type=tensor_type, writable=kinds[i] == 2))
             case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
                 name = arg.name
 
@@ -1086,47 +1110,16 @@ def _jit_wrap(raw_fn: JitFunc, proc: Procedure, arg_kinds: bytes) -> Callable[..
                 assert False, f"unsupported JIT argument type for {arg.name}: {arg.type}"
 
     def wrapped(*args, **kwargs):
-        args = _resolve_jit_args(arg_names, args, kwargs)
-        assert len(args) == len(converters), f"jit expected {len(converters)} arguments, got {len(args)}"
-
+        args = tuple(kwargs[name] for name in names) if kwargs else args
         shape_env: dict[object, int] = {}
         keepalive: list[object] = []
         syncbacks: list[Callable[[], None]] = []
-        raw_fn(*[conv(arg, shape_env, keepalive, syncbacks) for conv, arg in zip(converters, args, strict=True)])
+        call(*[conv(arg, shape_env, keepalive, syncbacks) for conv, arg in zip(converters, args, strict=True)])
         for sync in syncbacks:
             sync()
 
-    cast(Any, wrapped)._raw = raw_fn
+    cast(Any, wrapped)._raw = call
     return wrapped
-
-
-def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
-    mlir_module = to_mlir(proc)
-    cache_key = hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16]
-    ir_text = _disk_cache(cache_key, lambda: str(LLVMLiteGenerator.generate(mlir_module)))
-
-    # see https://openmp.llvm.org/doxygen/group__THREADPRIVATE.html
-    if "__kmpc_fork_call" in ir_text:
-        _load_libomp()
-
-    mod_ref, tm = _to_llvmlite_moduleref(ir_text)
-
-    engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
-    engine.finalize_object()
-    engine.run_static_constructors()
-
-    assert re.search(rf'define void @"?{re.escape(proc.name())}"?\(', ir_text) is not None, f"missing JIT entrypoint for {proc.name()}"
-
-    arg_kinds = _jit_arg_kinds(proc._loopir_proc)
-    raw_fn = JitFunc(engine.get_function_address(proc.name()), engine, arg_kinds)
-
-    if raw:
-        arg_names = [_strip_arg_name(arg.name) for arg in proc._loopir_proc.args]
-        raw_wrapped = lambda *args, **kwargs: raw_fn(*_resolve_jit_args(arg_names, args, kwargs))
-        cast(Any, raw_wrapped)._raw = raw_fn
-        return raw_wrapped
-
-    return _jit_wrap(raw_fn, proc, arg_kinds)
 
 
 def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedure] | None = None):
