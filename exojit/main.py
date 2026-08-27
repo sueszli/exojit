@@ -725,12 +725,6 @@ def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
     CommonSubexpressionElimination().apply(ctx, module)
     module.verify()
 
-    # tell llvm every pointer arg is unaliased, so the loop vectorizer can run.
-    # xdsl's llvm backend reads this off arg_attrs when it declares the function.
-    for func_op in module.ops:
-        assert isinstance(func_op, llvm.FuncOp)
-        func_op.arg_attrs = ArrayAttr(DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(t, llvm.LLVMPointerType) else {}) for t in func_op.function_type.inputs)
-
     return module
 
 
@@ -752,6 +746,13 @@ def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
 
 
 def _to_llvmlite(module: ModuleOp) -> llvmlite.ir.Module:
+    # The old backend marked pointer arguments as noalias in the final LLVM IR.
+    # Add it only during LLVM conversion so it does not appear in to_mlir() output.
+    module = module.clone()
+    for func_op in module.ops:
+        assert isinstance(func_op, llvm.FuncOp)
+        func_op.arg_attrs = ArrayAttr(DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(t, llvm.LLVMPointerType) else {}) for t in func_op.function_type.inputs)
+
     tm = _target_machine()
     return convert_module(module, fallback_target_triple=tm.triple, data_layout=str(tm.target_data))
 
