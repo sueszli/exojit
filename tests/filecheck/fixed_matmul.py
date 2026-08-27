@@ -5,18 +5,18 @@
 # CHECK-NEXT:     %3 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %4 = llvm.mlir.constant(16) : i64
 # CHECK-NEXT:     %5 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     llvm.br ^bb0(%3 : i64)
-# CHECK-NEXT:   ^bb0(%6: i64):
+# CHECK-NEXT:     llvm.br ^bb1(%3 : i64)
+# CHECK-NEXT:   ^bb1(%6: i64):
 # CHECK-NEXT:     %7 = llvm.icmp "slt" %6, %4 : i64
-# CHECK-NEXT:     llvm.cond_br %7, ^bb1, ^bb2
-# CHECK-NEXT:   ^bb1:
+# CHECK-NEXT:     llvm.cond_br %7, ^bb2, ^bb9
+# CHECK-NEXT:   ^bb2:
 # CHECK-NEXT:     %8 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %9 = llvm.mlir.constant(16) : i64
 # CHECK-NEXT:     %10 = llvm.mlir.constant(1) : i64
 # CHECK-NEXT:     llvm.br ^bb3(%8 : i64)
 # CHECK-NEXT:   ^bb3(%11: i64):
 # CHECK-NEXT:     %12 = llvm.icmp "slt" %11, %9 : i64
-# CHECK-NEXT:     llvm.cond_br %12, ^bb4, ^bb5
+# CHECK-NEXT:     llvm.cond_br %12, ^bb4, ^bb8
 # CHECK-NEXT:   ^bb4:
 # CHECK-NEXT:     %13 = llvm.mlir.constant(0.000000e+00 : f32) : f32
 # CHECK-NEXT:     %14 = llvm.mlir.constant(1) : i64
@@ -30,11 +30,11 @@
 # CHECK-NEXT:     %21 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %22 = llvm.mlir.constant(16) : i64
 # CHECK-NEXT:     %23 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     llvm.br ^bb6(%21 : i64)
-# CHECK-NEXT:   ^bb6(%24: i64):
+# CHECK-NEXT:     llvm.br ^bb5(%21 : i64)
+# CHECK-NEXT:   ^bb5(%24: i64):
 # CHECK-NEXT:     %25 = llvm.icmp "slt" %24, %22 : i64
-# CHECK-NEXT:     llvm.cond_br %25, ^bb7, ^bb8
-# CHECK-NEXT:   ^bb7:
+# CHECK-NEXT:     llvm.cond_br %25, ^bb6, ^bb7
+# CHECK-NEXT:   ^bb6:
 # CHECK-NEXT:     %26 = llvm.mlir.constant(1) : i64
 # CHECK-NEXT:     %27 = llvm.mlir.constant(16) : i64
 # CHECK-NEXT:     %28 = llvm.mul %26, %27 : i64
@@ -70,14 +70,14 @@
 # CHECK-NEXT:     %58 = llvm.getelementptr inbounds %0[%57] : (!llvm.ptr, i64) -> !llvm.ptr, f32
 # CHECK-NEXT:     llvm.store %51, %58 : f32, !llvm.ptr
 # CHECK-NEXT:     %59 = llvm.add %24, %23 : i64
-# CHECK-NEXT:     llvm.br ^bb6(%59 : i64)
-# CHECK-NEXT:   ^bb8:
+# CHECK-NEXT:     llvm.br ^bb5(%59 : i64)
+# CHECK-NEXT:   ^bb7:
 # CHECK-NEXT:     %60 = llvm.add %11, %10 : i64
 # CHECK-NEXT:     llvm.br ^bb3(%60 : i64)
-# CHECK-NEXT:   ^bb5:
+# CHECK-NEXT:   ^bb8:
 # CHECK-NEXT:     %61 = llvm.add %6, %5 : i64
-# CHECK-NEXT:     llvm.br ^bb0(%61 : i64)
-# CHECK-NEXT:   ^bb2:
+# CHECK-NEXT:     llvm.br ^bb1(%61 : i64)
+# CHECK-NEXT:   ^bb9:
 # CHECK-NEXT:     llvm.return
 # CHECK-NEXT:   }
 # CHECK-NEXT:   llvm.func @malloc(i64) -> !llvm.ptr

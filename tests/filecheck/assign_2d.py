@@ -5,11 +5,11 @@
 # CHECK-NEXT:     %1 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %2 = llvm.mlir.constant(4) : i64
 # CHECK-NEXT:     %3 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     llvm.br ^bb0(%1 : i64)
-# CHECK-NEXT:   ^bb0(%4: i64):
+# CHECK-NEXT:     llvm.br ^bb1(%1 : i64)
+# CHECK-NEXT:   ^bb1(%4: i64):
 # CHECK-NEXT:     %5 = llvm.icmp "slt" %4, %2 : i64
-# CHECK-NEXT:     llvm.cond_br %5, ^bb1, ^bb2
-# CHECK-NEXT:   ^bb1:
+# CHECK-NEXT:     llvm.cond_br %5, ^bb2, ^bb6
+# CHECK-NEXT:   ^bb2:
 # CHECK-NEXT:     %6 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %7 = llvm.mlir.constant(4) : i64
 # CHECK-NEXT:     %8 = llvm.mlir.constant(1) : i64
@@ -31,8 +31,8 @@
 # CHECK-NEXT:     llvm.br ^bb3(%19 : i64)
 # CHECK-NEXT:   ^bb5:
 # CHECK-NEXT:     %20 = llvm.add %4, %3 : i64
-# CHECK-NEXT:     llvm.br ^bb0(%20 : i64)
-# CHECK-NEXT:   ^bb2:
+# CHECK-NEXT:     llvm.br ^bb1(%20 : i64)
+# CHECK-NEXT:   ^bb6:
 # CHECK-NEXT:     llvm.return
 # CHECK-NEXT:   }
 # CHECK-NEXT:   llvm.func @malloc(i64) -> !llvm.ptr
