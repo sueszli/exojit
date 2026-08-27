@@ -11,7 +11,7 @@ from collections.abc import Callable, MutableSequence, Sequence
 from contextlib import contextmanager
 from functools import cache, partial
 from pathlib import Path
-from typing import Any, Literal, SupportsInt, TypeGuard, cast
+from typing import Any, SupportsInt, cast
 
 import click
 import llvmlite.binding
@@ -41,11 +41,25 @@ from xdsl.transforms.canonicalize import CanonicalizePass
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
 from xdsl.transforms.convert_scf_to_cf import ConvertScfToCf
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
+from xdsl.utils.hints import isa
 from xdsl.utils.scoped_dict import ScopedDict
 
 import exojit.patches_exo  # noqa: F401
 from exojit.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from exojit.patches_xdsl_llvm import ConvertControlFlowToLLVM, DimSize, ExtendedConvertMemRefToPtr, FPTruncOp, RewriteMemRefTypes, materialize_dim
+
+
+def _as_tensor(exo_type: LoopIR.type) -> T.Tensor:
+    # normalise a tensor-or-window type to the dense Tensor describing its layout
+    tensor = exo_type.as_tensor if isinstance(exo_type, T.Window) else exo_type
+    assert isinstance(tensor, T.Tensor)
+    return tensor
+
+
+def _abi_type(mlir_type: Attribute) -> Attribute:
+    # llvm.func signatures only accept llvm-compatible types; memrefs become opaque
+    # pointers here and are reconciled against the entry block by RewriteMemRefTypes
+    return llvm.LLVMPointerType() if isinstance(mlir_type, MemRefType) else mlir_type
 
 
 class IRGenerator:
@@ -172,8 +186,8 @@ class IRGenerator:
             case _:
                 assert False
 
-    def _record_dynamic_dims(self, value: SSAValue, tensor: object) -> None:
-        if isinstance(value.type, MemRefType) and memref.DYNAMIC_INDEX in value.type.get_shape():
+    def _record_dynamic_dims(self, value: SSAValue, tensor: T.Tensor) -> None:
+        if isinstance(value.type, MemRefType) and DYNAMIC_INDEX in value.type.get_shape():
             self.dynamic_dims[value] = tuple(self._dim_size(expr) for expr in tensor.shape())
 
     def _zero_index(self) -> list[SSAValue]:
@@ -309,16 +323,15 @@ class IRGenerator:
         indices = [self._window_access(access, self._expr) for access in window.idx]
         source = self._syms[repr(window.name)]
         assert isinstance(source.type, MemRefType)
-        assert isinstance(window.type, T.Window)
-        dest_type = self._to_mlir_type(window.type.as_tensor, source.type.memory_space)
-        output_sizes = self._emit_shape(window.type.as_tensor)
+        dest_type = self._to_mlir_type(_as_tensor(window.type), source.type.memory_space)
+        output_sizes = self._shape(_as_tensor(window.type), emit=True)
 
         offsets_idx = self._to_index_list(indices, self._emit)
         sizes_idx = self._to_index_list(output_sizes, self._emit)
         strides_idx = self._to_index_list([1] * len(indices), self._emit)
 
         self.builder.insert(subview := memref.SubviewOp.get(source, offsets_idx, sizes_idx, strides_idx, dest_type))
-        self._record_dynamic_dims(subview.result, window.type.as_tensor)
+        self._record_dynamic_dims(subview.result, _as_tensor(window.type))
         return subview.result
 
     def _expr_extern(self, extern: LoopIR.Extern) -> SSAValue:
@@ -387,7 +400,7 @@ class IRGenerator:
         # lower if/else to scf.if; convert-scf-to-cf builds the branches
         cond = self._expr(if_stmt.cond)
         regions = [Region(self._scoped_block(body)) for body in (if_stmt.body, if_stmt.orelse)]
-        self.builder.insert(scf.IfOp(cond, [], *regions))
+        self.builder.insert(scf.IfOp(cond, [], regions[0], regions[1]))
 
     def _stmt_for_par(self, s: LoopIR.For) -> None:
         # par() loop -> __kmpc_fork_call(@outlined, lo, hi, ...shared)
@@ -423,7 +436,7 @@ class IRGenerator:
         oname = f"__omp_outlined_{self._par_counter}"
         self._par_counter += 1
         atypes = [ptr] * 4 + [syms[n].type for n in names]
-        ftype = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in atypes], llvm.LLVMVoidType())
+        ftype = llvm.LLVMFunctionType([_abi_type(t) for t in atypes], llvm.LLVMVoidType())
         with self._scoped_state(inherit=False):
             blk = Block(arg_types=atypes)
             region = Region(blk)
@@ -504,7 +517,7 @@ class IRGenerator:
         self._scoped_block(for_stmt.body, block=body, iter_name=repr(for_stmt.iter))
         self.builder.insert(scf.ForOp(lo, hi, step, [], Region(body)))
 
-    def _scoped_block(self, stmts: list[LoopIR.stmt], *, block: Block | None = None, iter_name: str | None = None) -> Block:
+    def _scoped_block(self, stmts: list, *, block: Block | None = None, iter_name: str | None = None) -> Block:
         # emit `stmts` into a fresh scf region body, in a child symbol scope
         block = Block() if block is None else block
         with self._scoped_state():
@@ -556,10 +569,10 @@ class IRGenerator:
 
     def _stmt_window(self, stmt: LoopIR.WindowStmt) -> None:
         # lower window statement to subview and bind result in symbol/type tables
-        assert isinstance(stmt.rhs, LoopIR.WindowExpr) and isinstance(stmt.rhs.type, T.Window)
+        assert isinstance(stmt.rhs, LoopIR.WindowExpr)
         result = self._expr_window(stmt.rhs)
         self._syms[repr(stmt.name)] = result
-        self._types[repr(stmt.name)] = stmt.rhs.type.as_tensor
+        self._types[repr(stmt.name)] = _as_tensor(stmt.rhs.type)
 
     @staticmethod
     def _is_mutated(name: str, body: list[LoopIR.stmt]) -> bool:
@@ -579,6 +592,7 @@ class IRGenerator:
         if not shape_mismatch:
             return arg_val
 
+        assert isa(callee_type, MemRefType)
         cast = self._emit(memref.CastOp.get(arg_val, callee_type))
         if arg_val in self.dynamic_dims:
             self.dynamic_dims[cast] = self.dynamic_dims[arg_val]
@@ -595,13 +609,7 @@ class IRGenerator:
         elif call.f.name not in self.seen_extern_decls:
             self.seen_extern_decls.add(call.f.name)
             input_types = [SSAValue.get(arg).type for arg in args]
-            self._insert_at_module(
-                llvm.FuncOp(
-                    call.f.name,
-                    llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType()),
-                    llvm.LinkageAttr("external"),
-                )
-            )
+            self._insert_at_module(llvm.FuncOp(call.f.name, llvm.LLVMFunctionType([_abi_type(t) for t in input_types], llvm.LLVMVoidType()), llvm.LinkageAttr("external")))
 
         self.builder.insert(llvm.CallOp(call.f.name, *args))
 
@@ -613,7 +621,7 @@ class IRGenerator:
             case LoopIR.Reduce():
                 self._stmt_reduce(stmt)
             case LoopIR.WriteConfig():
-                assert False, "unsupported WriteConfig"
+                raise NotImplementedError()
             case LoopIR.Pass():
                 pass
             case LoopIR.If():
@@ -645,7 +653,7 @@ class IRGenerator:
             if not isinstance(mlir_type, MemRefType) and self._is_mutated(repr(arg.name), procedure.body):
                 mlir_type = MemRefType(mlir_type, [1], NoneAttr())
             input_types.append(mlir_type)
-        func_type = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType())
+        func_type = llvm.LLVMFunctionType([_abi_type(t) for t in input_types], llvm.LLVMVoidType())
 
         with self._scoped_state(inherit=False):
             block = Block(arg_types=input_types)
@@ -656,7 +664,7 @@ class IRGenerator:
             self.type_table = ScopedDict(local_scope={repr(arg.name): arg.type for arg in procedure.args})
             for arg, val in zip(procedure.args, block.args):
                 if arg.type.is_tensor_or_window():
-                    self._record_dynamic_dims(val, arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type)
+                    self._record_dynamic_dims(val, _as_tensor(arg.type))
 
             for stmt in procedure.body:
                 self._stmt(stmt)
@@ -817,7 +825,7 @@ def _load_libomp() -> None:
         if Path(lib).exists():
             llvmlite.binding.load_library_permanently(lib)
             return
-    assert False, f"libomp not found; tried {candidates}"
+    raise RuntimeError(f"libomp.dylib not found; install via `brew install libomp` or `brew install llvm`. Tried: {candidates}")
 
 
 def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
@@ -860,9 +868,7 @@ def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writab
     basetype = str(tensor_type.basetype())
     assert basetype in jit_tensor_c_types, f"unsupported JIT tensor dtype: {basetype}"
     c_type = jit_tensor_c_types[basetype]
-
-    def is_seq(x: object) -> TypeGuard[Sequence[object]]:
-        return isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray, memoryview))
+    is_seq = lambda x: isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray, memoryview))
 
     def linearize(value: object) -> tuple[list[object], list[tuple[MutableSequence[object], int]]]:
         if not is_seq(value):
@@ -872,6 +878,7 @@ def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writab
             assert isinstance(target, MutableSequence), f"argument {index + 1}: writable tensor args passed as Python sequences must be mutable at every level"
         flat: list[object] = []
         leaves: list[tuple[MutableSequence[object], int]] = []
+        assert isinstance(value, Sequence)
         for i, item in enumerate(value):
             if is_seq(item):
                 child_flat, child_leaves = linearize(item)
@@ -921,13 +928,14 @@ def _jit_wrap(raw_fn: JitFunc, proc: Procedure, arg_kinds: bytes) -> Callable[..
     arg_names = [arg.name.name() for arg in proc._loopir_proc.args]
     for i, arg in enumerate(proc._loopir_proc.args):
         match arg.type:
-            case T.Tensor() | T.Window():
-                tensor_type = arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type
+            case _ if arg.type.is_tensor_or_window():
+                tensor_type = _as_tensor(arg.type)
                 converters.append(_jit_tensor_converter(ffi=ffi, index=i, tensor_type=tensor_type, writable=arg_kinds[i] == 2))
             case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
                 name = arg.name
 
                 def convert(value: object, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=name) -> int:
+                    assert isinstance(value, SupportsInt)
                     value = int(value)
                     shape_env[name] = value
                     return value
@@ -958,7 +966,7 @@ _ARG_INT, _ARG_PTR_RO, _ARG_PTR_RW = 0, 1, 2
 def _int_marshaller(index: int) -> Callable[[object], int]:
     def marshal(value: object) -> int:
         try:
-            return operator.index(value)  # also accepts numpy integers
+            return operator.index(value)  # pyright: ignore[reportArgumentType]  # also accepts numpy integers
         except TypeError:
             raise TypeError(f"argument {index + 1}: expected int, got {type(value).__name__}") from None
 
@@ -978,7 +986,7 @@ def _ptr_marshaller(index: int, writable: bool) -> Callable[[object], object]:
         if isinstance(value, int):
             return cast("void *", value)
         try:
-            return to_pointer(value)
+            return to_pointer(value)  # pyright: ignore[reportArgumentType]
         except TypeError, ValueError:
             raise TypeError(f"argument {index + 1}: expected {expected}, got {type(value).__name__}") from None
 
@@ -988,19 +996,16 @@ def _ptr_marshaller(index: int, writable: bool) -> Callable[[object], object]:
 class JitFunc:
     # calls a JIT-compiled `void(...)` entry point through cffi.
     # holds the mcjit engine so the compiled code outlives this object.
-    __slots__ = ("_arg_names", "_engine", "_fn", "_marshallers")
+    __slots__ = ("_engine", "_fn", "_marshallers")
 
-    def __init__(self, address: int, engine: object, arg_kinds: bytes, arg_names: Sequence[str]):
+    def __init__(self, address: int, engine: object, arg_kinds: bytes):
         params = ", ".join("ssize_t" if kind == _ARG_INT else "void *" for kind in arg_kinds) or "void"
         self._fn = _FFI.cast(f"void(*)({params})", address)
         self._engine = engine
-        self._arg_names = tuple(arg_names)
         self._marshallers = tuple(_int_marshaller(i) if kind == _ARG_INT else _ptr_marshaller(i, kind == _ARG_PTR_RW) for i, kind in enumerate(arg_kinds))
 
-    def __call__(self, *args, **kwargs) -> None:
+    def __call__(self, *args) -> None:
         marshallers = self._marshallers
-        if kwargs:
-            args = tuple(kwargs[name] for name in self._arg_names)
         if len(args) != len(marshallers):
             raise TypeError(f"JitFunc expected {len(marshallers)} arguments, got {len(args)}")
         self._fn(*[marshal(arg) for marshal, arg in zip(marshallers, args)])
@@ -1039,9 +1044,16 @@ def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None] | Ji
     assert re.search(rf'define void @"?{re.escape(proc.name())}"?\(', ir_text) is not None, f"missing JIT entrypoint for {proc.name()}"
 
     arg_kinds = _jit_arg_kinds(proc._loopir_proc)
-    raw_fn = JitFunc(engine.get_function_address(proc.name()), engine, arg_kinds, [arg.name.name() for arg in proc._loopir_proc.args])
+    raw_fn = JitFunc(engine.get_function_address(proc.name()), engine, arg_kinds)
 
-    return raw_fn if raw else _jit_wrap(raw_fn, proc, arg_kinds)
+    if raw:
+        arg_names = [arg.name.name() for arg in proc._loopir_proc.args]
+        raw_wrapped = lambda *args, **kwargs: raw_fn(*_resolve_jit_args(arg_names, args, kwargs))
+        cast(Any, raw_wrapped)._raw = raw_fn
+        cast(Any, raw_wrapped).bind = raw_fn.bind
+        return raw_wrapped
+
+    return _jit_wrap(raw_fn, proc, arg_kinds)
 
 
 def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedure] | None = None):
@@ -1075,8 +1087,9 @@ def _dedup_proc_names(user_module: object) -> list[Procedure]:
 @click.option("--c", "fmt", flag_value="c", help="Output C source")
 @click.option("--mlir", "fmt", flag_value="mlir", help="Output MLIR")
 @click.option("--asm", "fmt", flag_value="asm", help="Output assembly")
-def cli(source: Path, fmt: Literal["c", "mlir", "asm"] | None):
-    assert fmt, "choose --c, --mlir, or --asm"
+def cli(source: Path, fmt: str | None):
+    if not fmt:
+        raise click.UsageError("Specify one of --c, --mlir, or --asm")
     procs = _dedup_proc_names(load_user_code(source))
 
     match fmt:
@@ -1084,7 +1097,7 @@ def cli(source: Path, fmt: Literal["c", "mlir", "asm"] | None):
             text, _header = exo_compile_procs_to_strings(procs, "o.h")
         case "mlir":
             text = str(to_mlir(procs))
-        case "asm":
+        case _:
             text = to_asm(to_mlir(procs))
 
     click.echo(text)

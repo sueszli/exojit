@@ -167,10 +167,8 @@ def _reduce_handler(vec_type: VectorType) -> Handler:
         acc_val, src_ptr = args[0], args[1]
         assert isinstance(acc_val.owner, llvm.LoadOp)
         src_load = llvm.LoadOp(src_ptr, vec_type)
-        elem_type = vec_type.element_type
-        reduce = llvm.CallIntrinsicOp("llvm.vector.reduce.fadd", [acc_val, src_load.dereferenced_value], [elem_type])
-        assert reduce.ress is not None
-        return (src_load, reduce, llvm.StoreOp(reduce.ress, acc_val.owner.ptr))
+        reduce = llvm.VectorReduceFAddOp(acc_val, src_load.dereferenced_value)
+        return (src_load, reduce, llvm.StoreOp(reduce.res, acc_val.owner.ptr))
 
     return handle
 
