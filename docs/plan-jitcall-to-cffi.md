@@ -10,6 +10,33 @@ land an FFI seam upstream (§1.1) and have exojit consume it rather than fork.
 This document has been through three adversarial reviews; §10 records what they
 broke.
 
+## 0. summary
+
+Every call to a jitted kernel crosses from Python to machine code. Something has
+to translate a numpy array into a raw address, and check it is safe to use,
+each time:
+
+```
+Python array ──► translator ──► machine code
+                      ^
+              this is exojit/jitcall.c
+```
+
+That translator costs **142 ns** today. Small kernels feel it; large ones do not.
+The goal is to delete the C file without paying for it.
+
+| option | vs today | |
+| --- | --- | --- |
+| `jitcall.c` today | 1.00x | the C file we want to delete |
+| **cffi + `bind()`** | **1.12x** | **recommended** |
+| ctypes + `bind()` | 2.00x | no new dependency, loses read-only support |
+| cffi, every call | 6.3x | no API change needed |
+| ctypes, every call | 14.5x | what xDSL does today |
+
+`bind()` translates once and then calls many times, instead of translating on
+every call. That is where the speed comes from, and it is why the recommended
+option lands within 16 ns of hand-written C.
+
 ## 1. what xDSL's JIT actually uses
 
 xDSL grew a JIT subsystem over the last two weeks. At `xdslproject/xdsl@419203f`
@@ -452,17 +479,17 @@ principled version of this cache**, which is why §9 recommends it.
 | 2 | cffi per-call only | 913 | 6.3x | fallback if `bind()` is rejected |
 | 3 | ctypes + `bind()` | 283 | 2.0x | matches xDSL as-is, no new dep, loses read-only support |
 | 4 | ctypes per-call only | 2053 | 14.5x | what the first draft proposed; not viable |
-| 5 | marshalling emitted as LLVM IR | <142 | <1.0x | `jitcall.c` rewritten against the unstable CPython ABI; not recommended |
 
 Option 3 is the only one that needs no upstream change at all, and is the
 conservative choice if the §1.1 seam is rejected -- but it cannot support
 read-only buffer arguments in `ARG_PTR_RO` slots, which `jitcall.c` supports
 today, so it is a feature regression as well as a 2x one.
 
-Option 5 is the only option that could *beat* the C extension, since a generated
-vectorcall thunk could skip the Python-level wrapper entirely. It is also
-`jitcall.c` rewritten in a harder language against an ABI with no stability
-guarantee, to recover ~16 ns. Rejected.
+A fifth option -- emitting the translation itself as generated LLVM IR -- was
+considered and dropped. It could in principle beat the C extension, since a
+generated thunk knows each proc's exact arity at codegen time. But it was never
+measured, it moves the CPython ABI dependency from a `.c` file into hand-written
+IR, and installing a vectorcall slot is not possible from pure Python anyway.
 
 **Recommendation: option 1.** It drops the C extension (the actual goal), reaches
 parity, is the only pure-Python option at feature parity with `jitcall.c`, adds
