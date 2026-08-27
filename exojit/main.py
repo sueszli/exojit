@@ -164,11 +164,6 @@ class IRGenerator:
 
         return [from_expr(expr) for expr in tensor.shape()]
 
-    def _record_dynamic_dims(self, value: SSAValue, tensor: object) -> None:
-        if isinstance(value.type, MemRefType) and DYNAMIC_INDEX in value.type.get_shape():
-            assert isinstance(tensor, T.Tensor)
-            self.dynamic_dims[value] = tuple(self._dim_size(expr) for expr in tensor.shape())
-
     def _dim_size(self, expr: LoopIR.expr) -> DimSize:
         bounds = constant_bound(expr, {})
         if bounds is not None and isinstance(bounds[0], int) and bounds[0] == bounds[1]:
@@ -182,6 +177,11 @@ class IRGenerator:
                 return lambda insert: insert(op(materialize_dim(lhs, insert), materialize_dim(rhs, insert))).results[0]
             case _:
                 assert False
+
+    def _record_dynamic_dims(self, value: SSAValue, tensor: object) -> None:
+        if isinstance(value.type, MemRefType) and DYNAMIC_INDEX in value.type.get_shape():
+            assert isinstance(tensor, T.Tensor)
+            self.dynamic_dims[value] = tuple(self._dim_size(expr) for expr in tensor.shape())
 
     def _zero_index(self) -> list[SSAValue]:
         return [self._emit(llvm.ConstantOp(IntegerAttr(0, i64), i64))]
