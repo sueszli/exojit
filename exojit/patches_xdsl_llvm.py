@@ -1,7 +1,8 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Callable, TypeAlias
+from typing import TypeAlias
 
+from xdsl.backend.llvm.convert_op import _CAST_OP_NAMES
 from xdsl.context import Context
 from xdsl.dialects import arith, builtin, cf, llvm, memref
 from xdsl.dialects.builtin import DYNAMIC_INDEX, IntegerAttr, MemRefType, UnrealizedConversionCastOp, i64
@@ -10,11 +11,17 @@ from xdsl.ir import Operation, OpResult, SSAValue
 from xdsl.irdl import irdl_op_definition
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
-from xdsl.backend.llvm.convert_op import _CAST_OP_NAMES
 from xdsl.transforms.convert_memref_to_ptr import ConvertCastOp
 from xdsl.utils.hints import isa
 
-DimSizes: TypeAlias = "Mapping[SSAValue, Sequence[int | SSAValue]]"
+DimSize: TypeAlias = int | SSAValue | Callable[[Callable[[Operation], Operation]], SSAValue]
+DimSizes: TypeAlias = Mapping[SSAValue, Sequence[DimSize]]
+
+
+def materialize_dim(dim: DimSize, insert: Callable) -> SSAValue:
+    if isinstance(dim, int):
+        return _iconst(insert, dim)
+    return dim if isinstance(dim, SSAValue) else dim(insert)
 
 
 @irdl_op_definition
@@ -99,15 +106,14 @@ def _offset_ptr_raw(base: SSAValue, indices: Sequence[SSAValue], rank: int, dim_
     return ins(llvm.IntToPtrOp(target_int)).output
 
 
-def _dim_size_fn(shape: tuple[int, ...], dims: Sequence[int | SSAValue], ins: Callable) -> Callable[[int], SSAValue]:
+def _dim_size_fn(shape: tuple[int, ...], dims: Sequence[DimSize], ins: Callable) -> Callable[[int], SSAValue]:
     # resolve dimension i to its runtime size. a variable dimension is absent from
     # the memref type, so it comes from the value IRGenerator recorded for it.
     def dim_size(i: int) -> SSAValue:
         if shape[i] != DYNAMIC_INDEX:
             return _iconst(ins, shape[i])
         assert i < len(dims), f"no recorded size for dynamic dimension {i}"
-        size = dims[i]
-        return _iconst(ins, size) if isinstance(size, int) else size
+        return materialize_dim(dims[i], ins)
 
     return dim_size
 
