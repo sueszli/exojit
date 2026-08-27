@@ -3,10 +3,10 @@ from dataclasses import dataclass
 from typing import Callable, TypeAlias
 
 from xdsl.context import Context
-from xdsl.dialects import builtin, llvm, memref
+from xdsl.dialects import arith, builtin, cf, llvm, memref
 from xdsl.dialects.builtin import DYNAMIC_INDEX, IntegerAttr, MemRefType, UnrealizedConversionCastOp, i64
 from xdsl.dialects.llvm import GEP_USE_SSA_VAL, GenericCastOp, LLVMPointerType
-from xdsl.ir import OpResult, SSAValue
+from xdsl.ir import Operation, OpResult, SSAValue
 from xdsl.irdl import irdl_op_definition
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
@@ -209,3 +209,25 @@ class RewriteMemRefTypes(TypeConversionPattern):
     @attr_type_rewrite_pattern
     def convert_type(self, type: MemRefType) -> llvm.LLVMPointerType:
         return llvm.LLVMPointerType()
+
+
+# `cf` / `arith` -> `llvm` lowering
+#
+# convert-scf-to-cf leaves branches in the cf dialect and induction arithmetic in
+# arith, and xdsl has no pass from either into llvm. the llvmlite backend only
+# understands llvm.*, so translate the handful of ops those two passes emit.
+
+
+@dataclass
+class ConvertControlFlowToLLVM(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: Operation, rewriter: PatternRewriter, /):
+        match op:
+            case cf.BranchOp():
+                rewriter.replace(op, llvm.BrOp(op.successor, *op.arguments))
+            case cf.ConditionalBranchOp():
+                rewriter.replace(op, llvm.CondBrOp(op.cond, op.then_block, list(op.then_arguments), op.else_block, list(op.else_arguments)))
+            case arith.AddiOp():
+                rewriter.replace(op, llvm.AddOp(op.lhs, op.rhs))
+            case arith.CmpiOp():
+                rewriter.replace(op, llvm.ICmpOp(op.lhs, op.rhs, IntegerAttr(op.predicate.value.data, i64)))
