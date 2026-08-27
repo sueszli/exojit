@@ -29,7 +29,7 @@ from exo.rewrite.range_analysis import constant_bound
 from xdsl.backend.llvm.convert import convert_module
 from xdsl.builder import Builder
 from xdsl.context import Context
-from xdsl.dialects import llvm, memref
+from xdsl.dialects import arith, cf, llvm, memref, scf
 from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, ArrayAttr, BoolAttr, Builtin, DictionaryAttr, FloatAttr, IndexType, IntAttr, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnitAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
 from xdsl.dialects.llvm import BrOp, FNegOp
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
@@ -37,13 +37,14 @@ from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriteWalker
 from xdsl.rewriter import InsertPoint
 from xdsl.transforms.canonicalize import CanonicalizePass
+from xdsl.transforms.convert_scf_to_cf import ConvertScfToCf
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.scoped_dict import ScopedDict
 
 import exojit.patches_exo  # noqa: F401
 from exojit.patches_xdsl_intrinsics import ConvertVecIntrinsic
-from exojit.patches_xdsl_llvm import ExtendedConvertMemRefToPtr, FPTruncOp, RewriteMemRefTypes
+from exojit.patches_xdsl_llvm import ConvertControlFlowToLLVM, ExtendedConvertMemRefToPtr, FPTruncOp, RewriteMemRefTypes
 
 
 class IRGenerator:
@@ -374,34 +375,10 @@ class IRGenerator:
         self._memref_store(result, memref_val, idx)
 
     def _stmt_if(self, if_stmt: LoopIR.If) -> None:
-        # lower if/else to cf.cond_br with true, false, and merge blocks
+        # lower if/else to scf.if; convert-scf-to-cf builds the branches
         cond = self._expr(if_stmt.cond)
-
-        region = self.builder.insertion_point.block.parent_region()
-        assert region is not None
-        true_block = Block()
-        false_block = Block()
-        merge_block = Block()
-        region.add_block(true_block)
-        region.add_block(false_block)
-
-        self.builder.insert(llvm.CondBrOp(cond, true_block, [], false_block, []))
-
-        # true branch
-        self.builder = Builder(insertion_point=InsertPoint.at_end(true_block))
-        for stmt in if_stmt.body:
-            self._stmt(stmt)
-        self.builder.insert(BrOp(merge_block))
-
-        # false branch
-        self.builder = Builder(insertion_point=InsertPoint.at_end(false_block))
-        for stmt in if_stmt.orelse:
-            self._stmt(stmt)
-        self.builder.insert(BrOp(merge_block))
-
-        # continue at merge
-        region.add_block(merge_block)
-        self.builder = Builder(insertion_point=InsertPoint.at_end(merge_block))
+        regions = [Region(self._scoped_block(body)) for body in (if_stmt.body, if_stmt.orelse)]
+        self.builder.insert(scf.IfOp(cond, [], *regions))
 
     def _stmt_for_par(self, s: LoopIR.For) -> None:
         # par() loop -> __kmpc_fork_call(@outlined, lo, hi, ...shared)
@@ -508,48 +485,30 @@ class IRGenerator:
         if isinstance(for_stmt.loop_mode, LoopIR.Par):
             return self._stmt_for_par(for_stmt)
 
-        # lower for loop to cf.br/cond_br with header, body, and exit blocks
+        # lower to scf.for; convert-scf-to-cf builds the header/body/exit blocks
         lo = self._expr(for_stmt.lo)
         hi = self._expr(for_stmt.hi)
         assert lo.type == hi.type
         assert isinstance(lo.type, IntegerType)
         step = self._emit(llvm.ConstantOp(IntegerAttr(1, lo.type), lo.type))
+        body = Block(arg_types=[lo.type])
+        self._scoped_block(for_stmt.body, block=body, iter_name=repr(for_stmt.iter))
+        self.builder.insert(scf.ForOp(lo, hi, step, [], Region(body)))
 
-        region = self.builder.insertion_point.block.parent_region()
-        assert region is not None
-        header_block = Block(arg_types=[lo.type])
-        body_block = Block()
-        exit_block = Block()
-        region.add_block(header_block)
-        region.add_block(body_block)
-
-        # branch from current block to header with initial iv
-        self.builder.insert(BrOp(header_block, lo))
-
-        # header: condition check
-        self.builder = Builder(insertion_point=InsertPoint.at_end(header_block))
-        iv = header_block.args[0]
-        cond = self._emit(llvm.ICmpOp(iv, hi, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64)))
-        self.builder.insert(llvm.CondBrOp(cond, body_block, [], exit_block, []))
-
-        # body: emit loop body in a child symbol scope
+    def _scoped_block(self, stmts: list[LoopIR.stmt], *, block: Block | None = None, iter_name: str | None = None) -> Block:
+        # emit `stmts` into a fresh scf region body, in a child symbol scope
+        block = Block() if block is None else block
         with self._scoped_state():
-            self.builder = Builder(insertion_point=InsertPoint.at_end(body_block))
+            self.builder = Builder(insertion_point=InsertPoint.at_end(block))
             self.symbol_table = ScopedDict(self._syms)
             self.type_table = ScopedDict(self._types)
-            self._syms[repr(for_stmt.iter)] = iv
-            self._types[repr(for_stmt.iter)] = T.Index
-
-            for stmt in for_stmt.body:
+            if iter_name is not None:
+                self._syms[iter_name] = block.args[0]
+                self._types[iter_name] = T.Index
+            for stmt in stmts:
                 self._stmt(stmt)
-
-            # after body: increment iv and branch back to header
-            next_iv = self._emit(llvm.AddOp(iv, step))
-            self.builder.insert(BrOp(header_block, next_iv))
-
-        # continue at exit block
-        region.add_block(exit_block)
-        self.builder = Builder(insertion_point=InsertPoint.at_end(exit_block))
+            self.builder.insert(scf.YieldOp())
+        return block
 
     def _stmt_alloc(self, alloc: LoopIR.Alloc) -> None:
         # lower alloc to llvm.call @malloc (dram) or llvm.alloca (stack)
@@ -717,6 +676,9 @@ def _context() -> Context:
     ctx.load_dialect(Builtin)
     ctx.load_dialect(llvm.LLVM)
     ctx.load_dialect(memref.MemRef)
+    ctx.load_dialect(arith.Arith)
+    ctx.load_dialect(cf.Cf)
+    ctx.load_dialect(scf.Scf)
     return ctx
 
 
@@ -726,12 +688,15 @@ def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
     generator = IRGenerator()
     module = generator.generate(procs)
 
+    ConvertScfToCf().apply(ctx, module)  # scf.{for,if} -> cf.{br,cond_br}
+    _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
+    _rewrite([ConvertControlFlowToLLVM()])  # cf.* / arith.* -> llvm.*
+
     CanonicalizePass().apply(ctx, module)
     CommonSubexpressionElimination().apply(ctx, module)
     module.verify()
 
     # full lowering to llvm dialect
-    _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
     ExtendedConvertMemRefToPtr(generator.dynamic_dims).apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
     _rewrite([RewriteMemRefTypes()])  # memreftype -> llvm.ptr on all values
     _rewrite([ConvertVecIntrinsic()])  # vec_*/neon_* calls -> llvm ops
