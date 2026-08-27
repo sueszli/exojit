@@ -594,13 +594,25 @@ class IRGenerator:
 
     def _stmt_call(self, call: LoopIR.Call) -> None:
         # lower call to func.call. emit extern decl for intrinsics, recurse for procs
-        args = [self._expr(arg) for arg in call.args]
-
         if call.f.instr is None:
             self._generate_procedure(call.f)
             assert len(call.args) == len(call.f.args)
-            args = [self._coerce_arg(arg_val, callee_arg, call.f.body) for arg_val, callee_arg in zip(args, call.f.args)]
-        elif call.f.name not in self.seen_extern_decls:
+            args = []
+            for arg, callee_arg in zip(call.args, call.f.args):
+                mem_space = StringAttr(callee_arg.mem.name()) if callee_arg.mem is not None else None
+                callee_type = self._to_mlir_type(callee_arg.type, mem_space)
+                scalar_passed_by_ref = not isinstance(callee_type, MemRefType) and self._is_mutated(repr(callee_arg.name), call.f.body)
+                if scalar_passed_by_ref:
+                    assert isinstance(arg, LoopIR.Read) and not arg.idx, "writable scalar call arguments must be scalar lvalues"
+                    arg_val = self._syms[repr(arg.name)]
+                    assert isinstance(arg_val.type, MemRefType)
+                else:
+                    arg_val = self._expr(arg)
+                args.append(self._coerce_arg(arg_val, callee_arg, call.f.body))
+        else:
+            args = [self._expr(arg) for arg in call.args]
+
+        if call.f.instr is not None and call.f.name not in self.seen_extern_decls:
             self.seen_extern_decls.add(call.f.name)
             input_types = [SSAValue.get(arg).type for arg in args]
             self._insert_at_module(
@@ -798,7 +810,7 @@ def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
 def _jit_eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
     # Resolve dimensions from preceding size arguments.
     bounds = constant_bound(expr, {sym: (value, value) for sym, value in env.items()})
-    assert bounds is not None and bounds[0] == bounds[1], f"could not resolve dynamic tensor shape from {expr}"
+    assert bounds is not None and bounds[0] is not None and bounds[0] == bounds[1], f"could not resolve dynamic tensor shape from {expr}"
     return bounds[0]
 
 
