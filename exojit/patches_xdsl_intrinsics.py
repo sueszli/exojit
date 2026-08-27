@@ -84,7 +84,7 @@ def _mask_f64x2(lane_count: SSAValue) -> MaskResult:
 
 
 def _mask_f64x2_ext(lane_count: SSAValue) -> MaskResult:
-    return _make_mask(lane_count, 2, extend_lane_count=True)  # lane_count is i32; upcast to i64
+    return _make_mask(lane_count, 2, extend_lane_count=True)  # lane_count is i32, upcast to i64
 
 
 def _build_abs(dst: SSAValue, src: SSAValue, *, vec_type: VectorType) -> BuildResult:
@@ -162,7 +162,7 @@ def _pfx_handler(builder: BuilderFn, vec_type: VectorType, mask_fn: MaskFn) -> H
 
 
 def _reduce_handler(vec_type: VectorType) -> Handler:
-    # acc_scalar += sum(src_vector); acc_val must come from llvm.LoadOp to recover the store pointer.
+    # Recover the accumulator pointer from llvm.LoadOp.
     def handle(args: list[SSAValue]) -> tuple[Operation, ...]:
         acc_val, src_ptr = args[0], args[1]
         assert isinstance(acc_val.owner, llvm.LoadOp)
@@ -174,8 +174,7 @@ def _reduce_handler(vec_type: VectorType) -> Handler:
 
 
 def _build_load_broadcast(dst: SSAValue, scalar_ptr: SSAValue, *, vec_type: VectorType) -> BuildResult:
-    # dst[:] = [*scalar_ptr] * n_lanes. the operand is already !llvm.ptr at this
-    # point in the pipeline, so unlike vec_brdcst_scl this loads the scalar first.
+    # Broadcast the loaded scalar.
     load = llvm.LoadOp(scalar_ptr, vec_type.element_type)
     ops, value = _broadcast(load.dereferenced_value, vec_type)
     return [load, *ops], value
@@ -209,14 +208,13 @@ def _make_intrinsics() -> dict[str, Handler]:
         entries[f"vec_{name}_f64x2"] = _plain_handler(builder, F64X2)
         entries[f"vec_{name}_f64x2_pfx"] = _pfx_handler(actual_pfx_builder, F64X2, chosen_f64_mask)
 
-    # neon_*: same shapes as vec_*, so they reuse the same builders.
-    # (name, builder) with the call convention neon_<name>(dst, ...srcs)
+    # Reuse vector builders for NEON calls.
     neon_f32x4: list[tuple[str, BuilderFn]] = [
-        # dst = op(a, b)
+        # Binary op.
         *((name, _builder(op, 1, 2)) for name, op in (("add", llvm.FAddOp), ("sub", llvm.FSubOp), ("mul", llvm.FMulOp), ("div", llvm.FDivOp), ("vadd", llvm.FAddOp), ("vsub", llvm.FSubOp), ("vmul", llvm.FMulOp))),
-        # acc = op(acc, src)
+        # Reduction op.
         *((name, _builder(op, 0, 1)) for name, op in (("add_acc", llvm.FAddOp), ("fmax_acc", VectorFMaxOp), ("mul_acc", llvm.FMulOp), ("sub_acc", llvm.FSubOp), ("div_acc", llvm.FDivOp))),
-        # dst = op(src)
+        # Unary op.
         *((name, _builder(op, 1)) for name, op in (("neg", FNegOp), ("vneg", FNegOp), ("sqrt", FSqrtOp))),
         ("square", _builder(llvm.FMulOp, 1, 1)),  # the duplicate load folds in cse
         ("zero", _build_zero),
@@ -224,7 +222,7 @@ def _make_intrinsics() -> dict[str, Handler]:
     for name, builder in neon_f32x4:
         entries[f"neon_{name}_f32x4"] = _plain_handler(builder, F32X4)
 
-    # load/store/fmadd/broadcast exist for both widths
+    # Register both vector widths.
     for suffix, vt in (("f32x4", F32X4), ("f64x2", F64X2)):
         entries[f"vec_reduce_add_scl_{suffix}"] = _reduce_handler(vt)
         entries[f"neon_storeu_{suffix}"] = _plain_handler(_builder(None, 1), vt)

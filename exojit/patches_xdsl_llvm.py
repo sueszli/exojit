@@ -29,7 +29,7 @@ class FPTruncOp(GenericCastOp):
     name = "llvm.fptrunc"
 
 
-# xdsl has no llvm.fptrunc op, and convert_module offers no hook for custom ops
+# Missing xDSL llvm.fptrunc support.
 _CAST_OP_NAMES[FPTruncOp] = "fptrunc"
 
 # `memref` -> `llvm.ptr` lowering: replace structured memory ops with raw pointer arithmetic
@@ -107,8 +107,7 @@ def _offset_ptr_raw(base: SSAValue, indices: Sequence[SSAValue], rank: int, dim_
 
 
 def _dim_size_fn(shape: tuple[int, ...], dims: Sequence[DimSize], ins: Callable) -> Callable[[int], SSAValue]:
-    # resolve dimension i to its runtime size. a variable dimension is absent from
-    # the memref type, so it comes from the value IRGenerator recorded for it.
+    # Resolve the runtime dimension.
     def dim_size(i: int) -> SSAValue:
         if shape[i] != DYNAMIC_INDEX:
             return _iconst(ins, shape[i])
@@ -160,7 +159,7 @@ class ConvertSubviewPattern(RewritePattern):
     # memref.subview %buf[offsets] => ptr to the start of the slice
     #
     # subview carries both static offsets (baked into the op) and dynamic offsets (ssa values).
-    # mlir encodes "this offset is dynamic" by setting the static value to dynamic_index (-1);
+    # Detect dynamic MLIR offsets.
     # the actual ssa value then comes from the op.offsets list in order.
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: memref.SubviewOp, rewriter: PatternRewriter, /):
@@ -217,11 +216,7 @@ class RewriteMemRefTypes(TypeConversionPattern):
         return llvm.LLVMPointerType()
 
 
-# `cf` / `arith` -> `llvm` lowering
-#
-# convert-scf-to-cf leaves branches in the cf dialect and induction arithmetic in
-# arith, and xdsl has no pass from either into llvm. the llvmlite backend only
-# understands llvm.*, so translate the handful of ops those two passes emit.
+# Lower residual cf and arith ops to LLVM.
 
 
 @dataclass

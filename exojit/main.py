@@ -65,8 +65,7 @@ class IRGenerator:
         self.type_table = None
         self.seen_proc_names = set()
         self.seen_extern_decls = set()
-        # memrefs with a variable dimension carry no shape in their type, so record
-        # the live dim values here for the memref -> pointer lowering to pick up
+        # Record SSA values for dynamic dimensions.
         self.dynamic_dims = {}
         self._par_counter = 0  # for naming
 
@@ -392,7 +391,7 @@ class IRGenerator:
         self._memref_store(result, memref_val, idx)
 
     def _stmt_if(self, if_stmt: LoopIR.If) -> None:
-        # lower if/else to scf.if; convert-scf-to-cf builds the branches
+        # Lower to scf.if.
         cond = self._expr(if_stmt.cond)
         true_region, false_region = (Region(self._scoped_block(body)) for body in (if_stmt.body, if_stmt.orelse))
         self.builder.insert(scf.IfOp(cond, [], true_region, false_region))
@@ -461,7 +460,7 @@ class IRGenerator:
             null = self._emit(llvm.ZeroOp(result_types=[ptr]))
             self.builder.insert(llvm.CallOp("__kmpc_for_static_init_8", null, gtid, c(34, i32), is_last_p, lower_p, upper_p, stride_p, c(1), c(1)))
 
-            # this thread's chunk; clamp upper to original hi-1
+            # Clamp the thread-local upper bound.
             adj_lo = self._emit(llvm.LoadOp(lower_p, i64))
             adj_hi_raw = self._emit(llvm.LoadOp(upper_p, i64))
             adj_hi = self._emit(llvm.SelectOp(self._emit(llvm.ICmpOp(adj_hi_raw, hi_incl, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64))), adj_hi_raw, hi_incl))
@@ -502,7 +501,7 @@ class IRGenerator:
         if isinstance(for_stmt.loop_mode, LoopIR.Par):
             return self._stmt_for_par(for_stmt)
 
-        # lower to scf.for; convert-scf-to-cf builds the header/body/exit blocks
+        # Lower to scf.for.
         lo = self._expr(for_stmt.lo)
         hi = self._expr(for_stmt.hi)
         assert lo.type == hi.type
@@ -513,7 +512,7 @@ class IRGenerator:
         self.builder.insert(scf.ForOp(lo, hi, step, [], Region(body)))
 
     def _scoped_block(self, stmts: list[LoopIR.stmt], *, block: Block | None = None, iter_name: str | None = None) -> Block:
-        # emit `stmts` into a fresh scf region body, in a child symbol scope
+        # Emit a scoped SCF region.
         block = Block() if block is None else block
         with self._scoped_state():
             self.builder = Builder(insertion_point=InsertPoint.at_end(block))
@@ -743,7 +742,7 @@ llvmlite.binding.initialize_native_asmprinter()
 
 
 def _optimize_llvm(module: ModuleOp):
-    # Add noalias only at LLVM conversion so to_mlir() remains source-level xDSL IR.
+    # Add noalias during LLVM conversion.
     module = module.clone()
     for func_op in module.ops:
         assert isinstance(func_op, llvm.FuncOp)
@@ -780,13 +779,11 @@ def _load_libomp() -> None:
         if Path(lib).exists():
             llvmlite.binding.load_library_permanently(lib)
             return
-    assert False, f"libomp not found; tried {candidates}"
+    assert False, f"libomp not found, tried {candidates}"
 
 
 def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
-    # classify each argument once so the call wrapper can take the cheapest safe path.
-    # get_writes_of_stmts resolves windows to their base tensor and follows calls,
-    # which is how exo's own C backend decides `const` on pointer parameters.
+    # Match Exo const analysis across windows and calls.
     written = {sym for sym, _ in get_writes_of_stmts(proc.body)}
 
     def kind(arg: LoopIR.fnarg) -> int:
@@ -799,26 +796,15 @@ def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
 
 
 def _jit_eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
-    # resolve a dynamic tensor dimension against the size arguments seen so far
+    # Resolve dimensions from preceding size arguments.
     bounds = constant_bound(expr, {sym: (value, value) for sym, value in env.items()})
     assert bounds is not None and bounds[0] == bounds[1], f"could not resolve dynamic tensor shape from {expr}"
     return bounds[0]
 
 
 def _jit_tensor_converter(*, index: int, tensor_type: T.Tensor, writable: bool) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], object]:
-    # build one argument converter for tensor or window inputs
-    dtypes = {
-        "f32": np.float32,
-        "f64": np.float64,
-        "i8": np.int8,
-        "ui8": np.uint8,
-        "i16": np.int16,
-        "ui16": np.uint16,
-        "i32": np.int32,
-        "index": np.int64,
-        "size": np.int64,
-        "bool": np.bool_,
-    }
+    # Build a tensor argument converter.
+    dtypes = {"f32": np.float32, "f64": np.float64, "i8": np.int8, "ui8": np.uint8, "i16": np.int16, "ui16": np.uint16, "i32": np.int32, "index": np.int64, "size": np.int64, "bool": np.bool_}
     shape = tensor_type.shape()
     basetype = str(tensor_type.basetype())
     assert basetype in dtypes, f"unsupported JIT tensor dtype: {basetype}"
@@ -832,7 +818,7 @@ def _jit_tensor_converter(*, index: int, tensor_type: T.Tensor, writable: bool) 
                 dst[i] = next(values)
 
     def convert(value: object, shape_env: dict[object, int], keepalive: list[object], syncbacks: list[Callable[[], None]]) -> object:
-        assert not (isinstance(value, (bytes, bytearray, memoryview)) or (hasattr(value, "ndim") and hasattr(value, "dtype") and hasattr(value, "shape") and getattr(value, "ndim", 0) > 0)), f"argument {index + 1}: direct buffer inputs are not supported by jit(); pass Python lists/scalars or use jit(proc, raw=True)"
+        assert not (isinstance(value, (bytes, bytearray, memoryview)) or (hasattr(value, "ndim") and hasattr(value, "dtype") and hasattr(value, "shape") and getattr(value, "ndim", 0) > 0)), f"argument {index + 1}: direct buffer inputs are not supported by jit(), pass Python lists/scalars or use jit(proc, raw=True)"
         numel = math.prod(_jit_eval_shape_expr(expr, shape_env) for expr in shape)
         if not isinstance(value, Sequence):
             assert numel == 1, f"argument {index + 1}: expected {numel} values, got scalar {type(value).__name__}"
