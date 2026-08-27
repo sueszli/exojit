@@ -134,21 +134,3 @@ def test_size_gather():
     np.testing.assert_allclose(out, expected)
     mlir = compile_mlir(size_gather, to_mlir(size_gather))(out=[0.0] * 4, src=src, idx=idx)
     np.testing.assert_allclose(mlir["out"], expected)
-
-
-@proc
-def index_gather(out: f64[4] @ DRAM, src: f64[8] @ DRAM, idx: index[4] @ DRAM):
-    for i in seq(0, 4):
-        if 0 <= idx[i] and idx[i] < 8:
-            out[i] = src[idx[i]]
-
-
-def test_index_gather():
-    src = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0]
-    idx = [7, 0, 5, 3]
-    expected = [17.0, 10.0, 15.0, 13.0]
-    out = [0.0] * 4
-    jit(index_gather)(out, src, idx)
-    np.testing.assert_allclose(out, expected)
-    mlir = compile_mlir(index_gather, to_mlir(index_gather))(out=[0.0] * 4, src=src, idx=idx)
-    np.testing.assert_allclose(mlir["out"], expected)

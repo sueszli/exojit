@@ -44,11 +44,9 @@ from xdsl.transforms.common_subexpression_elimination import CommonSubexpression
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.scoped_dict import ScopedDict
 
-from exojit.patches_exo import apply_exo_patches
+import exojit.patches_exo  # noqa: F401
 from exojit.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from exojit.patches_xdsl_llvm import ExtendedConvertMemRefToPtr, FPTruncOp, RewriteMemRefTypes
-
-apply_exo_patches()
 
 
 class IRGenerator:
