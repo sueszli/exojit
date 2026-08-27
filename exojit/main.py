@@ -614,7 +614,7 @@ class IRGenerator:
             case LoopIR.Reduce():
                 self._stmt_reduce(stmt)
             case LoopIR.WriteConfig():
-                raise NotImplementedError()
+                assert False, "unsupported WriteConfig"
             case LoopIR.Pass():
                 pass
             case LoopIR.If():
@@ -869,7 +869,7 @@ def _load_libomp() -> None:
         if Path(lib).exists():
             llvmlite.binding.load_library_permanently(lib)
             return
-    raise RuntimeError(f"libomp.dylib not found; install via `brew install libomp` or `brew install llvm`. Tried: {candidates}")
+    assert False, f"libomp not found; tried {candidates}"
 
 
 def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
@@ -1123,8 +1123,7 @@ def _dedup_proc_names(user_module: object) -> list[Procedure]:
 @click.option("--mlir", "fmt", flag_value="mlir", help="Output MLIR")
 @click.option("--asm", "fmt", flag_value="asm", help="Output assembly")
 def cli(source: Path, fmt: str | None):
-    if not fmt:
-        raise click.UsageError("Specify one of --c, --mlir, or --asm")
+    assert fmt, "choose --c, --mlir, or --asm"
     procs = _dedup_proc_names(load_user_code(source))
 
     match fmt:
