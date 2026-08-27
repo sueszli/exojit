@@ -19,7 +19,7 @@
 a just in time compiler for the exo language.
 
 // currently being ported to xDSL:
-// https://github.com/xdslproject/xdsl/tree/main/xdsl/backend/llvm
+// https://github.com/xdslproject/xdsl/tree/main/xdsl/jit
 
 
 usage:

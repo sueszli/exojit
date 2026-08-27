@@ -1,5 +1,4 @@
-CLAUDE.md
-GEMINI.md
+.claude
 
 .lit_test_times.txt
 tests/**/Output/
