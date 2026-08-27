@@ -2,10 +2,11 @@ from collections.abc import Callable
 from typing import ClassVar, TypeAlias
 
 from xdsl.dialects import llvm
-from xdsl.dialects.builtin import DenseArrayBase, DenseIntOrFPElementsAttr, IntegerAttr, VectorType, f32, f64, i32, i64
+from xdsl.dialects.builtin import AnyFloat, DenseArrayBase, DenseIntOrFPElementsAttr, IntegerAttr, VectorType, f32, f64, i32, i64
 from xdsl.dialects.llvm import FAbsOp, FNegOp, FSqrtOp, MaskedStoreOp, VectorFMaxOp
 from xdsl.ir import Operation, SSAValue
 from xdsl.pattern_rewriter import PatternRewriter, RewritePattern, op_type_rewrite_pattern
+from xdsl.utils.hints import isa
 
 # `vec_*` intrinsic lowering: `llvm.CallOp` -> LLVM/vector dialect ops
 #
@@ -109,7 +110,7 @@ def _build_binop(op_fn: Callable[..., Operation] | None, *ptrs: SSAValue, vec_ty
     if op_fn is None:
         return list(loads), vals[0]
     result_op = op_fn(*vals)
-    return [*loads, result_op], result_op.res
+    return [*loads, result_op], result_op.results[0]
 
 
 def _builder(op_fn: Callable[..., Operation] | None, *arg_indices: int) -> BuilderFn:
@@ -134,6 +135,7 @@ def _build_broadcast(dst: SSAValue, scalar: SSAValue, *, vec_type: VectorType) -
 
 def _build_zero(dst: SSAValue, *, vec_type: VectorType) -> BuildResult:
     # dst[:] = [0.0] * n_lanes
+    assert isa(vec_type, VectorType[AnyFloat])
     zero = llvm.ConstantOp(DenseIntOrFPElementsAttr.from_list(vec_type, [0.0] * vec_type.get_shape()[0]), vec_type)
     return [zero], zero.result
 
@@ -167,6 +169,7 @@ def _reduce_handler(vec_type: VectorType) -> Handler:
         src_load = llvm.LoadOp(src_ptr, vec_type)
         elem_type = vec_type.element_type
         reduce = llvm.CallIntrinsicOp("llvm.vector.reduce.fadd", [acc_val, src_load.dereferenced_value], [elem_type])
+        assert reduce.ress is not None
         return (src_load, reduce, llvm.StoreOp(reduce.ress, acc_val.owner.ptr))
 
     return handle
@@ -222,6 +225,7 @@ def _build_neon_zero(dst: SSAValue, *, vec_type: VectorType) -> tuple[Operation,
     from xdsl.dialects.builtin import FloatAttr
 
     elem_type = vec_type.element_type
+    assert isinstance(elem_type, AnyFloat)
     zero = llvm.ConstantOp(FloatAttr(0.0, elem_type), elem_type)
     bc_ops, bc_val = _broadcast(zero.result, vec_type)
     return (zero, *bc_ops, llvm.StoreOp(bc_val, dst))

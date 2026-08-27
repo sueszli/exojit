@@ -11,6 +11,7 @@ from collections.abc import Callable, MutableSequence, Sequence
 from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
+from typing import Any, Literal, SupportsInt, TypeGuard, cast
 
 import click
 import llvmlite.binding
@@ -24,13 +25,15 @@ from exo.backend.parallel_analysis import ParallelAnalysis
 from exo.backend.prec_analysis import PrecisionAnalysis
 from exo.backend.win_analysis import WindowAnalysis
 from exo.core.LoopIR import LoopIR, T
+from exo.core.prelude import Sym
 from exo.main import load_user_code
+from exojit.jitcall import JitFunc
 from xdsl.backend.llvm.convert_op import convert_op as _xdsl_convert_op
 from xdsl.backend.llvm.convert_type import convert_type
 from xdsl.builder import Builder
 from xdsl.context import Context
 from xdsl.dialects import llvm, memref
-from xdsl.dialects.builtin import BoolAttr, Builtin, FloatAttr, IndexType, IntAttr, IntegerAttr, MemRefType, ModuleOp, NoneAttr, StringAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
+from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, BoolAttr, Builtin, FloatAttr, IndexType, IntAttr, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
 from xdsl.dialects.llvm import BrOp, FNegOp
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
 from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
@@ -42,7 +45,6 @@ from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsP
 from xdsl.utils.scoped_dict import ScopedDict
 
 import exojit.patches_exo  # noqa: F401
-from exojit.jitcall import JitFunc
 from exojit.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from exojit.patches_xdsl_llvm import ExtendedConvertMemRefToPtr, FPTruncOp, RewriteMemRefTypes
 
@@ -51,7 +53,7 @@ class IRGenerator:
     module: ModuleOp
     builder: Builder
     symbol_table: ScopedDict[str, SSAValue] | None
-    type_table: ScopedDict[str, Attribute] | None
+    type_table: ScopedDict[str, LoopIR.type | type[LoopIR.type]] | None
     seen_proc_names: set[str]
     seen_extern_decls: set[str]
 
@@ -70,7 +72,7 @@ class IRGenerator:
         return self.symbol_table
 
     @property
-    def _types(self) -> ScopedDict[str, Attribute]:
+    def _types(self) -> ScopedDict[str, LoopIR.type | type[LoopIR.type]]:
         assert self.type_table is not None
         return self.type_table
 
@@ -90,7 +92,7 @@ class IRGenerator:
         parent_type_table = self.type_table
         if not inherit:
             self.symbol_table = ScopedDict[str, SSAValue]()
-            self.type_table = ScopedDict[str, Attribute]()
+            self.type_table = ScopedDict[str, LoopIR.type | type[LoopIR.type]]()
         try:
             yield
         finally:
@@ -98,7 +100,7 @@ class IRGenerator:
             self.symbol_table = parent_symbol_table
             self.type_table = parent_type_table
 
-    def _to_mlir_type(self, exo_type: object, mem_space: StringAttr | None = None) -> Attribute:
+    def _to_mlir_type(self, exo_type: object, mem_space: Attribute | None = None) -> Attribute:
         # map exo type (t.f32, t.tensor, etc.) to mlir type (f32, memref, etc.)
         match exo_type:
             case SSAValue():
@@ -128,25 +130,34 @@ class IRGenerator:
             case _:
                 assert False
 
-    def _shape(self, tensor: T.Tensor, *, emit: bool = False) -> list[int | SSAValue]:
-        # extract tensor dimensions as ints (static) or ssa values (variable/computed).
-        # emit=false: variable dims -> dynamic_index (-1), for memreftype declarations.
-        # emit=true:  variable dims -> live ssa values from symbol table, for stride/offset arithmetic.
-        assert isinstance(tensor, T.Tensor)
+    @staticmethod
+    def _static_dim(expr: LoopIR.expr) -> int:
+        # variable/computed dims -> dynamic_index (-1), for memreftype declarations
+        match expr:
+            case LoopIR.Const():
+                # literal (e.g. `f32[16, 16]`)
+                assert isinstance(expr.val, int)
+                return expr.val
+            case LoopIR.Read() | LoopIR.BinOp():
+                # variable (e.g. `f32[m, k]`) or computed (e.g. `f32[m+1, k*2]`)
+                return DYNAMIC_INDEX
+            case _:
+                assert False
 
-        def from_expr(expr: object) -> int | SSAValue:
+    def _shape(self, tensor: T.Tensor) -> list[int]:
+        return [self._static_dim(expr) for expr in tensor.shape()]
+
+    def _emit_shape(self, tensor: T.Tensor) -> list[int | SSAValue]:
+        # variable/computed dims -> live ssa values, for stride/offset arithmetic
+
+        def from_expr(expr: LoopIR.expr) -> int | SSAValue:
             match expr:
-                case LoopIR.Const():
-                    # literal (e.g. `f32[16, 16]`)
-                    return expr.val
                 case LoopIR.Read():
-                    # variable (e.g. `f32[m, k]`)
-                    return self._syms[repr(expr.name)] if emit else memref.DYNAMIC_INDEX
+                    return self._syms[repr(expr.name)]
                 case LoopIR.BinOp():
-                    # computed (e.g. `f32[m+1, k*2]`)
-                    return self._expr_binop(expr) if emit else memref.DYNAMIC_INDEX
+                    return self._expr_binop(expr)
                 case _:
-                    assert False
+                    return self._static_dim(expr)
 
         return [from_expr(expr) for expr in tensor.shape()]
 
@@ -177,14 +188,20 @@ class IRGenerator:
 
     def _expr_const(self, const: LoopIR.Const, expected_type: Attribute | None = None) -> SSAValue:
         # lower loopir literal to llvm.mlir.constant op
-        is_num_with_context = isinstance(const.type, T.Num) and expected_type is not None
-        mlir_type = expected_type if is_num_with_context else self._to_mlir_type(const.type)
+        if isinstance(const.type, T.Num) and expected_type is not None:
+            mlir_type = expected_type
+        else:
+            mlir_type = self._to_mlir_type(const.type)
+        assert isinstance(const.val, (int, float))
 
         if mlir_type in [f16, f32, f64]:
+            assert isinstance(mlir_type, AnyFloat)
             attr = FloatAttr(const.val, mlir_type)
         elif mlir_type in [i8, i16, i32, i64]:
+            assert isinstance(mlir_type, IntegerType)
             attr = IntegerAttr(IntAttr(int(const.val)), mlir_type)
         elif mlir_type == i1:
+            assert isinstance(const.val, int)
             attr = BoolAttr(const.val, i1)
         else:
             assert False
@@ -210,6 +227,7 @@ class IRGenerator:
         if mlir_type in [f16, f32, f64]:
             return self._emit(FNegOp(expr, fast_math=llvm.FastMathAttr("fast")))
         elif mlir_type in [i8, i16, i32, i64]:
+            assert isinstance(mlir_type, IntegerType)
             zero = self._emit(llvm.ConstantOp(IntegerAttr(0, mlir_type), mlir_type))
             return self._emit(llvm.SubOp(zero, expr))
         else:
@@ -265,18 +283,20 @@ class IRGenerator:
                 assert False
 
     @staticmethod
-    def _to_index_list(values: list[SSAValue | int], emit: Callable[[Operation], SSAValue]) -> list:
+    def _to_index_list(values: Sequence[SSAValue | int], emit: Callable[[Operation], SSAValue]) -> list:
         # cast i64 ssavalues to index type, pass through static ints as-is for subviewop
-        static, dynamic = split_dynamic_index_list(values, memref.DYNAMIC_INDEX)
+        static, dynamic = split_dynamic_index_list(values, DYNAMIC_INDEX)
         casted = [emit(UnrealizedConversionCastOp.get([value], [IndexType()])) for value in dynamic]
-        return get_dynamic_index_list(static, casted, memref.DYNAMIC_INDEX)
+        return get_dynamic_index_list(static, casted, DYNAMIC_INDEX)
 
     def _expr_window(self, window: LoopIR.WindowExpr) -> SSAValue:
         # lower window expression to memref.subview
         indices = [self._window_access(access, self._expr) for access in window.idx]
         source = self._syms[repr(window.name)]
+        assert isinstance(source.type, MemRefType)
+        assert isinstance(window.type, T.Window)
         dest_type = self._to_mlir_type(window.type.as_tensor, source.type.memory_space)
-        output_sizes = self._shape(window.type.as_tensor, emit=True)
+        output_sizes = self._emit_shape(window.type.as_tensor)
 
         offsets_idx = self._to_index_list(indices, self._emit)
         sizes_idx = self._to_index_list(output_sizes, self._emit)
@@ -352,6 +372,7 @@ class IRGenerator:
         cond = self._expr(if_stmt.cond)
 
         region = self.builder.insertion_point.block.parent_region()
+        assert region is not None
         true_block = Block()
         false_block = Block()
         merge_block = Block()
@@ -382,7 +403,10 @@ class IRGenerator:
         lo = self._expr(s.lo)
         hi = self._expr(s.hi)
         ptr = llvm.LLVMPointerType()
-        c = lambda v, t=i64: self._emit(llvm.ConstantOp(IntegerAttr(v, t), t))
+
+        def c(v: int, t: IntegerType = i64) -> SSAValue:
+            return self._emit(llvm.ConstantOp(IntegerAttr(v, t), t))
+
         st = lambda v, p: self.builder.insert(llvm.StoreOp(v, p))
         ext = lambda v: v if v.type == i64 else self._emit(llvm.SExtOp(v, i64))
         alloc = lambda t: self._emit(llvm.AllocaOp(c(1), t))
@@ -444,6 +468,7 @@ class IRGenerator:
 
             # loop: header(iv) -> body -> back-edge
             r = blk.parent_region()
+            assert r is not None
             hdr = Block(arg_types=[i64])
             body = Block()
             exit_ = Block()
@@ -481,9 +506,11 @@ class IRGenerator:
         lo = self._expr(for_stmt.lo)
         hi = self._expr(for_stmt.hi)
         assert lo.type == hi.type
+        assert isinstance(lo.type, IntegerType)
         step = self._emit(llvm.ConstantOp(IntegerAttr(1, lo.type), lo.type))
 
         region = self.builder.insertion_point.block.parent_region()
+        assert region is not None
         header_block = Block(arg_types=[lo.type])
         body_block = Block()
         exit_block = Block()
@@ -529,7 +556,7 @@ class IRGenerator:
             mlir_type = MemRefType(mlir_type, [1], NoneAttr(), mem_space)
 
         shape = mlir_type.get_shape()
-        assert all(dim != memref.DYNAMIC_INDEX for dim in shape), "dynamic-sized allocs are not supported"
+        assert all(dim != DYNAMIC_INDEX for dim in shape), "dynamic-sized allocs are not supported"
         total_elements = math.prod(shape)
 
         if mem_name == "DRAM":
@@ -555,14 +582,15 @@ class IRGenerator:
 
     def _stmt_window(self, stmt: LoopIR.WindowStmt) -> None:
         # lower window statement to subview and bind result in symbol/type tables
+        assert isinstance(stmt.rhs, LoopIR.WindowExpr) and isinstance(stmt.rhs.type, T.Window)
         result = self._expr_window(stmt.rhs)
         self._syms[repr(stmt.name)] = result
         self._types[repr(stmt.name)] = stmt.rhs.type.as_tensor
 
     @staticmethod
-    def _is_mutated(name: str, body: list) -> bool:
+    def _is_mutated(name: str, body: list[LoopIR.stmt]) -> bool:
         # check if a variable is assigned to or reduced into in the body
-        def check(stmt: object) -> bool:
+        def check(stmt: LoopIR.stmt) -> bool:
             match stmt:
                 case LoopIR.Assign() | LoopIR.Reduce():
                     return repr(stmt.name) == name
@@ -575,9 +603,9 @@ class IRGenerator:
         return any(check(stmt) for stmt in body)
 
     @staticmethod
-    def _coerce_arg(arg_val: SSAValue, callee_arg: object, callee_body: list, type_fn: Callable[[object, StringAttr | None], Attribute], emit_fn: Callable[[Operation], SSAValue]) -> SSAValue:
+    def _coerce_arg(arg_val: SSAValue, callee_arg: LoopIR.fnarg, callee_body: list[LoopIR.stmt], type_fn: Callable[[object, Attribute | None], Attribute], emit_fn: Callable[[Operation], SSAValue]) -> SSAValue:
         # reconcile mlir type and shape mismatches (e.g. caller has memref<8xf32>, callee expects memref<?xf32>) via memref.cast
-        mem_space = StringAttr(callee_arg.mem.name()) if hasattr(callee_arg, "mem") else None
+        mem_space = StringAttr(callee_arg.mem.name()) if callee_arg.mem is not None else None
         callee_type = type_fn(callee_arg.type, mem_space)
 
         # scalars passed by reference (callee writes to them) must arrive as memref<1xt>
@@ -585,8 +613,7 @@ class IRGenerator:
         if scalar_passed_by_ref:
             callee_type = MemRefType(callee_type, [1], NoneAttr())
 
-        shape_mismatch = isinstance(arg_val.type, MemRefType) and isinstance(callee_type, MemRefType) and arg_val.type != callee_type
-        if shape_mismatch:
+        if isinstance(arg_val.type, MemRefType) and isinstance(callee_type, MemRefType) and arg_val.type != callee_type:
             return emit_fn(memref.CastOp.get(arg_val, callee_type))
 
         return arg_val
@@ -641,7 +668,7 @@ class IRGenerator:
         # build func signature: map each arg to its mlir type, wrapping mutated scalars in memref<1x>
         input_types = []
         for arg in procedure.args:
-            mem = StringAttr(arg.mem.name()) if hasattr(arg, "mem") else None
+            mem = StringAttr(arg.mem.name()) if arg.mem is not None else None
             mlir_type = self._to_mlir_type(arg.type, mem)
             if not isinstance(mlir_type, MemRefType) and self._is_mutated(repr(arg.name), procedure.body):
                 mlir_type = MemRefType(mlir_type, [1], NoneAttr())
@@ -749,7 +776,7 @@ class LLVMLiteGenerator:
 
         block_map: dict[Block, llvmlite.ir.Block] = {block: ir_func.append_basic_block() for block in mlir_blocks}
         phi_map: dict[SSAValue, llvmlite.ir.PhiInstr] = {arg: llvmlite.ir.IRBuilder(block_map[blk]).phi(convert_type(arg.type)) for blk in mlir_blocks[1:] for arg in blk.args}
-        val_map: dict[SSAValue, llvmlite.ir.Value] = dict(zip(mlir_blocks[0].args, ir_func.args)) | phi_map
+        val_map: dict[SSAValue, llvmlite.ir.Value] = {**dict(zip(mlir_blocks[0].args, ir_func.args)), **phi_map}
 
         for mlir_block in mlir_blocks:
             builder = llvmlite.ir.IRBuilder(block_map[mlir_block])
@@ -763,10 +790,11 @@ class LLVMLiteGenerator:
         tm = _target_machine()
         llvm_module.triple = tm.triple
         llvm_module.data_layout = str(tm.target_data)
-        func_ops = list(module.ops)
+        func_ops: list[llvm.FuncOp] = []
 
-        for op in func_ops:
+        for op in module.ops:
             assert isinstance(op, llvm.FuncOp)
+            func_ops.append(op)
             ftype = llvmlite.ir.FunctionType(convert_type(op.function_type.output), [convert_type(t) for t in op.function_type.inputs], var_arg=op.function_type.is_variadic)
             fn = llvmlite.ir.Function(llvm_module, ftype, name=op.sym_name.data)
 
@@ -863,7 +891,7 @@ def _load_libomp() -> None:
         try:
             prefix = subprocess.run(["brew", "--prefix", pkg], capture_output=True, text=True, check=True).stdout.strip()
             candidates.append(f"{prefix}/lib/libomp.dylib")
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except subprocess.CalledProcessError, FileNotFoundError:
             pass
     for lib in candidates:
         if Path(lib).exists():
@@ -877,7 +905,7 @@ def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
     write_cache: dict[int, frozenset[int]] = {}
     visiting: set[int] = set()
 
-    def _aliases(expr: object, alias_map: dict[object, frozenset[int]]) -> frozenset[int]:
+    def _aliases(expr: LoopIR.expr, alias_map: dict[Sym, frozenset[int]]) -> frozenset[int]:
         return alias_map.get(expr.name, frozenset()) if isinstance(expr, (LoopIR.Read, LoopIR.WindowExpr)) else frozenset()
 
     def _written_tensor_args(proc_ir: LoopIR.proc) -> frozenset[int]:
@@ -892,7 +920,7 @@ def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
         finally:
             visiting.remove(proc_id)
 
-    def _walk(stmts: list, alias_map: dict[object, frozenset[int]]) -> frozenset[int]:
+    def _walk(stmts: list[LoopIR.stmt], alias_map: dict[Sym, frozenset[int]]) -> frozenset[int]:
         alias_map = dict(alias_map)
         written: set[int] = set()
         for stmt in stmts:
@@ -911,7 +939,7 @@ def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
 
     written = _written_tensor_args(proc)
 
-    def _kind(i: int, arg: object) -> int:
+    def _kind(i: int, arg: LoopIR.fnarg) -> int:
         match arg.type:
             case _ if arg.type.is_tensor_or_window():
                 return 2 if i in written else 1
@@ -923,11 +951,12 @@ def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
     return bytes(_kind(i, arg) for i, arg in enumerate(proc.args))
 
 
-def _jit_eval_shape_expr(expr: object, env: dict[object, int]) -> int:
+def _jit_eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
     # evaluate the small shape language used by dynamic tensor arguments
     match expr:
         case LoopIR.Const():
-            return int(expr.val)
+            assert isinstance(expr.val, int)
+            return expr.val
         case LoopIR.Read():
             key = repr(expr.name)
             value = env.get(key)
@@ -970,9 +999,12 @@ def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writab
         "bool": "_Bool",
     }
     shape = tensor_type.shape()
-    assert (basetype := str(tensor_type.basetype())) in jit_tensor_c_types, f"unsupported JIT tensor dtype: {basetype}"
+    basetype = str(tensor_type.basetype())
+    assert basetype in jit_tensor_c_types, f"unsupported JIT tensor dtype: {basetype}"
     c_type = jit_tensor_c_types[basetype]
-    is_seq = lambda x: isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray, memoryview))
+
+    def is_seq(x: object) -> TypeGuard[Sequence[object]]:
+        return isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray, memoryview))
 
     def linearize(value: object) -> tuple[list[object], list[tuple[MutableSequence[object], int]]]:
         if not is_seq(value):
@@ -994,7 +1026,7 @@ def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writab
         return flat, leaves
 
     def convert(value: object, shape_env: dict[object, int], keepalive: list[object], syncbacks: list[Callable[[], None]]) -> object:
-        assert not (isinstance(value, (bytes, bytearray, memoryview)) or (hasattr(value, "ndim") and hasattr(value, "dtype") and hasattr(value, "shape") and getattr(value, "ndim") > 0)), f"argument {index + 1}: direct buffer inputs are not supported by jit(); " "pass Python lists/scalars or use jit(proc, raw=True)"
+        assert not (isinstance(value, (bytes, bytearray, memoryview)) or (hasattr(value, "ndim") and hasattr(value, "dtype") and hasattr(value, "shape") and getattr(value, "ndim", 0) > 0)), f"argument {index + 1}: direct buffer inputs are not supported by jit(); pass Python lists/scalars or use jit(proc, raw=True)"
         numel = math.prod(_jit_eval_shape_expr(expr, shape_env) for expr in shape)
 
         if not is_seq(value):
@@ -1032,16 +1064,16 @@ def _jit_wrap(raw_fn: JitFunc, proc: Procedure, arg_kinds: bytes) -> Callable[..
     arg_names = [_strip_arg_name(arg.name) for arg in proc._loopir_proc.args]
     for i, arg in enumerate(proc._loopir_proc.args):
         match arg.type:
-            case _ if arg.type.is_tensor_or_window():
+            case T.Tensor() | T.Window():
                 tensor_type = arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type
                 converters.append(_jit_tensor_converter(ffi=ffi, index=i, tensor_type=tensor_type, writable=arg_kinds[i] == 2))
             case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
                 name = arg.name
 
-                def convert(value: object, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=name) -> int:
-                    value = int(value)
-                    shape_env[repr(name)] = value
-                    return value
+                def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=name) -> int:
+                    converted = int(value)
+                    shape_env[repr(name)] = converted
+                    return converted
 
                 converters.append(convert)
             case _:
@@ -1058,11 +1090,11 @@ def _jit_wrap(raw_fn: JitFunc, proc: Procedure, arg_kinds: bytes) -> Callable[..
         for sync in syncbacks:
             sync()
 
-    wrapped._raw = raw_fn
+    cast(Any, wrapped)._raw = raw_fn
     return wrapped
 
 
-def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None] | JitFunc:
+def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
     mlir_module = to_mlir(proc)
     cache_key = hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16]
     ir_text = _disk_cache(cache_key, lambda: str(LLVMLiteGenerator.generate(mlir_module)))
@@ -1085,7 +1117,7 @@ def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None] | Ji
     if raw:
         arg_names = [_strip_arg_name(arg.name) for arg in proc._loopir_proc.args]
         raw_wrapped = lambda *args, **kwargs: raw_fn(*_resolve_jit_args(arg_names, args, kwargs))
-        raw_wrapped._raw = raw_fn
+        cast(Any, raw_wrapped)._raw = raw_fn
         return raw_wrapped
 
     return _jit_wrap(raw_fn, proc, arg_kinds)
@@ -1122,7 +1154,7 @@ def _dedup_proc_names(user_module: object) -> list[Procedure]:
 @click.option("--c", "fmt", flag_value="c", help="Output C source")
 @click.option("--mlir", "fmt", flag_value="mlir", help="Output MLIR")
 @click.option("--asm", "fmt", flag_value="asm", help="Output assembly")
-def cli(source: Path, fmt: str | None):
+def cli(source: Path, fmt: Literal["c", "mlir", "asm"] | None):
     assert fmt, "choose --c, --mlir, or --asm"
     procs = _dedup_proc_names(load_user_code(source))
 

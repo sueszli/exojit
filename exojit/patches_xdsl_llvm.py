@@ -1,6 +1,5 @@
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable
 
 from xdsl.context import Context
 from xdsl.dialects import builtin, llvm, memref
@@ -17,6 +16,7 @@ from xdsl.utils.hints import isa
 @irdl_op_definition
 class FPTruncOp(GenericCastOp):
     name = "llvm.fptrunc"
+
 
 # `memref` -> `llvm.ptr` lowering: replace structured memory ops with raw pointer arithmetic
 #
@@ -135,7 +135,8 @@ class ConvertLoadPattern(RewritePattern):
     # memref.load %buf[%i, %j] => ptr arithmetic + llvm.load
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: memref.LoadOp, rewriter: PatternRewriter, /):
-        assert isa(memref_type := op.memref.type, builtin.MemRefType)
+        memref_type = op.memref.type
+        assert isa(memref_type, builtin.MemRefType)
         if not isa(memref_type.layout, builtin.NoneAttr):
             return  # skip affine map layouts
         target_ptr = _get_target_ptr(op.memref, memref_type, list(op.indices), rewriter)
@@ -147,7 +148,8 @@ class ConvertStorePattern(RewritePattern):
     # memref.store %val, %buf[%i, %j] => ptr arithmetic + llvm.store
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: memref.StoreOp, rewriter: PatternRewriter, /):
-        assert isa(memref_type := op.memref.type, builtin.MemRefType)
+        memref_type = op.memref.type
+        assert isa(memref_type, builtin.MemRefType)
         if not isa(memref_type.layout, builtin.NoneAttr):
             return  # skip affine map layouts
         target_ptr = _get_target_ptr(op.memref, memref_type, list(op.indices), rewriter)
@@ -163,7 +165,8 @@ class ConvertSubviewPattern(RewritePattern):
     # the actual ssa value then comes from the op.offsets list in order.
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: memref.SubviewOp, rewriter: PatternRewriter, /):
-        assert isa(src_type := op.source.type, builtin.MemRefType)
+        src_type = op.source.type
+        assert isa(src_type, builtin.MemRefType)
         if not isa(src_type.layout, builtin.NoneAttr):
             return  # skip affine map layouts
         src_shape = src_type.get_shape()
@@ -180,6 +183,7 @@ class ConvertSubviewPattern(RewritePattern):
             else:
                 all_offsets.append(_iconst(ins, soff))
 
+        assert isinstance(src_type.element_type, builtin.FixedBitwidthType)
         result_ptr = _offset_ptr_raw(op.source, all_offsets, len(src_shape), lambda i: _iconst(ins, src_shape[i]), src_type.element_type.size, ins)
 
         # wrap result as memreftype so downstream load/store patterns still see the right shape for stride computation

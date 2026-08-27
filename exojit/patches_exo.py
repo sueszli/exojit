@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import exo.frontend.boundscheck as _boundscheck
 import exo.frontend.pyparser as _pyparser
-from exo.core.LoopIR import LoopIR
+from exo.core.LoopIR import UAST, LoopIR
 from exo.core.prelude import Sym
 
-_pyparser._prim_types["size"] = _pyparser.UAST.Size()
-_pyparser._prim_types["index"] = _pyparser.UAST.Index()
+_pyparser._prim_types["size"] = UAST.Size()
+_pyparser._prim_types["index"] = UAST.Index()
 
 
 ORIGINAL_LIFT_EXPR = _boundscheck.lift_expr
