@@ -1,7 +1,7 @@
 # RUN: uv run exojit --mlir %s | filecheck %s
 
 # CHECK: builtin.module {
-# CHECK-NEXT:   llvm.func @fixed_matmul(%0: !llvm.ptr, %1: !llvm.ptr, %2: !llvm.ptr) {
+# CHECK-NEXT:   llvm.func @fixed_matmul(%0: !llvm.ptr {llvm.noalias}, %1: !llvm.ptr {llvm.noalias}, %2: !llvm.ptr {llvm.noalias}) {
 # CHECK-NEXT:     %3 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %4 = llvm.mlir.constant(16) : i64
 # CHECK-NEXT:     %5 = llvm.mlir.constant(1) : i64
