@@ -29,7 +29,7 @@ def patched_lift_expr(e):
             case LoopIR.ReadConfig(config=config, field=field):
                 return ("config", config.name(), field)
             case _:
-                raise TypeError(f"unsupported lifted index expression: {type(e).__name__}")
+                assert False, f"unsupported index expression: {type(e).__name__}"
 
     if not (isinstance(e, LoopIR.Read) and e.idx and e.type.is_indexable()):
         return ORIGINAL_LIFT_EXPR(e)
