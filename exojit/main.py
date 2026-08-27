@@ -53,6 +53,7 @@ class IRGenerator:
     type_table: ScopedDict[str, LoopIR.type | type[LoopIR.type]] | None
     seen_proc_names: set[str]
     seen_extern_decls: set[str]
+    dynamic_dims: dict[SSAValue, tuple[int | SSAValue, ...]]
 
     def __init__(self):
         self.module = ModuleOp([])
@@ -61,6 +62,9 @@ class IRGenerator:
         self.type_table = None
         self.seen_proc_names = set()
         self.seen_extern_decls = set()
+        # memrefs with a variable dimension carry no shape in their type, so record
+        # the live dim values here for the memref -> pointer lowering to pick up
+        self.dynamic_dims = {}
         self._par_counter = 0  # for naming
 
     @property
@@ -157,6 +161,10 @@ class IRGenerator:
                     return self._static_dim(expr)
 
         return [from_expr(expr) for expr in tensor.shape()]
+
+    def _record_dynamic_dims(self, value: SSAValue, tensor: object) -> None:
+        if isinstance(value.type, MemRefType) and memref.DYNAMIC_INDEX in value.type.get_shape():
+            self.dynamic_dims[value] = tuple(self._shape(tensor, emit=True))
 
     def _zero_index(self) -> list[SSAValue]:
         return [self._emit(llvm.ConstantOp(IntegerAttr(0, i64), i64))]
@@ -300,6 +308,7 @@ class IRGenerator:
         strides_idx = self._to_index_list([1] * len(indices), self._emit)
 
         self.builder.insert(subview := memref.SubviewOp.get(source, offsets_idx, sizes_idx, strides_idx, dest_type))
+        self._record_dynamic_dims(subview.result, window.type.as_tensor)
         return subview.result
 
     def _expr_extern(self, extern: LoopIR.Extern) -> SSAValue:
@@ -588,21 +597,24 @@ class IRGenerator:
     def _is_mutated(name: str, body: list[LoopIR.stmt]) -> bool:
         return any(repr(sym) == name for sym, _ in get_writes_of_stmts(body))
 
-    @staticmethod
-    def _coerce_arg(arg_val: SSAValue, callee_arg: LoopIR.fnarg, callee_body: list[LoopIR.stmt], type_fn: Callable[[object, Attribute | None], Attribute], emit_fn: Callable[[Operation], SSAValue]) -> SSAValue:
+    def _coerce_arg(self, arg_val: SSAValue, callee_arg: LoopIR.fnarg, callee_body: list[LoopIR.stmt]) -> SSAValue:
         # reconcile mlir type and shape mismatches (e.g. caller has memref<8xf32>, callee expects memref<?xf32>) via memref.cast
         mem_space = StringAttr(callee_arg.mem.name()) if callee_arg.mem is not None else None
-        callee_type = type_fn(callee_arg.type, mem_space)
+        callee_type = self._to_mlir_type(callee_arg.type, mem_space)
 
         # scalars passed by reference (callee writes to them) must arrive as memref<1xt>
-        scalar_passed_by_ref = not isinstance(callee_type, MemRefType) and IRGenerator._is_mutated(repr(callee_arg.name), callee_body)
+        scalar_passed_by_ref = not isinstance(callee_type, MemRefType) and self._is_mutated(repr(callee_arg.name), callee_body)
         if scalar_passed_by_ref:
             callee_type = MemRefType(callee_type, [1], NoneAttr())
 
-        if isinstance(arg_val.type, MemRefType) and isinstance(callee_type, MemRefType) and arg_val.type != callee_type:
-            return emit_fn(memref.CastOp.get(arg_val, callee_type))
+        shape_mismatch = isinstance(arg_val.type, MemRefType) and isinstance(callee_type, MemRefType) and arg_val.type != callee_type
+        if not shape_mismatch:
+            return arg_val
 
-        return arg_val
+        cast = self._emit(memref.CastOp.get(arg_val, callee_type))
+        if arg_val in self.dynamic_dims:
+            self.dynamic_dims[cast] = self.dynamic_dims[arg_val]
+        return cast
 
     def _stmt_call(self, call: LoopIR.Call) -> None:
         # lower call to func.call. emit extern decl for intrinsics, recurse for procs
@@ -611,7 +623,7 @@ class IRGenerator:
         if call.f.instr is None:
             self._generate_procedure(call.f)
             assert len(call.args) == len(call.f.args)
-            args = [self._coerce_arg(arg_val, callee_arg, call.f.body, self._to_mlir_type, self._emit) for arg_val, callee_arg in zip(args, call.f.args)]
+            args = [self._coerce_arg(arg_val, callee_arg, call.f.body) for arg_val, callee_arg in zip(args, call.f.args)]
         elif call.f.name not in self.seen_extern_decls:
             self.seen_extern_decls.add(call.f.name)
             input_types = [SSAValue.get(arg).type for arg in args]
@@ -674,6 +686,9 @@ class IRGenerator:
 
             self.symbol_table = ScopedDict(local_scope={repr(arg.name): val for arg, val in zip(procedure.args, block.args)})
             self.type_table = ScopedDict(local_scope={repr(arg.name): arg.type for arg in procedure.args})
+            for arg, val in zip(procedure.args, block.args):
+                if arg.type.is_tensor_or_window():
+                    self._record_dynamic_dims(val, arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type)
 
             for stmt in procedure.body:
                 self._stmt(stmt)
@@ -708,7 +723,8 @@ def _context() -> Context:
 def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
     ctx = _context()
 
-    module = IRGenerator().generate(procs)
+    generator = IRGenerator()
+    module = generator.generate(procs)
 
     CanonicalizePass().apply(ctx, module)
     CommonSubexpressionElimination().apply(ctx, module)
@@ -716,7 +732,7 @@ def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
 
     # full lowering to llvm dialect
     _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
-    ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
+    ExtendedConvertMemRefToPtr(generator.dynamic_dims).apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
     _rewrite([RewriteMemRefTypes()])  # memreftype -> llvm.ptr on all values
     _rewrite([ConvertVecIntrinsic()])  # vec_*/neon_* calls -> llvm ops
     ReconcileUnrealizedCastsPass().apply(ctx, module)  # fold paired unrealized casts
