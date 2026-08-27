@@ -37,8 +37,8 @@ from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriteWalker
 from xdsl.rewriter import InsertPoint
 from xdsl.transforms.canonicalize import CanonicalizePass
-from xdsl.transforms.convert_scf_to_cf import ConvertScfToCf
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
+from xdsl.transforms.convert_scf_to_cf import ConvertScfToCf
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.scoped_dict import ScopedDict
 
@@ -968,7 +968,7 @@ def _ptr_marshaller(index: int, writable: bool) -> Callable[[object], object]:
             return cast("void *", value)
         try:
             return to_pointer(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             raise TypeError(f"argument {index + 1}: expected {expected}, got {type(value).__name__}") from None
 
     return marshal
