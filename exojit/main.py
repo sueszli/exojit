@@ -9,7 +9,7 @@ import sys
 import tempfile
 from collections.abc import Callable, MutableSequence, Sequence
 from contextlib import contextmanager
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
 from typing import Any, Literal, SupportsInt, TypeGuard, cast
 
@@ -27,7 +27,6 @@ from exo.backend.win_analysis import WindowAnalysis
 from exo.core.LoopIR import LoopIR, T
 from exo.core.prelude import Sym
 from exo.main import load_user_code
-from exojit.jitcall import JitFunc
 from xdsl.backend.llvm.convert import convert_module
 from xdsl.builder import Builder
 from xdsl.context import Context
@@ -1036,7 +1035,68 @@ def _jit_wrap(raw_fn: JitFunc, proc: Procedure, arg_kinds: bytes) -> Callable[..
     return wrapped
 
 
-def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
+_FFI = FFI()
+_ARG_INT, _ARG_PTR_RO, _ARG_PTR_RW = 0, 1, 2
+
+
+def _int_marshaller(index: int) -> Callable[[object], int]:
+    def marshal(value: object) -> int:
+        if not isinstance(value, int):
+            raise TypeError(f"argument {index + 1}: expected int, got {type(value).__name__}")
+        return value
+
+    return marshal
+
+
+def _ptr_marshaller(index: int, writable: bool) -> Callable[[object], object]:
+    # everything the marshaller touches is resolved once, here: it runs on every
+    # pointer argument of every call
+    cast, cdata = _FFI.cast, _FFI.CData
+    to_pointer = partial(_FFI.from_buffer, require_writable=True) if writable else _FFI.from_buffer
+    expected = "int address or writable C-contiguous buffer" if writable else "int address or C-contiguous buffer"
+
+    def marshal(value: object) -> object:
+        if isinstance(value, cdata):
+            return value  # already converted, see JitFunc.pointer
+        if isinstance(value, int):
+            return cast("void *", value)
+        try:
+            return to_pointer(value)
+        except (TypeError, ValueError):
+            raise TypeError(f"argument {index + 1}: expected {expected}, got {type(value).__name__}") from None
+
+    return marshal
+
+
+class JitFunc:
+    # calls a JIT-compiled `void(...)` entry point through cffi.
+    # holds the mcjit engine so the compiled code outlives this object.
+    __slots__ = ("_engine", "_fn", "_marshallers")
+
+    def __init__(self, address: int, engine: object, arg_kinds: bytes):
+        params = ", ".join("ssize_t" if kind == _ARG_INT else "void *" for kind in arg_kinds) or "void"
+        self._fn = _FFI.cast(f"void(*)({params})", address)
+        self._engine = engine
+        self._marshallers = tuple(_int_marshaller(i) if kind == _ARG_INT else _ptr_marshaller(i, kind == _ARG_PTR_RW) for i, kind in enumerate(arg_kinds))
+
+    def __call__(self, *args) -> None:
+        marshallers = self._marshallers
+        if len(args) != len(marshallers):
+            raise TypeError(f"JitFunc expected {len(marshallers)} arguments, got {len(args)}")
+        self._fn(*[marshal(arg) for marshal, arg in zip(marshallers, args)])
+
+    @property
+    def _raw(self) -> JitFunc:
+        return self  # `jit(proc, raw=True)` already hands back the entry point
+
+    @staticmethod
+    def pointer(buffer: object) -> object:
+        # hoist the buffer -> pointer conversion out of a hot loop. the result
+        # keeps `buffer` alive for as long as it is itself referenced.
+        return _FFI.from_buffer(buffer)
+
+
+def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None] | JitFunc:
     mlir_module = to_mlir(proc)
     cache_key = hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16]
     ir_text = _disk_cache(cache_key, lambda: str(_to_llvmlite(mlir_module)))
@@ -1056,13 +1116,7 @@ def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
     arg_kinds = _jit_arg_kinds(proc._loopir_proc)
     raw_fn = JitFunc(engine.get_function_address(proc.name()), engine, arg_kinds)
 
-    if raw:
-        arg_names = [_strip_arg_name(arg.name) for arg in proc._loopir_proc.args]
-        raw_wrapped = lambda *args, **kwargs: raw_fn(*_resolve_jit_args(arg_names, args, kwargs))
-        cast(Any, raw_wrapped)._raw = raw_fn
-        return raw_wrapped
-
-    return _jit_wrap(raw_fn, proc, arg_kinds)
+    return raw_fn if raw else _jit_wrap(raw_fn, proc, arg_kinds)
 
 
 def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedure] | None = None):
