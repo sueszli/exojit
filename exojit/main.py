@@ -699,13 +699,8 @@ class IRGenerator:
         return self.module
 
 
-@cache
-def _context() -> Context:
-    return Context()
-
-
 def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
-    ctx = _context()
+    ctx = Context()
 
     generator = IRGenerator()
     module = generator.generate(procs)
