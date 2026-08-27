@@ -99,3 +99,24 @@ def test_jit_raw_rejects_non_contiguous_buffers():
     dst = np.zeros(4, dtype=np.float32)
     with pytest.raises(TypeError, match="C-contiguous buffer"):
         raw(dst, src)
+
+
+@proc
+def copy_x_1(x_1: f32[4] @ DRAM, y: f32[4] @ DRAM):
+    for i in seq(0, 4):
+        y[i] = x_1[i]
+
+
+def test_jit_keeps_argument_names_ending_in_digits():
+    # a trailing _<digits> used to be stripped, so `x_1=` raised KeyError: 'x'
+    dst = [0.0] * 4
+    jit(copy_x_1)(x_1=[1.0, 2.0, 3.0, 4.0], y=dst)
+    np.testing.assert_allclose(dst, [1.0, 2.0, 3.0, 4.0])
+
+
+def test_jit_raw_accepts_prebuilt_pointers():
+    raw = jit(copy4, raw=True)
+    src = np.array([1.0, -2.0, 3.5, 4.25], dtype=np.float32)
+    dst = np.zeros_like(src)
+    raw(raw.pointer(dst), raw.pointer(src))
+    np.testing.assert_allclose(dst, src)
