@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import numbers
+import operator
 import re
 import subprocess
 import sys
@@ -956,9 +957,10 @@ _ARG_INT, _ARG_PTR_RO, _ARG_PTR_RW = 0, 1, 2
 
 def _int_marshaller(index: int) -> Callable[[object], int]:
     def marshal(value: object) -> int:
-        if not isinstance(value, int):
-            raise TypeError(f"argument {index + 1}: expected int, got {type(value).__name__}")
-        return value
+        try:
+            return operator.index(value)  # also accepts numpy integers
+        except TypeError:
+            raise TypeError(f"argument {index + 1}: expected int, got {type(value).__name__}") from None
 
     return marshal
 
@@ -1007,11 +1009,16 @@ class JitFunc:
     def _raw(self) -> JitFunc:
         return self  # `jit(proc, raw=True)` already hands back the entry point
 
-    @staticmethod
-    def pointer(buffer: object) -> object:
-        # hoist the buffer -> pointer conversion out of a hot loop. the result
-        # keeps `buffer` alive for as long as it is itself referenced.
-        return _FFI.from_buffer(buffer)
+    def bind(self, *args) -> Callable[[], None]:
+        # marshal once and hand back a closure that only makes the call, for
+        # callers that invoke the same kernel against the same buffers in a loop.
+        # the closure pins those buffers for as long as it is alive, so they
+        # cannot be resized or closed until it is released.
+        if len(args) != len(self._marshallers):
+            raise TypeError(f"JitFunc expected {len(self._marshallers)} arguments, got {len(args)}")
+        bound = tuple(marshal(arg) for marshal, arg in zip(self._marshallers, args))
+        fn = self._fn
+        return lambda: fn(*bound)
 
 
 def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None] | JitFunc:
