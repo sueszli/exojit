@@ -1,7 +1,8 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Callable, TypeAlias
+from typing import TypeAlias
 
+from xdsl.backend.llvm.convert_op import _CAST_OP_NAMES
 from xdsl.context import Context
 from xdsl.dialects import arith, builtin, cf, llvm, memref
 from xdsl.dialects.builtin import DYNAMIC_INDEX, IntegerAttr, MemRefType, UnrealizedConversionCastOp, i64
@@ -10,7 +11,6 @@ from xdsl.ir import Operation, OpResult, SSAValue
 from xdsl.irdl import irdl_op_definition
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
-from xdsl.backend.llvm.convert_op import _CAST_OP_NAMES
 from xdsl.transforms.convert_memref_to_ptr import ConvertCastOp
 from xdsl.utils.hints import isa
 
