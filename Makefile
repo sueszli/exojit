@@ -1,8 +1,3 @@
-.PHONY: venv
-venv:
-	uv sync
-	uv pip install -e .
-
 .PHONY: precommit-hook
 precommit-hook:
 	@common_dir="$$(git rev-parse --git-common-dir 2>/dev/null)"; \
@@ -28,7 +23,7 @@ tests:
 
 .PHONY: precommit
 precommit:
-	$(MAKE) venv
+	uv sync
 	$(MAKE) precommit-hook
 	$(MAKE) fmt
 	$(MAKE) lint
@@ -36,4 +31,5 @@ precommit:
 
 .PHONY: benchmark
 benchmark:
+	uv sync
 	uv run python benchmarks/run.py
