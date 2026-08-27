@@ -38,3 +38,8 @@ addopts = "-n auto --forked -v"
 
 [project.scripts]
 exojit = "exojit.main:cli"
+
+[tool.pyright]
+# exo procedures are written in a python-shaped DSL whose names (f32, seq,
+# stride, ...) only exist inside the @proc parser, so pyright cannot check them
+exclude = ["exojit/neon.py", ".venv"]

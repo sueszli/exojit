@@ -14,7 +14,16 @@ from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, 
 from xdsl.transforms.convert_memref_to_ptr import ConvertCastOp
 from xdsl.utils.hints import isa
 
-DimSizes: TypeAlias = "Mapping[SSAValue, Sequence[int | SSAValue]]"
+# a dimension is a constant, a value that is already live, or a recipe that
+# builds the arithmetic where it is used -- see IRGenerator._dim_size
+DimSize: TypeAlias = "int | SSAValue | Callable[[Callable[[Operation], Operation]], SSAValue]"
+DimSizes: TypeAlias = Mapping[SSAValue, Sequence[DimSize]]
+
+
+def materialize_dim(dim: DimSize, insert: Callable) -> SSAValue:
+    if isinstance(dim, int):
+        return _iconst(insert, dim)
+    return dim(insert) if callable(dim) else dim
 
 
 @irdl_op_definition
@@ -106,8 +115,7 @@ def _dim_size_fn(shape: tuple[int, ...], dims: Sequence[int | SSAValue], ins: Ca
         if shape[i] != DYNAMIC_INDEX:
             return _iconst(ins, shape[i])
         assert i < len(dims), f"no recorded size for dynamic dimension {i}"
-        size = dims[i]
-        return _iconst(ins, size) if isinstance(size, int) else size
+        return materialize_dim(dims[i], ins)
 
     return dim_size
 

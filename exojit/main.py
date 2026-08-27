@@ -44,7 +44,7 @@ from xdsl.utils.scoped_dict import ScopedDict
 
 import exojit.patches_exo  # noqa: F401
 from exojit.patches_xdsl_intrinsics import ConvertVecIntrinsic
-from exojit.patches_xdsl_llvm import ConvertControlFlowToLLVM, ExtendedConvertMemRefToPtr, FPTruncOp, RewriteMemRefTypes
+from exojit.patches_xdsl_llvm import ConvertControlFlowToLLVM, DimSize, ExtendedConvertMemRefToPtr, FPTruncOp, RewriteMemRefTypes, materialize_dim
 
 
 class IRGenerator:
@@ -54,7 +54,7 @@ class IRGenerator:
     type_table: ScopedDict[str, LoopIR.type | type[LoopIR.type]] | None
     seen_proc_names: set[str]
     seen_extern_decls: set[str]
-    dynamic_dims: dict[SSAValue, tuple[int | SSAValue, ...]]
+    dynamic_dims: dict[SSAValue, tuple[DimSize, ...]]
 
     def __init__(self):
         self.module = ModuleOp([])
@@ -132,40 +132,48 @@ class IRGenerator:
             case _:
                 assert False
 
-    @staticmethod
-    def _static_dim(expr: LoopIR.expr) -> int:
-        # variable/computed dims -> dynamic_index (-1), for memreftype declarations
+    def _shape_expr(self, expr: LoopIR.expr) -> int | SSAValue:
+        # one tensor dimension as a live value: a literal, a size argument, or
+        # arithmetic over them (e.g. `f32[16]`, `f32[m, k]`, `f32[m+1, k*2]`)
         match expr:
             case LoopIR.Const():
-                # literal (e.g. `f32[16, 16]`)
                 assert isinstance(expr.val, int)
                 return expr.val
-            case LoopIR.Read() | LoopIR.BinOp():
-                # variable (e.g. `f32[m, k]`) or computed (e.g. `f32[m+1, k*2]`)
-                return DYNAMIC_INDEX
+            case LoopIR.Read():
+                return self._syms[repr(expr.name)]
+            case LoopIR.BinOp():
+                return self._expr_binop(expr)
             case _:
                 assert False
 
-    def _shape(self, tensor: T.Tensor) -> list[int]:
-        return [self._static_dim(expr) for expr in tensor.shape()]
+    def _shape(self, tensor: T.Tensor, *, emit: bool = False) -> list:
+        # tensor dimensions as ints (literal) or ssa values (variable/computed).
+        # emit=false: variable dims -> dynamic_index (-1), for memreftype declarations.
+        # emit=true:  variable dims -> live ssa values, for stride/offset arithmetic.
+        assert isinstance(tensor, T.Tensor)
+        return [self._shape_expr(expr) if emit or isinstance(expr, LoopIR.Const) else DYNAMIC_INDEX for expr in tensor.shape()]
 
-    def _emit_shape(self, tensor: T.Tensor) -> list[int | SSAValue]:
-        # variable/computed dims -> live ssa values, for stride/offset arithmetic
-
-        def from_expr(expr: LoopIR.expr) -> int | SSAValue:
-            match expr:
-                case LoopIR.Read():
-                    return self._syms[repr(expr.name)]
-                case LoopIR.BinOp():
-                    return self._expr_binop(expr)
-                case _:
-                    return self._static_dim(expr)
-
-        return [from_expr(expr) for expr in tensor.shape()]
+    def _dim_size(self, expr: LoopIR.expr) -> DimSize:
+        # a variable dimension has to survive until the memref -> pointer lowering
+        # needs it, so hand back something that cannot be dead-code eliminated in
+        # the meantime: a constant, a size argument, or a recipe to build the
+        # arithmetic at the point of use
+        low, high = constant_bound(expr, {}) or (None, None)
+        if isinstance(low, int) and low == high:
+            return low  # e.g. `4 * N_EMBED`
+        match expr:
+            case LoopIR.Read():
+                return self._syms[repr(expr.name)]  # a block argument, never erased
+            case LoopIR.BinOp():
+                lhs, rhs = self._dim_size(expr.lhs), self._dim_size(expr.rhs)
+                op_cls = {"+": llvm.AddOp, "-": llvm.SubOp, "*": llvm.MulOp, "/": llvm.SDivOp, "%": llvm.SRemOp}[expr.op]
+                return lambda insert: insert(op_cls(materialize_dim(lhs, insert), materialize_dim(rhs, insert))).results[0]
+            case _:
+                assert False
 
     def _record_dynamic_dims(self, value: SSAValue, tensor: object) -> None:
         if isinstance(value.type, MemRefType) and memref.DYNAMIC_INDEX in value.type.get_shape():
-            self.dynamic_dims[value] = tuple(self._shape(tensor, emit=True))
+            self.dynamic_dims[value] = tuple(self._dim_size(expr) for expr in tensor.shape())
 
     def _zero_index(self) -> list[SSAValue]:
         return [self._emit(llvm.ConstantOp(IntegerAttr(0, i64), i64))]
@@ -688,8 +696,9 @@ def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
     generator = IRGenerator()
     module = generator.generate(procs)
 
-    ConvertScfToCf().apply(ctx, module)  # scf.{for,if} -> cf.{br,cond_br}
     _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
+
+    ConvertScfToCf().apply(ctx, module)  # scf.{for,if} -> cf.{br,cond_br}
     _rewrite([ConvertControlFlowToLLVM()])  # cf.* / arith.* -> llvm.*
 
     CanonicalizePass().apply(ctx, module)
