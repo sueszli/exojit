@@ -1,7 +1,7 @@
 # RUN: uv run exojit --mlir %s | filecheck %s
 
 # CHECK: builtin.module {
-# CHECK-NEXT:   llvm.func @set_first(%0: !llvm.ptr) {
+# CHECK-NEXT:   llvm.func @set_first(%0: !llvm.ptr {llvm.noalias}) {
 # CHECK-NEXT:     %1 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %2 = llvm.mlir.constant(1.000000e+00 : f32) : f32
 # CHECK-NEXT:     %3 = llvm.mlir.constant(1) : i64
@@ -10,7 +10,7 @@
 # CHECK-NEXT:     llvm.store %2, %5 : f32, !llvm.ptr
 # CHECK-NEXT:     llvm.return
 # CHECK-NEXT:   }
-# CHECK-NEXT:   llvm.func @inner(%6: !llvm.ptr) {
+# CHECK-NEXT:   llvm.func @inner(%6: !llvm.ptr {llvm.noalias}) {
 # CHECK-NEXT:     %7 = llvm.mlir.constant(1) : i64
 # CHECK-NEXT:     %8 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %9 = llvm.mlir.constant(4) : i64
@@ -25,7 +25,7 @@
 # CHECK-NEXT:     llvm.call @set_first(%17) : (!llvm.ptr) -> ()
 # CHECK-NEXT:     llvm.return
 # CHECK-NEXT:   }
-# CHECK-NEXT:   llvm.func @outer(%18: !llvm.ptr) {
+# CHECK-NEXT:   llvm.func @outer(%18: !llvm.ptr {llvm.noalias}) {
 # CHECK-NEXT:     %19 = llvm.mlir.constant(2) : i64
 # CHECK-NEXT:     %20 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %21 = llvm.mlir.constant(1) : i64

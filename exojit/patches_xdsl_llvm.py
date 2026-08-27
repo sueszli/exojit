@@ -9,6 +9,7 @@ from xdsl.ir import BlockArgument, OpResult, SSAValue
 from xdsl.irdl import irdl_op_definition
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
+from xdsl.backend.llvm.convert_op import _CAST_OP_NAMES
 from xdsl.transforms.convert_memref_to_ptr import ConvertCastOp
 from xdsl.utils.hints import isa
 
@@ -17,6 +18,9 @@ from xdsl.utils.hints import isa
 class FPTruncOp(GenericCastOp):
     name = "llvm.fptrunc"
 
+
+# xdsl has no llvm.fptrunc op, and convert_module offers no hook for custom ops
+_CAST_OP_NAMES[FPTruncOp] = "fptrunc"
 
 # `memref` -> `llvm.ptr` lowering: replace structured memory ops with raw pointer arithmetic
 #

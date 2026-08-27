@@ -1,7 +1,7 @@
 # RUN: uv run exojit --mlir %s | filecheck %s
 
 # CHECK: builtin.module {
-# CHECK-NEXT:   llvm.func @if_else(%0: !llvm.ptr, %1: i64, %2: i64) {
+# CHECK-NEXT:   llvm.func @if_else(%0: !llvm.ptr {llvm.noalias}, %1: i64, %2: i64) {
 # CHECK-NEXT:     %3 = llvm.icmp "slt" %1, %2 : i64
 # CHECK-NEXT:     llvm.cond_br %3, ^bb1, ^bb2
 # CHECK-NEXT:   ^bb1:
