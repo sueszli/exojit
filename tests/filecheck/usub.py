@@ -1,7 +1,7 @@
 # RUN: uv run exojit --mlir %s | filecheck %s
 
 # CHECK: builtin.module {
-# CHECK-NEXT:   llvm.func @usub_float(%0: !llvm.ptr {llvm.noalias}, %1: !llvm.ptr {llvm.noalias}) {
+# CHECK-NEXT:   llvm.func @usub_float(%0: !llvm.ptr, %1: !llvm.ptr) {
 # CHECK-NEXT:     %2 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %3 = llvm.mlir.constant(1) : i64
 # CHECK-NEXT:     %4 = llvm.mul %2, %3 : i64
@@ -12,7 +12,7 @@
 # CHECK-NEXT:     llvm.store %7, %8 : f32, !llvm.ptr
 # CHECK-NEXT:     llvm.return
 # CHECK-NEXT:   }
-# CHECK-NEXT:   llvm.func @usub_int(%9: !llvm.ptr {llvm.noalias}, %10: !llvm.ptr {llvm.noalias}) {
+# CHECK-NEXT:   llvm.func @usub_int(%9: !llvm.ptr, %10: !llvm.ptr) {
 # CHECK-NEXT:     %11 = llvm.mlir.constant(0) : i64
 # CHECK-NEXT:     %12 = llvm.mlir.constant(1) : i64
 # CHECK-NEXT:     %13 = llvm.mul %11, %12 : i64

@@ -718,12 +718,6 @@ def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
     CommonSubexpressionElimination().apply(ctx, module)
     module.verify()
 
-    # tell llvm every pointer arg is unaliased, so the loop vectorizer can run.
-    # xdsl's llvm backend reads this off arg_attrs when it declares the function.
-    for func_op in module.ops:
-        assert isinstance(func_op, llvm.FuncOp)
-        func_op.arg_attrs = ArrayAttr(DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(t, llvm.LLVMPointerType) else {}) for t in func_op.function_type.inputs)
-
     return module
 
 
@@ -749,6 +743,12 @@ llvmlite.binding.initialize_native_asmprinter()
 
 
 def _optimize_llvm(module: ModuleOp):
+    # Add noalias only at LLVM conversion so to_mlir() remains source-level xDSL IR.
+    module = module.clone()
+    for func_op in module.ops:
+        assert isinstance(func_op, llvm.FuncOp)
+        func_op.arg_attrs = ArrayAttr(DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(t, llvm.LLVMPointerType) else {}) for t in func_op.function_type.inputs)
+
     target = llvmlite.binding.Target.from_default_triple()
     machine = target.create_target_machine(cpu=llvmlite.binding.get_host_cpu_name(), features=llvmlite.binding.get_host_cpu_features().flatten(), opt=3)
     llvm_module = convert_module(module, fallback_target_triple=machine.triple, data_layout=str(machine.target_data))

@@ -3,8 +3,25 @@ from __future__ import annotations
 from textwrap import dedent
 
 from click.testing import CliRunner
+from exo import *
 
-from exojit.main import cli
+from exojit.main import _optimize_llvm, cli, to_mlir
+
+
+@proc
+def copy4(dst: f32[4] @ DRAM, src: f32[4] @ DRAM):
+    for i in seq(0, 4):
+        dst[i] = src[i]
+
+
+def test_noalias_is_added_only_at_llvm_conversion():
+    module = to_mlir(copy4)
+    mlir = str(module)
+
+    assert "llvm.noalias" not in mlir
+    llvm_module, _machine = _optimize_llvm(module)
+    assert "noalias" in str(llvm_module)
+    assert str(module) == mlir
 
 
 def test_cli_deduplicates_exported_proc_names(tmp_path):
