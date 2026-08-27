@@ -76,15 +76,15 @@ def test_jit_rejects_keyword_args():
         fn._raw(dst=dst, src=src)
 
 
-def test_jit_raw_mode_returns_low_level_entrypoint():
-    fn = jit(copy4, raw=True)
-    assert type(fn._raw).__name__ == "JitFunc"
+def test_jit_raw_rejects_python_lists():
+    raw = jit(copy4, raw=True)
+    with pytest.raises(TypeError):
+        raw([0.0] * 4, [1.0, 2.0, 3.0, 4.0])
 
 
 def test_jit_exposes_raw_entrypoint():
     wrapped = jit(copy4)
     raw = wrapped._raw
-    assert type(raw).__name__ == "JitFunc"
     src = np.array([1.0, -2.0, 3.5, 4.25], dtype=np.float32)
     dst = np.zeros_like(src)
     raw(dst, src)
@@ -97,5 +97,44 @@ def test_jit_raw_rejects_non_contiguous_buffers():
     raw = jit(copy4, raw=True)
     src = np.arange(8, dtype=np.float32)[::2]
     dst = np.zeros(4, dtype=np.float32)
-    with pytest.raises(TypeError, match="C-contiguous buffer"):
+    with pytest.raises(ValueError):
         raw(dst, src)
+
+
+def test_jit_raw_bind_marshals_once():
+    src = np.array([1.0, -2.0, 3.5, 4.25], dtype=np.float32)
+    dst = np.zeros_like(src)
+    call = jit(copy4, raw=True).bind(dst, src)
+    call()
+    np.testing.assert_allclose(dst, src)
+    src[:] = [9.0, 8.0, 7.0, 6.0]
+    call()
+    np.testing.assert_allclose(dst, src)
+
+
+def test_jit_raw_bind_checks_arity():
+    with pytest.raises(ValueError):
+        jit(copy4, raw=True).bind(np.zeros(4, dtype=np.float32))
+
+
+def test_jit_raw_rejects_a_float_for_a_size_arg():
+    raw = jit(copy_n, raw=True)
+    with pytest.raises(TypeError):
+        raw(4.0, np.zeros(4, dtype=np.float32), np.zeros(4, dtype=np.float32))
+
+
+def test_jit_raw_accepts_a_read_only_buffer_where_nothing_writes_it():
+    raw = jit(copy4, raw=True)
+    src = np.array([1.0, -2.0, 3.5, 4.25], dtype=np.float32)
+    src.setflags(write=False)
+    dst = np.zeros(4, dtype=np.float32)
+    raw(dst, src)
+    np.testing.assert_allclose(dst, src)
+
+
+def test_jit_raw_rejects_a_read_only_buffer_in_a_written_slot():
+    raw = jit(copy4, raw=True)
+    dst = np.zeros(4, dtype=np.float32)
+    dst.setflags(write=False)
+    with pytest.raises(ValueError):
+        raw(dst, np.zeros(4, dtype=np.float32))
