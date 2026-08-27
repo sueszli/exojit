@@ -24,9 +24,9 @@ from exo.backend.mem_analysis import MemoryAnalysis
 from exo.backend.parallel_analysis import ParallelAnalysis
 from exo.backend.prec_analysis import PrecisionAnalysis
 from exo.backend.win_analysis import WindowAnalysis
-from exo.core.LoopIR import LoopIR, T
-from exo.core.prelude import Sym
+from exo.core.LoopIR import LoopIR, T, get_writes_of_stmts
 from exo.main import load_user_code
+from exo.rewrite.range_analysis import constant_bound
 from xdsl.backend.llvm.convert_op import convert_op as _xdsl_convert_op
 from xdsl.backend.llvm.convert_type import convert_type
 from xdsl.builder import Builder
@@ -588,18 +588,7 @@ class IRGenerator:
 
     @staticmethod
     def _is_mutated(name: str, body: list[LoopIR.stmt]) -> bool:
-        # check if a variable is assigned to or reduced into in the body
-        def check(stmt: LoopIR.stmt) -> bool:
-            match stmt:
-                case LoopIR.Assign() | LoopIR.Reduce():
-                    return repr(stmt.name) == name
-                case LoopIR.For():
-                    return IRGenerator._is_mutated(name, stmt.body)
-                case LoopIR.If():
-                    return IRGenerator._is_mutated(name, stmt.body) or IRGenerator._is_mutated(name, stmt.orelse)
-            return False
-
-        return any(check(stmt) for stmt in body)
+        return any(repr(sym) == name for sym, _ in get_writes_of_stmts(body))
 
     @staticmethod
     def _coerce_arg(arg_val: SSAValue, callee_arg: LoopIR.fnarg, callee_body: list[LoopIR.stmt], type_fn: Callable[[object, Attribute | None], Attribute], emit_fn: Callable[[Operation], SSAValue]) -> SSAValue:
@@ -619,13 +608,25 @@ class IRGenerator:
 
     def _stmt_call(self, call: LoopIR.Call) -> None:
         # lower call to func.call. emit extern decl for intrinsics, recurse for procs
-        args = [self._expr(arg) for arg in call.args]
-
         if call.f.instr is None:
             self._generate_procedure(call.f)
             assert len(call.args) == len(call.f.args)
-            args = [self._coerce_arg(arg_val, callee_arg, call.f.body, self._to_mlir_type, self._emit) for arg_val, callee_arg in zip(args, call.f.args)]
-        elif call.f.name not in self.seen_extern_decls:
+            args = []
+            for arg, callee_arg in zip(call.args, call.f.args):
+                mem_space = StringAttr(callee_arg.mem.name()) if callee_arg.mem is not None else None
+                callee_type = self._to_mlir_type(callee_arg.type, mem_space)
+                scalar_passed_by_ref = not isinstance(callee_type, MemRefType) and self._is_mutated(repr(callee_arg.name), call.f.body)
+                if scalar_passed_by_ref:
+                    assert isinstance(arg, LoopIR.Read) and not arg.idx, "writable scalar call arguments must be scalar lvalues"
+                    arg_val = self._syms[repr(arg.name)]
+                    assert isinstance(arg_val.type, MemRefType)
+                else:
+                    arg_val = self._expr(arg)
+                args.append(self._coerce_arg(arg_val, callee_arg, call.f.body, self._to_mlir_type, self._emit))
+        else:
+            args = [self._expr(arg) for arg in call.args]
+
+        if call.f.instr is not None and call.f.name not in self.seen_extern_decls:
             self.seen_extern_decls.add(call.f.name)
             input_types = [SSAValue.get(arg).type for arg in args]
             self._insert_at_module(
@@ -906,87 +907,23 @@ def _load_libomp() -> None:
 
 
 def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
-    # classify each argument once so the C wrapper can take the cheapest safe path
-    write_cache: dict[int, frozenset[int]] = {}
-    visiting: set[int] = set()
+    # Exo resolves window and callee writes when classifying pointer mutability.
+    written = {sym for sym, _ in get_writes_of_stmts(proc.body)}
 
-    def _aliases(expr: LoopIR.expr, alias_map: dict[Sym, frozenset[int]]) -> frozenset[int]:
-        return alias_map.get(expr.name, frozenset()) if isinstance(expr, (LoopIR.Read, LoopIR.WindowExpr)) else frozenset()
+    def kind(arg: LoopIR.fnarg) -> int:
+        if arg.type.is_tensor_or_window():
+            return 2 if arg.name in written else 1
+        assert isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)), f"unsupported JIT argument type for {arg.name}: {arg.type}"
+        return 0
 
-    def _written_tensor_args(proc_ir: LoopIR.proc) -> frozenset[int]:
-        proc_id = id(proc_ir)
-        if proc_id in write_cache or proc_id in visiting:
-            return write_cache.get(proc_id, frozenset())
-        visiting.add(proc_id)
-        try:
-            arg_aliases = {arg.name: frozenset({i}) for i, arg in enumerate(proc_ir.args) if arg.type.is_tensor_or_window()}
-            write_cache[proc_id] = _walk(proc_ir.body, arg_aliases)
-            return write_cache[proc_id]
-        finally:
-            visiting.remove(proc_id)
-
-    def _walk(stmts: list[LoopIR.stmt], alias_map: dict[Sym, frozenset[int]]) -> frozenset[int]:
-        alias_map = dict(alias_map)
-        written: set[int] = set()
-        for stmt in stmts:
-            match stmt:
-                case LoopIR.Assign() | LoopIR.Reduce():
-                    written.update(alias_map.get(stmt.name, ()))
-                case LoopIR.WindowStmt():
-                    alias_map[stmt.name] = _aliases(stmt.rhs, alias_map)
-                case LoopIR.If() | LoopIR.For():
-                    for body in (stmt.body, stmt.orelse) if isinstance(stmt, LoopIR.If) else (stmt.body,):
-                        written.update(_walk(body, alias_map))
-                case LoopIR.Call():
-                    for i in _written_tensor_args(stmt.f):
-                        written.update(_aliases(stmt.args[i], alias_map))
-        return frozenset(written)
-
-    written = _written_tensor_args(proc)
-
-    def _kind(i: int, arg: LoopIR.fnarg) -> int:
-        match arg.type:
-            case _ if arg.type.is_tensor_or_window():
-                return 2 if i in written else 1
-            case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
-                return 0
-            case _:
-                assert False, f"unsupported JIT argument type for {arg.name}: {arg.type}"
-
-    return bytes(_kind(i, arg) for i, arg in enumerate(proc.args))
+    return bytes(kind(arg) for arg in proc.args)
 
 
 def _jit_eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
-    # evaluate the small shape language used by dynamic tensor arguments
-    match expr:
-        case LoopIR.Const():
-            assert isinstance(expr.val, int)
-            return expr.val
-        case LoopIR.Read():
-            key = repr(expr.name)
-            value = env.get(key)
-            assert value is not None, f"could not resolve dynamic tensor shape from {key}"
-            return value
-        case LoopIR.USub():
-            return -_jit_eval_shape_expr(expr.arg, env)
-        case LoopIR.BinOp():
-            lhs = _jit_eval_shape_expr(expr.lhs, env)
-            rhs = _jit_eval_shape_expr(expr.rhs, env)
-            match expr.op:
-                case "+":
-                    return lhs + rhs
-                case "-":
-                    return lhs - rhs
-                case "*":
-                    return lhs * rhs
-                case "/":
-                    return lhs // rhs
-                case "%":
-                    return lhs % rhs
-                case _:
-                    assert False, f"unsupported dynamic tensor shape op: {expr.op}"
-        case _:
-            assert False, f"unsupported dynamic tensor shape expression: {expr}"
+    # resolve a dynamic tensor dimension against the size arguments seen so far
+    bounds = constant_bound(expr, {sym: (value, value) for sym, value in env.items()})
+    assert bounds is not None and bounds[0] is not None and bounds[0] == bounds[1], f"could not resolve dynamic tensor shape from {expr}"
+    return bounds[0]
 
 
 def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writable: bool) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], object]:
@@ -1102,7 +1039,7 @@ def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
 
                 def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=name) -> int:
                     converted = int(value)
-                    shape_env[repr(name)] = converted
+                    shape_env[name] = converted
                     return converted
 
                 converters.append(convert)

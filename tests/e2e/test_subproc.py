@@ -19,6 +19,28 @@ def test_call_scalar_subproc():
 
 
 @proc
+def increment_scalar_value(x: f32):
+    x = x + 1.0
+
+
+@proc
+def forward_scalar_value(x: f32):
+    increment_scalar_value(x)
+
+
+@proc
+def call_scalar_value_subproc(x: f32[1] @ DRAM):
+    value: f32
+    value = x[0]
+    forward_scalar_value(value)
+    x[0] = value
+
+
+def test_call_scalar_value_subproc():
+    assert_match(call_scalar_value_subproc, x=[5.0])
+
+
+@proc
 def double_elements(N: size, x: f32[N] @ DRAM):
     for i in seq(0, N):
         x[i] = x[i] * 2.0
