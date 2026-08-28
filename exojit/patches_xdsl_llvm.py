@@ -1,6 +1,7 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from xdsl.backend.llvm.convert_op import _CAST_OP_NAMES
 from xdsl.context import Context
 from xdsl.dialects import builtin, llvm, memref
 from xdsl.dialects.builtin import DYNAMIC_INDEX, IntegerAttr, MemRefType, UnrealizedConversionCastOp, i64
@@ -16,6 +17,10 @@ from xdsl.utils.hints import isa
 @irdl_op_definition
 class FPTruncOp(GenericCastOp):
     name = "llvm.fptrunc"
+
+
+# xdsl's llvm dialect has fpext but no fptrunc, so teach its llvmlite converter about ours
+_CAST_OP_NAMES[FPTruncOp] = "fptrunc"
 
 
 # `memref` -> `llvm.ptr` lowering: replace structured memory ops with raw pointer arithmetic

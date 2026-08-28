@@ -15,7 +15,6 @@ from typing import Any, Literal, SupportsInt, TypeGuard, cast
 
 import click
 import llvmlite.binding
-import llvmlite.ir
 from cffi import FFI
 from exo import compile_procs as exo_compile_procs
 from exo.API import Procedure
@@ -27,17 +26,19 @@ from exo.backend.win_analysis import WindowAnalysis
 from exo.core.LoopIR import LoopIR, T, get_writes_of_stmts
 from exo.main import load_user_code
 from exo.rewrite.range_analysis import constant_bound
-from xdsl.backend.llvm.convert_op import convert_op as _xdsl_convert_op
-from xdsl.backend.llvm.convert_type import convert_type
+from xdsl.backend.llvm.convert import convert_module
 from xdsl.builder import Builder
 from xdsl.context import Context
 from xdsl.dialects import llvm, memref
-from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, BoolAttr, Builtin, FloatAttr, IndexType, IntAttr, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
+from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, ArrayAttr, BoolAttr, Builtin, DictionaryAttr, FloatAttr, IndexType, IntAttr, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnitAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
 from xdsl.dialects.llvm import BrOp, FNegOp
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
 from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
+from xdsl.jit.c_type_context import CTypeContext, register_builtin_types
+from xdsl.jit.llvm.c_type_context import register_llvm_types, to_c_func_type
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriteWalker
 from xdsl.rewriter import InsertPoint
+from xdsl.traits import SymbolTable
 from xdsl.transforms.canonicalize import CanonicalizePass
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
@@ -760,80 +761,6 @@ def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
     return _lower([exo_analyze(proc) for proc in unique_procs])
 
 
-class LLVMLiteGenerator:
-    @staticmethod
-    def _convert_op(op: Operation, builder: llvmlite.ir.IRBuilder, block_map: dict[Block, llvmlite.ir.Block], phi_map: dict[SSAValue, llvmlite.ir.PhiInstr], val_map: dict[SSAValue, llvmlite.ir.Value]) -> None:
-        # translate one xdsl op to llvmlite ir. unmatched ops fall back to xdsl's convert_op
-        match op:
-            case llvm.CallOp() if op.callee and op.callee.string_value().startswith("__kmpc_"):
-                fn = builder.module.get_global(op.callee.string_value())
-                args = [val_map[a] for a in op.args]
-                builder.call(fn, [builder.bitcast(a, fn.ftype.args[i]) if i < len(fn.ftype.args) and a.type != fn.ftype.args[i] else a for i, a in enumerate(args)])
-            case FPTruncOp():
-                val_map[op.results[0]] = builder.fptrunc(val_map[op.arg], convert_type(op.results[0].type))
-            case _:
-                _xdsl_convert_op(op, builder, val_map, block_map)
-
-    @staticmethod
-    def _generate_func(func_op: llvm.FuncOp, llvm_module: llvmlite.ir.Module) -> None:
-        # generate one xdsl func: create blocks, insert phis, translate ops
-        ir_func = llvm_module.get_global(func_op.sym_name.data)
-        mlir_blocks = list(func_op.body.blocks)
-
-        block_map: dict[Block, llvmlite.ir.Block] = {block: ir_func.append_basic_block() for block in mlir_blocks}
-        phi_map: dict[SSAValue, llvmlite.ir.PhiInstr] = {arg: llvmlite.ir.IRBuilder(block_map[blk]).phi(convert_type(arg.type)) for blk in mlir_blocks[1:] for arg in blk.args}
-        val_map: dict[SSAValue, llvmlite.ir.Value] = {**dict(zip(mlir_blocks[0].args, ir_func.args)), **phi_map}
-
-        for mlir_block in mlir_blocks:
-            builder = llvmlite.ir.IRBuilder(block_map[mlir_block])
-            for op in mlir_block.ops:
-                LLVMLiteGenerator._convert_op(op, builder, block_map, phi_map, val_map)
-
-    @staticmethod
-    def generate(module: ModuleOp) -> llvmlite.ir.Module:
-        llvm_module = llvmlite.ir.Module()
-        # enable loop vectorizer
-        tm = _target_machine()
-        llvm_module.triple = tm.triple
-        llvm_module.data_layout = str(tm.target_data)
-        func_ops: list[llvm.FuncOp] = []
-
-        for op in module.ops:
-            assert isinstance(op, llvm.FuncOp)
-            func_ops.append(op)
-            ftype = llvmlite.ir.FunctionType(convert_type(op.function_type.output), [convert_type(t) for t in op.function_type.inputs], var_arg=op.function_type.is_variadic)
-            fn = llvmlite.ir.Function(llvm_module, ftype, name=op.sym_name.data)
-
-            # mark all pointer args as noalias for vectorization
-            for arg in fn.args:
-                if isinstance(arg.type, llvmlite.ir.PointerType):
-                    arg.add_attribute("noalias")
-
-        # declare external functions referenced by CallOps but not defined in the module
-        defined_names = {op.sym_name.data for op in func_ops}
-        extern_calls = {op.callee.string_value(): op for func_op in func_ops for block in func_op.body.blocks for op in block.ops if isinstance(op, llvm.CallOp) and op.callee is not None and op.callee.string_value() not in defined_names}
-        pt, i32t, i64t = llvmlite.ir.PointerType(llvmlite.ir.IntType(8)), llvmlite.ir.IntType(32), llvmlite.ir.IntType(64)
-        i32p, i64p, vt = llvmlite.ir.PointerType(i32t), llvmlite.ir.PointerType(i64t), llvmlite.ir.VoidType()
-        omp_decls = {
-            "__kmpc_fork_call": llvmlite.ir.FunctionType(vt, [pt, i32t, pt], var_arg=True),
-            "__kmpc_for_static_init_8": llvmlite.ir.FunctionType(vt, [pt, i32t, i32t, i32p, i64p, i64p, i64p, i64t, i64t]),
-            "__kmpc_for_static_fini": llvmlite.ir.FunctionType(vt, [pt, i32t]),
-        }
-        for name, op in extern_calls.items():
-            if name in omp_decls:
-                llvmlite.ir.Function(llvm_module, omp_decls[name], name=name)
-            else:
-                ret_type = convert_type(op.results[0].type) if op.results else llvmlite.ir.VoidType()
-                arg_types = [convert_type(a.type) for a in op.args]
-                llvmlite.ir.Function(llvm_module, llvmlite.ir.FunctionType(ret_type, arg_types), name=name)
-
-        for func_op in func_ops:
-            if func_op.body.blocks:
-                LLVMLiteGenerator._generate_func(func_op, llvm_module)
-
-        return llvm_module
-
-
 llvmlite.binding.initialize_native_target()
 llvmlite.binding.initialize_native_asmprinter()
 
@@ -847,8 +774,19 @@ def _target_machine() -> llvmlite.binding.TargetMachine:
     return target.create_target_machine(cpu=cpu, features=features, opt=3)
 
 
-def _to_llvmlite_moduleref(ir: llvmlite.ir.Module | str) -> tuple[llvmlite.binding.ModuleRef, llvmlite.binding.TargetMachine]:
-    mod_ref = llvmlite.binding.parse_assembly(str(ir))
+def _to_llvm_ir(module: ModuleOp) -> str:
+    # xdsl mlir (llvm dialect) -> llvm ir text, pinned to the host target
+    module = module.clone()
+    for func_op in module.ops:
+        # noalias lets llvm's loop vectorizer assume buffers do not overlap
+        assert isinstance(func_op, llvm.FuncOp)
+        func_op.arg_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(input_type, llvm.LLVMPointerType) else {}) for input_type in func_op.function_type.inputs])
+    tm = _target_machine()
+    return str(convert_module(module, fallback_target_triple=tm.triple, data_layout=str(tm.target_data)))
+
+
+def _to_llvmlite_moduleref(ir: str) -> tuple[llvmlite.binding.ModuleRef, llvmlite.binding.TargetMachine]:
+    mod_ref = llvmlite.binding.parse_assembly(ir)
     tm = _target_machine()
     pto = llvmlite.binding.PipelineTuningOptions()
     pto.speed_level = 3
@@ -863,7 +801,7 @@ def _to_llvmlite_moduleref(ir: llvmlite.ir.Module | str) -> tuple[llvmlite.bindi
 
 def to_asm(module: ModuleOp) -> str:
     # xdsl mlir -> native assembly text
-    mod_ref, tm = _to_llvmlite_moduleref(LLVMLiteGenerator.generate(module))
+    mod_ref, tm = _to_llvmlite_moduleref(_to_llvm_ir(module))
     return tm.emit_assembly(mod_ref)
 
 
@@ -904,6 +842,22 @@ def _load_libomp() -> None:
             llvmlite.binding.load_library_permanently(lib)
             return
     assert False, f"libomp not found; tried {candidates}"
+
+
+@cache
+def _c_type_context() -> CTypeContext:
+    ctx = CTypeContext()
+    register_builtin_types(ctx)
+    register_llvm_types(ctx)
+    return ctx
+
+
+def _c_signature(module: ModuleOp, name: str) -> str:
+    # cffi abi declaration for the entry point, derived from its llvm function type
+    func_op = SymbolTable.lookup_symbol(module, name)
+    assert isinstance(func_op, llvm.FuncOp)
+    signature = to_c_func_type(_c_type_context(), func_op.function_type)
+    return f"{signature.output}(*)({', '.join(signature.inputs) or 'void'})"
 
 
 def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
@@ -997,7 +951,7 @@ def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writab
 
 def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
     mlir_module = to_mlir(proc)
-    ir_text = _disk_cache(hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16], lambda: str(LLVMLiteGenerator.generate(mlir_module)))
+    ir_text = _disk_cache(hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16], lambda: _to_llvm_ir(mlir_module))
     if "__kmpc_fork_call" in ir_text:  # see https://openmp.llvm.org/doxygen/group__THREADPRIVATE.html
         _load_libomp()
 
@@ -1007,25 +961,20 @@ def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
     engine.run_static_constructors()
 
     ffi, kinds = FFI(), _jit_arg_kinds(proc._loopir_proc)
-    fn = ffi.cast(f"void(*)({', '.join('ssize_t' if not kind else 'void *' for kind in kinds) or 'void'})", engine.get_function_address(proc.name()))
-
-    def marshal(args: tuple[object, ...]) -> list[object]:
-        return [arg if not kind else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind == 2) for arg, kind in zip(args, kinds, strict=True)]
+    address = engine.get_function_address(proc.name())
+    assert address, f"no address for symbol after compilation: {proc.name()}"
+    fn = ffi.cast(_c_signature(mlir_module, proc.name()), address)
 
     def call(*args) -> None:
-        fn(*marshal(args))
+        fn(*[arg if not kind else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind == 2) for arg, kind in zip(args, kinds, strict=True)])
 
-    def bind(*args) -> Callable[[], None]:
-        bound = marshal(args)
-        bound_call = lambda: fn(*bound)
-        cast(Any, bound_call)._engine = engine
-        return bound_call
+    # mcjit owns the jitted code, so the engine has to outlive every call into it
+    cast(Any, call)._engine = engine
 
-    cast(Any, call).bind = bind
     names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in proc._loopir_proc.args]
     if raw:
         wrapped = lambda *args, **kwargs: call(*(tuple(kwargs[name] for name in names) if kwargs else args))
-        wrapped.__dict__.update(_raw=call, bind=bind)
+        cast(Any, wrapped)._raw = call
         return wrapped
 
     converters = []
