@@ -956,6 +956,9 @@ def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
         _load_libomp()
 
     mod_ref, tm = _to_llvmlite_moduleref(ir_text)
+    unlowered = [f.name for f in mod_ref.functions if f.is_declaration and re.fullmatch(r"(vec|neon)_\w+", f.name) and llvmlite.binding.address_of_symbol(f.name) is None]
+    assert not unlowered, f"cannot jit {proc.name()}: no lowering for intrinsics {unlowered}; calling it would jump to a null pointer"
+
     engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
     engine.finalize_object()
     engine.run_static_constructors()
