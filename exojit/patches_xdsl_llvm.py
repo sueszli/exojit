@@ -164,10 +164,7 @@ class ExtendedConvertMemRefToPtr(ModulePass):
 #
 
 
-@dataclass
 class RewriteMemRefTypes(TypeConversionPattern):
-    recursive: bool = True
-
     @attr_type_rewrite_pattern
     def convert_type(self, type: MemRefType) -> llvm.LLVMPointerType:
         return llvm.LLVMPointerType()
