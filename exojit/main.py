@@ -834,19 +834,6 @@ def _c_signature(module: ModuleOp, name: str) -> str:
     return f"{signature.output}(*)({', '.join(signature.inputs) or 'void'})"
 
 
-def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
-    # Exo resolves window and callee writes when classifying pointer mutability.
-    written = {sym for sym, _ in get_writes_of_stmts(proc.body)}
-
-    def kind(arg: LoopIR.fnarg) -> int:
-        if arg.type.is_tensor_or_window():
-            return 2 if arg.name in written else 1
-        assert isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)), f"unsupported JIT argument type for {arg.name}: {arg.type}"
-        return 0
-
-    return bytes(kind(arg) for arg in proc.args)
-
-
 def _jit_eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
     # resolve a dynamic tensor dimension against the size arguments seen so far
     bounds = constant_bound(expr, {sym: (value, value) for sym, value in env.items()})
@@ -914,40 +901,40 @@ def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
     engine.finalize_object()
     engine.run_static_constructors()
 
-    ffi, kinds = FFI(), _jit_arg_kinds(proc._loopir_proc)
+    ir_args = proc._loopir_proc.args
+    for arg in ir_args:
+        assert arg.type.is_tensor_or_window() or isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)), f"unsupported JIT argument type for {arg.name}: {arg.type}"
+    written = {sym for sym, _ in get_writes_of_stmts(proc._loopir_proc.body)}  # Exo resolves window and callee writes when classifying pointer mutability
+    kinds = [arg.name in written if arg.type.is_tensor_or_window() else None for arg in ir_args]  # None: passed by value, False/True: pointer, writable or not
+
+    ffi = FFI()
     address = engine.get_function_address(proc.name())
     assert address, f"no address for symbol after compilation: {proc.name()}"
     fn = ffi.cast(_c_signature(mlir_module, proc.name()), address)
 
     def call(*args) -> None:
-        fn(*[arg if not kind else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind == 2) for arg, kind in zip(args, kinds, strict=True)])
+        fn(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
 
     # mcjit owns the jitted code, so the engine has to outlive every call into it
     cast(Any, call)._engine = engine
 
-    names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in proc._loopir_proc.args]
+    names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in ir_args]
     if raw:
         wrapped = lambda *args, **kwargs: call(*(tuple(kwargs[name] for name in names) if kwargs else args))
         cast(Any, wrapped)._raw = call
         return wrapped
 
     converters = []
-    for i, arg in enumerate(proc._loopir_proc.args):
-        match arg.type:
-            case T.Tensor() | T.Window():
-                tensor_type = arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type
-                converters.append(_jit_tensor_converter(ffi=ffi, index=i, tensor_type=tensor_type, writable=kinds[i] == 2))
-            case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
-                name = arg.name
+    for i, (arg, kind) in enumerate(zip(ir_args, kinds, strict=True)):
+        if kind is None:
 
-                def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=name) -> int:
-                    converted = int(value)
-                    shape_env[name] = converted
-                    return converted
+            def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=arg.name) -> int:
+                shape_env[name] = converted = int(value)
+                return converted
 
-                converters.append(convert)
-            case _:
-                assert False, f"unsupported JIT argument type for {arg.name}: {arg.type}"
+            converters.append(convert)
+        else:
+            converters.append(_jit_tensor_converter(ffi=ffi, index=i, tensor_type=arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type, writable=kind))
 
     def wrapped(*args, **kwargs):
         args = tuple(kwargs[name] for name in names) if kwargs else args
