@@ -4,7 +4,6 @@ import hashlib
 import math
 import numbers
 import re
-import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, MutableSequence, Sequence
@@ -768,10 +767,7 @@ llvmlite.binding.initialize_native_asmprinter()
 def _target_machine() -> llvmlite.binding.TargetMachine:
     # llvmlite target machines are not safe to reuse after MCJIT compilation.
     # do not cache to avoid stale target-data pointers during later `--asm` runs.
-    target = llvmlite.binding.Target.from_default_triple()
-    cpu = llvmlite.binding.get_host_cpu_name()
-    features = llvmlite.binding.get_host_cpu_features().flatten()
-    return target.create_target_machine(cpu=cpu, features=features, opt=3)
+    return llvmlite.binding.Target.from_default_triple().create_target_machine(cpu=llvmlite.binding.get_host_cpu_name(), features=llvmlite.binding.get_host_cpu_features().flatten(), opt=3)
 
 
 def _to_llvm_ir(module: ModuleOp) -> str:
@@ -788,12 +784,8 @@ def _to_llvm_ir(module: ModuleOp) -> str:
 def _to_llvmlite_moduleref(ir: str) -> tuple[llvmlite.binding.ModuleRef, llvmlite.binding.TargetMachine]:
     mod_ref = llvmlite.binding.parse_assembly(ir)
     tm = _target_machine()
-    pto = llvmlite.binding.PipelineTuningOptions()
-    pto.speed_level = 3
-    pto.loop_vectorization = True
+    pto = llvmlite.binding.PipelineTuningOptions(speed_level=3)
     pto.slp_vectorization = True
-    pto.loop_interleaving = True
-    pto.loop_unrolling = True
     pb = llvmlite.binding.create_pass_builder(tm, pto)
     pb.getModulePassManager().run(mod_ref, pb)
     return mod_ref, tm
@@ -805,43 +797,25 @@ def to_asm(module: ModuleOp) -> str:
     return tm.emit_assembly(mod_ref)
 
 
-@cache
-def _ir_cache_dir() -> Path:
+def _disk_cache(name: object, generate: Callable[[], str]) -> str:
     # hash all compiler sources -> .cache/exojit/{hash}/. auto-invalidates when compiler code changes.
     src_dir = Path(__file__).resolve().parent
-    hasher = hashlib.sha256()
-    for py_file in sorted(src_dir.glob("*.py")):
-        hasher.update(py_file.read_bytes())
-    cache_dir = src_dir.parent / ".cache" / "exojit" / hasher.hexdigest()[:12]
+    cache_dir = src_dir.parent / ".cache" / "exojit" / hashlib.sha256(b"".join(f.read_bytes() for f in sorted(src_dir.glob("*.py")))).hexdigest()[:12]
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir
-
-
-def _disk_cache(name: object, generate: Callable[[], str]) -> str:
-    path = _ir_cache_dir() / f"{name}.ll"
-    if path.exists():
-        return path.read_text()
-    ir_text = generate()
-    path.write_text(ir_text)
-    return ir_text
+    path = cache_dir / f"{name}.ll"
+    if not path.exists():
+        path.write_text(generate())
+    return path.read_text()
 
 
 @cache
 def _load_libomp() -> None:
     if sys.platform != "darwin":
         return llvmlite.binding.load_library_permanently("libgomp.so.1")
-    candidates = ["/opt/homebrew/opt/libomp/lib/libomp.dylib"]
-    for pkg in ("libomp", "llvm"):
-        try:
-            prefix = subprocess.run(["brew", "--prefix", pkg], capture_output=True, text=True, check=True).stdout.strip()
-            candidates.append(f"{prefix}/lib/libomp.dylib")
-        except subprocess.CalledProcessError, FileNotFoundError:
-            pass
-    for lib in candidates:
-        if Path(lib).exists():
-            llvmlite.binding.load_library_permanently(lib)
-            return
-    assert False, f"libomp not found; tried {candidates}"
+    candidates = [f"{prefix}/opt/{pkg}/lib/libomp.dylib" for prefix in ("/opt/homebrew", "/usr/local") for pkg in ("libomp", "llvm")]
+    lib = next((c for c in candidates if Path(c).exists()), None)
+    assert lib, f"libomp not found; tried {candidates}"
+    llvmlite.binding.load_library_permanently(lib)
 
 
 @cache
