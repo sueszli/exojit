@@ -367,6 +367,33 @@ class IRGenerator:
         region.add_block(merge_block)
         self.builder = Builder(insertion_point=InsertPoint.at_end(merge_block))
 
+    def _counted_loop(self, lo: SSAValue, hi: SSAValue, predicate: llvm.ICmpPredicateFlag, iter_name: str, iter_type: Attribute, body: list[LoopIR.stmt], step: Callable[[], SSAValue]) -> None:
+        # counted loop as header/body/exit blocks, carrying the induction variable as a header argument
+        region = self.builder.insertion_point.block.parent_region()
+        assert region is not None
+        header_block = Block(arg_types=[lo.type])
+        body_block = Block()
+        exit_block = Block()
+        region.add_block(header_block)
+        region.add_block(body_block)
+        self.builder.insert(BrOp(header_block, lo))
+
+        self.builder = Builder(insertion_point=InsertPoint.at_end(header_block))
+        iv = header_block.args[0]
+        cond = self._emit(llvm.ICmpOp(iv, hi, IntegerAttr(predicate.to_int(), i64)))
+        self.builder.insert(llvm.CondBrOp(cond, body_block, [], exit_block, []))
+
+        with self._scoped_state():
+            self.builder = Builder(insertion_point=InsertPoint.at_end(body_block))
+            self.symbol_table = ScopedDict(self._syms)
+            self._syms[iter_name] = iv if iv.type == iter_type else self._emit(llvm.TruncOp(iv, iter_type))
+            for stmt in body:
+                self._stmt(stmt)
+            self.builder.insert(BrOp(header_block, self._emit(llvm.AddOp(iv, step()))))
+
+        region.add_block(exit_block)
+        self.builder = Builder(insertion_point=InsertPoint.at_end(exit_block))
+
     def _stmt_for_par(self, s: LoopIR.For) -> None:
         # par() loop -> __kmpc_fork_call(@outlined, lo, hi, ...shared)
         # outlined fn: static_init_8 -> loop [adj_lo, adj_hi] -> static_fini
@@ -378,13 +405,8 @@ class IRGenerator:
         ext = lambda v: v if v.type == i64 else self._emit(llvm.SExtOp(v, i64))
         alloc = lambda t: self._emit(llvm.AllocaOp(self._int_const(1), t))
 
-        def flat(sd):  # flatten ScopedDict parent chain
-            d = flat(sd.parent) if sd.parent else {}
-            d.update(sd.local_scope)
-            return d
-
-        # shared captures: all live vars passed to outlined fn
-        syms = flat(self._syms)
+        flat = lambda sd: {**(flat(sd.parent) if sd.parent else {}), **sd.local_scope}  # flatten ScopedDict parent chain
+        syms = flat(self._syms)  # shared captures: all live vars passed to outlined fn
         names = list(syms.keys())
 
         # bounds passed by pointer
@@ -430,27 +452,8 @@ class IRGenerator:
             adj_hi_raw = self._emit(llvm.LoadOp(upper_p, i64))
             adj_hi = self._emit(llvm.SelectOp(self._emit(llvm.ICmpOp(adj_hi_raw, hi_incl, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64))), adj_hi_raw, hi_incl))
 
-            # loop: header(iv) -> body -> back-edge
-            r = blk.parent_region()
-            assert r is not None
-            hdr = Block(arg_types=[i64])
-            body = Block()
-            exit_ = Block()
-            r.add_block(hdr)
-            r.add_block(body)
-            self.builder.insert(BrOp(hdr, adj_lo))
-            self.builder = Builder(insertion_point=InsertPoint.at_end(hdr))
-            iv = hdr.args[0]
-            self.builder.insert(llvm.CondBrOp(self._emit(llvm.ICmpOp(iv, adj_hi, IntegerAttr(llvm.ICmpPredicateFlag.SLE.to_int(), i64))), body, [], exit_, []))
-            with self._scoped_state():  # body: bind iter, emit stmts, iv++
-                self.builder = Builder(insertion_point=InsertPoint.at_end(body))
-                self.symbol_table = ScopedDict(self._syms)
-                self._syms[repr(s.iter)] = self._emit(llvm.TruncOp(iv, lo.type)) if i64 != lo.type else iv
-                for stmt in s.body:
-                    self._stmt(stmt)
-                self.builder.insert(BrOp(hdr, self._emit(llvm.AddOp(iv, self._int_const(1)))))
-            r.add_block(exit_)  # exit: static_fini + ret
-            self.builder = Builder(insertion_point=InsertPoint.at_end(exit_))
+            # loop over [adj_lo, adj_hi], then static_fini + ret
+            self._counted_loop(adj_lo, adj_hi, llvm.ICmpPredicateFlag.SLE, repr(s.iter), lo.type, s.body, lambda: self._int_const(1))
             self.builder.insert(llvm.CallOp("__kmpc_for_static_fini", self._emit(llvm.ZeroOp(result_types=[ptr])), self._emit(llvm.LoadOp(blk.args[0], i32))))
             self.builder.insert(llvm.ReturnOp())
         self._insert_at_module(llvm.FuncOp(oname, ftype, linkage=llvm.LinkageAttr("external"), body=region))
@@ -464,46 +467,12 @@ class IRGenerator:
         if isinstance(for_stmt.loop_mode, LoopIR.Par):
             return self._stmt_for_par(for_stmt)
 
-        # lower for loop to cf.br/cond_br with header, body, and exit blocks
         lo = self._expr(for_stmt.lo)
         hi = self._expr(for_stmt.hi)
         assert lo.type == hi.type
         assert isinstance(lo.type, IntegerType)
         step = self._int_const(1, lo.type)
-
-        region = self.builder.insertion_point.block.parent_region()
-        assert region is not None
-        header_block = Block(arg_types=[lo.type])
-        body_block = Block()
-        exit_block = Block()
-        region.add_block(header_block)
-        region.add_block(body_block)
-
-        # branch from current block to header with initial iv
-        self.builder.insert(BrOp(header_block, lo))
-
-        # header: condition check
-        self.builder = Builder(insertion_point=InsertPoint.at_end(header_block))
-        iv = header_block.args[0]
-        cond = self._emit(llvm.ICmpOp(iv, hi, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64)))
-        self.builder.insert(llvm.CondBrOp(cond, body_block, [], exit_block, []))
-
-        # body: emit loop body in a child symbol scope
-        with self._scoped_state():
-            self.builder = Builder(insertion_point=InsertPoint.at_end(body_block))
-            self.symbol_table = ScopedDict(self._syms)
-            self._syms[repr(for_stmt.iter)] = iv
-
-            for stmt in for_stmt.body:
-                self._stmt(stmt)
-
-            # after body: increment iv and branch back to header
-            next_iv = self._emit(llvm.AddOp(iv, step))
-            self.builder.insert(BrOp(header_block, next_iv))
-
-        # continue at exit block
-        region.add_block(exit_block)
-        self.builder = Builder(insertion_point=InsertPoint.at_end(exit_block))
+        self._counted_loop(lo, hi, llvm.ICmpPredicateFlag.SLT, repr(for_stmt.iter), lo.type, for_stmt.body, lambda: step)
 
     def _stmt_alloc(self, alloc: LoopIR.Alloc) -> None:
         # lower alloc to llvm.call @malloc (dram) or llvm.alloca (stack)
