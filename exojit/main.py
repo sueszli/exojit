@@ -856,18 +856,7 @@ def _jit_eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
 
 def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writable: bool) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], object]:
     # build one argument converter for tensor or window inputs
-    jit_tensor_c_types = {
-        "f32": "float",
-        "f64": "double",
-        "i8": "int8_t",
-        "ui8": "uint8_t",
-        "i16": "int16_t",
-        "ui16": "uint16_t",
-        "i32": "int32_t",
-        "index": "int64_t",
-        "size": "int64_t",
-        "bool": "_Bool",
-    }
+    jit_tensor_c_types = {"f32": "float", "f64": "double", "i8": "int8_t", "ui8": "uint8_t", "ui16": "uint16_t", "i32": "int32_t", "index": "int64_t", "size": "int64_t", "bool": "_Bool"}
     shape = tensor_type.shape()
     basetype = str(tensor_type.basetype())
     assert basetype in jit_tensor_c_types, f"unsupported JIT tensor dtype: {basetype}"
@@ -876,38 +865,29 @@ def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writab
     def is_seq(x: object) -> TypeGuard[Sequence[object]]:
         return isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray, memoryview))
 
-    def linearize(value: object) -> tuple[list[object], list[tuple[MutableSequence[object], int]]]:
-        if not is_seq(value):
-            return [value], []
-        target = value if writable else None
-        if target is not None:
-            assert isinstance(target, MutableSequence), f"argument {index + 1}: writable tensor args passed as Python sequences must be mutable at every level"
-        flat: list[object] = []
-        leaves: list[tuple[MutableSequence[object], int]] = []
+    def linearize(value: Sequence[object], flat: list[object], leaves: list[tuple[MutableSequence[object], int]]) -> None:
+        assert not writable or isinstance(value, MutableSequence), f"argument {index + 1}: writable tensor args passed as Python sequences must be mutable at every level"
         for i, item in enumerate(value):
             if is_seq(item):
-                child_flat, child_leaves = linearize(item)
-                flat.extend(child_flat)
-                leaves.extend(child_leaves)
+                linearize(item, flat, leaves)
             else:
                 flat.append(item)
-                if target is not None:
-                    leaves.append((target, i))
-        return flat, leaves
+                if writable:
+                    leaves.append((cast(MutableSequence[object], value), i))
 
     def convert(value: object, shape_env: dict[object, int], keepalive: list[object], syncbacks: list[Callable[[], None]]) -> object:
         assert not (isinstance(value, (bytes, bytearray, memoryview)) or (hasattr(value, "ndim") and hasattr(value, "dtype") and hasattr(value, "shape") and getattr(value, "ndim", 0) > 0)), f"argument {index + 1}: direct buffer inputs are not supported by jit(); pass Python lists/scalars or use jit(proc, raw=True)"
         numel = math.prod(_jit_eval_shape_expr(expr, shape_env) for expr in shape)
-
-        if not is_seq(value):
+        flat: list[object] = []
+        leaves: list[tuple[MutableSequence[object], int]] = []
+        if is_seq(value):
+            linearize(value, flat, leaves)
+        else:
             assert numel == 1, f"argument {index + 1}: expected {numel} values, got scalar {type(value).__name__}"
             assert not writable, f"argument {index + 1}: writable scalar tensor args require a mutable sequence"
             assert isinstance(value, numbers.Real), f"argument {index + 1}: expected scalar numeric data, got {type(value).__name__}"
-            flat = [value]
-            leaves: list[tuple[MutableSequence[object], int]] = []
-        else:
-            flat, leaves = linearize(value)
-            assert len(flat) == numel, f"argument {index + 1}: expected {numel} values, got {len(flat)}"
+            flat.append(value)
+        assert len(flat) == numel, f"argument {index + 1}: expected {numel} values, got {len(flat)}"
 
         buf = ffi.new(f"{c_type}[{numel}]", flat)
         keepalive.append(buf)
