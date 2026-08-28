@@ -52,7 +52,6 @@ class IRGenerator:
     module: ModuleOp
     builder: Builder
     symbol_table: ScopedDict[str, SSAValue] | None
-    type_table: ScopedDict[str, LoopIR.type | type[LoopIR.type]] | None
     seen_proc_names: set[str]
     seen_extern_decls: set[str]
 
@@ -60,7 +59,6 @@ class IRGenerator:
         self.module = ModuleOp([])
         self.builder = Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0]))
         self.symbol_table = None
-        self.type_table = None
         self.seen_proc_names = set()
         self.seen_extern_decls = set()
         self._par_counter = 0  # for naming
@@ -69,11 +67,6 @@ class IRGenerator:
     def _syms(self) -> ScopedDict[str, SSAValue]:
         assert self.symbol_table is not None
         return self.symbol_table
-
-    @property
-    def _types(self) -> ScopedDict[str, LoopIR.type | type[LoopIR.type]]:
-        assert self.type_table is not None
-        return self.type_table
 
     def _emit(self, op: Operation) -> SSAValue:
         self.builder.insert(op)
@@ -88,16 +81,11 @@ class IRGenerator:
         # save and restore builder/symbol/type state across nested scopes
         parent_builder = self.builder
         parent_symbol_table = self.symbol_table
-        parent_type_table = self.type_table
-        if not inherit:
-            self.symbol_table = ScopedDict[str, SSAValue]()
-            self.type_table = ScopedDict[str, LoopIR.type | type[LoopIR.type]]()
         try:
             yield
         finally:
             self.builder = parent_builder
             self.symbol_table = parent_symbol_table
-            self.type_table = parent_type_table
 
     def _to_mlir_type(self, exo_type: object, mem_space: Attribute | None = None) -> Attribute:
         # map exo type (t.f32, t.tensor, etc.) to mlir type (f32, memref, etc.)
@@ -417,7 +405,6 @@ class IRGenerator:
 
         # shared captures: all live vars passed to outlined fn
         syms = flat(self._syms)
-        types = flat(self._types)
         names = list(syms.keys())
 
         # bounds passed by pointer
@@ -436,10 +423,8 @@ class IRGenerator:
             region = Region(blk)
             self.builder = Builder(insertion_point=InsertPoint.at_end(blk))
             self.symbol_table = ScopedDict()
-            self.type_table = ScopedDict()
             for i, n in enumerate(names):  # bind shared captures (args[4:])
                 self._syms[n] = blk.args[4 + i]
-                self._types[n] = types[n]
             gtid = self._emit(llvm.LoadOp(blk.args[0], i32))
             lo_v = self._emit(llvm.LoadOp(blk.args[2], lo.type))
             hi_v = self._emit(llvm.LoadOp(blk.args[3], hi.type))
@@ -480,9 +465,7 @@ class IRGenerator:
             with self._scoped_state():  # body: bind iter, emit stmts, iv++
                 self.builder = Builder(insertion_point=InsertPoint.at_end(body))
                 self.symbol_table = ScopedDict(self._syms)
-                self.type_table = ScopedDict(self._types)
                 self._syms[repr(s.iter)] = self._emit(llvm.TruncOp(iv, lo.type)) if i64 != lo.type else iv
-                self._types[repr(s.iter)] = T.Index
                 for stmt in s.body:
                     self._stmt(stmt)
                 self.builder.insert(BrOp(hdr, self._emit(llvm.AddOp(iv, c(1)))))
@@ -529,9 +512,7 @@ class IRGenerator:
         with self._scoped_state():
             self.builder = Builder(insertion_point=InsertPoint.at_end(body_block))
             self.symbol_table = ScopedDict(self._syms)
-            self.type_table = ScopedDict(self._types)
             self._syms[repr(for_stmt.iter)] = iv
-            self._types[repr(for_stmt.iter)] = T.Index
 
             for stmt in for_stmt.body:
                 self._stmt(stmt)
@@ -568,7 +549,6 @@ class IRGenerator:
 
         result = self._emit(UnrealizedConversionCastOp.get([raw_ptr], [mlir_type]))
         self._syms[repr(alloc.name)] = result
-        self._types[repr(alloc.name)] = alloc.type
 
     def _stmt_free(self, free: LoopIR.Free) -> None:
         # lower free to llvm.call @free (dram) or no-op (stack)
@@ -584,7 +564,6 @@ class IRGenerator:
         assert isinstance(stmt.rhs, LoopIR.WindowExpr) and isinstance(stmt.rhs.type, T.Window)
         result = self._expr_window(stmt.rhs)
         self._syms[repr(stmt.name)] = result
-        self._types[repr(stmt.name)] = stmt.rhs.type.as_tensor
 
     @staticmethod
     def _is_mutated(name: str, body: list[LoopIR.stmt]) -> bool:
@@ -687,7 +666,6 @@ class IRGenerator:
             self.builder = Builder(insertion_point=InsertPoint.at_end(block))
 
             self.symbol_table = ScopedDict(local_scope={repr(arg.name): val for arg, val in zip(procedure.args, block.args)})
-            self.type_table = ScopedDict(local_scope={repr(arg.name): arg.type for arg in procedure.args})
 
             for stmt in procedure.body:
                 self._stmt(stmt)
