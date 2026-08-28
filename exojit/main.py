@@ -1001,11 +1001,7 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
 def _dedup_proc_names(user_module: object) -> list[Procedure]:
     exported = getattr(user_module, "__all__", None)
     symbols = user_module.__dict__.items() if exported is None else ((name, getattr(user_module, name)) for name in exported)
-    procs = [proc for name, proc in symbols if not name.startswith("_") and isinstance(proc, Procedure) and not proc.is_instr()]
-    by_name: dict[str, Procedure] = {}
-    for proc in reversed(procs):
-        by_name.setdefault(proc.name(), proc)
-    return list(by_name.values())[::-1]
+    return list({proc.name(): proc for name, proc in symbols if not name.startswith("_") and isinstance(proc, Procedure) and not proc.is_instr()}.values())
 
 
 @click.command()
