@@ -880,9 +880,9 @@ def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writab
         keepalive.append(buf)
         if writable:
 
-            def sync(leaf_refs=leaves, cffi_buf=buf):
-                for offset, (target, idx) in enumerate(leaf_refs):
-                    target[idx] = cffi_buf[offset]
+            def sync() -> None:
+                for offset, (target, idx) in enumerate(leaves):
+                    target[idx] = buf[offset]
 
             syncbacks.append(sync)
         return int(ffi.cast("uintptr_t", buf))
@@ -938,9 +938,7 @@ def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
 
     def wrapped(*args, **kwargs):
         args = tuple(kwargs[name] for name in names) if kwargs else args
-        shape_env: dict[object, int] = {}
-        keepalive: list[object] = []
-        syncbacks: list[Callable[[], None]] = []
+        shape_env, keepalive, syncbacks = {}, [], []
         call(*[conv(arg, shape_env, keepalive, syncbacks) for conv, arg in zip(converters, args, strict=True)])
         for sync in syncbacks:
             sync()
