@@ -77,6 +77,11 @@ class IRGenerator:
     def _int_const(self, value: int, int_type: IntegerType = i64) -> SSAValue:
         return self._emit(llvm.ConstantOp(IntegerAttr(value, int_type), int_type))
 
+    @staticmethod
+    def _void_fn_type(input_types: Sequence[Attribute]) -> llvm.LLVMFunctionType:
+        # memrefs reach callees as bare pointers
+        return llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType())
+
     def _insert_at_module(self, op: Operation) -> None:
         Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0])).insert(op)
 
@@ -420,7 +425,7 @@ class IRGenerator:
         oname = f"__omp_outlined_{self._par_counter}"
         self._par_counter += 1
         atypes = [ptr] * 4 + [syms[n].type for n in names]
-        ftype = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in atypes], llvm.LLVMVoidType())
+        ftype = self._void_fn_type(atypes)
         with self._scoped_state():
             blk = Block(arg_types=atypes)
             region = Region(blk)
@@ -546,14 +551,7 @@ class IRGenerator:
 
         if call.f.instr is not None and call.f.name not in self.seen_extern_decls:
             self.seen_extern_decls.add(call.f.name)
-            input_types = [SSAValue.get(arg).type for arg in args]
-            self._insert_at_module(
-                llvm.FuncOp(
-                    call.f.name,
-                    llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType()),
-                    llvm.LinkageAttr("external"),
-                )
-            )
+            self._insert_at_module(llvm.FuncOp(call.f.name, self._void_fn_type([SSAValue.get(arg).type for arg in args]), llvm.LinkageAttr("external")))
 
         self.builder.insert(llvm.CallOp(call.f.name, *args))
 
@@ -590,7 +588,7 @@ class IRGenerator:
         self.seen_proc_names.add(procedure.name)
 
         input_types = [self._arg_type(arg, procedure.body) for arg in procedure.args]
-        func_type = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType())
+        func_type = self._void_fn_type(input_types)
 
         with self._scoped_state():
             block = Block(arg_types=input_types)
@@ -631,25 +629,20 @@ def _context() -> Context:
 
 def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
     ctx = _context()
-
     module = IRGenerator().generate(procs)
+    _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
+    _simplify = lambda: (CanonicalizePass().apply(ctx, module), CommonSubexpressionElimination().apply(ctx, module), module.verify())
 
-    CanonicalizePass().apply(ctx, module)
-    CommonSubexpressionElimination().apply(ctx, module)
-    module.verify()
+    _simplify()
 
     # full lowering to llvm dialect
-    _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
     ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
     _rewrite([RewriteMemRefTypes()])  # memreftype -> llvm.ptr on all values
     _rewrite([ConvertVecIntrinsic()])  # vec_*/neon_* calls -> llvm ops
     ReconcileUnrealizedCastsPass().apply(ctx, module)  # fold paired unrealized casts
     module.verify()
 
-    CanonicalizePass().apply(ctx, module)
-    CommonSubexpressionElimination().apply(ctx, module)
-    module.verify()
-
+    _simplify()
     return module
 
 
