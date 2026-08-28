@@ -78,8 +78,8 @@ class IRGenerator:
         Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0])).insert(op)
 
     @contextmanager
-    def _scoped_state(self, *, inherit: bool = True):
-        # save and restore builder/symbol/type state across nested scopes
+    def _scoped_state(self):
+        # save and restore builder/symbol state across nested scopes
         parent_builder = self.builder
         parent_symbol_table = self.symbol_table
         try:
@@ -221,19 +221,17 @@ class IRGenerator:
         else:
             assert False
 
-    @staticmethod
-    def _cmp_binop(lhs: SSAValue, rhs: SSAValue, op: str, emit: Callable[[Operation], SSAValue]) -> SSAValue:
+    def _cmp_binop(self, lhs: SSAValue, rhs: SSAValue, op: str) -> SSAValue:
         P = llvm.ICmpPredicateFlag
         integer_cmp_table = {"==": P.EQ.to_int(), "!=": P.NE.to_int(), "<": P.SLT.to_int(), "<=": P.SLE.to_int(), ">": P.SGT.to_int(), ">=": P.SGE.to_int()}
-        fcmp_predicates: dict[str, tuple[str, bool]] = {"oeq": ("==", True), "ogt": (">", True), "oge": (">=", True), "olt": ("<", True), "ole": ("<=", True), "one": ("!=", True), "ord": ("ord", True), "ueq": ("==", False), "ugt": (">", False), "uge": (">=", False), "ult": ("<", False), "ule": ("<=", False), "une": ("!=", False), "uno": ("uno", False)}
-        float_cmp_table = {op: pred for pred, (op, ordered) in fcmp_predicates.items() if ordered and op not in ("ord", "uno")}
+        float_cmp_table = {"==": "oeq", "!=": "one", "<": "olt", "<=": "ole", ">": "ogt", ">=": "oge"}
         assert lhs.type == rhs.type
         if lhs.type == i1:
             bool_ops = {"and": llvm.AndOp, "or": llvm.OrOp}
-            return emit(bool_ops[op](lhs, rhs))
+            return self._emit(bool_ops[op](lhs, rhs))
         if lhs.type in [i8, i16, i32, i64]:
-            return emit(llvm.ICmpOp(lhs, rhs, IntegerAttr(integer_cmp_table[op], i64)))
-        return emit(llvm.FCmpOp(lhs, rhs, float_cmp_table[op]))
+            return self._emit(llvm.ICmpOp(lhs, rhs, IntegerAttr(integer_cmp_table[op], i64)))
+        return self._emit(llvm.FCmpOp(lhs, rhs, float_cmp_table[op]))
 
     def _expr_binop(self, binop: LoopIR.BinOp) -> SSAValue:
         if not isinstance(binop.type, T.Num):
@@ -250,7 +248,7 @@ class IRGenerator:
             mlir_type = lhs.type
 
         if mlir_type == i1:
-            return self._cmp_binop(lhs, rhs, binop.op, self._emit)
+            return self._cmp_binop(lhs, rhs, binop.op)
 
         float_ops = {"+": llvm.FAddOp, "-": llvm.FSubOp, "*": llvm.FMulOp, "/": llvm.FDivOp}
         int_ops = {"+": llvm.AddOp, "-": llvm.SubOp, "*": llvm.MulOp, "/": llvm.SDivOp, "%": llvm.SRemOp}
@@ -260,35 +258,33 @@ class IRGenerator:
             return self._emit(int_ops[binop.op](lhs, rhs))
         assert False
 
-    @staticmethod
-    def _window_access(access: object, expr_fn: Callable[[object], SSAValue]) -> SSAValue:
+    def _window_access(self, access: object) -> SSAValue:
         match access:
             case LoopIR.Point():
-                return expr_fn(access.pt)
+                return self._expr(access.pt)
             case LoopIR.Interval():
-                return expr_fn(access.lo)
+                return self._expr(access.lo)
             case _:
                 assert False
 
-    @staticmethod
-    def _to_index_list(values: Sequence[SSAValue | int], emit: Callable[[Operation], SSAValue]) -> list:
+    def _to_index_list(self, values: Sequence[SSAValue | int]) -> list:
         # cast i64 ssavalues to index type, pass through static ints as-is for subviewop
         static, dynamic = split_dynamic_index_list(values, DYNAMIC_INDEX)
-        casted = [emit(UnrealizedConversionCastOp.get([value], [IndexType()])) for value in dynamic]
+        casted = [self._emit(UnrealizedConversionCastOp.get([value], [IndexType()])) for value in dynamic]
         return get_dynamic_index_list(static, casted, DYNAMIC_INDEX)
 
     def _expr_window(self, window: LoopIR.WindowExpr) -> SSAValue:
         # lower window expression to memref.subview
-        indices = [self._window_access(access, self._expr) for access in window.idx]
+        indices = [self._window_access(access) for access in window.idx]
         source = self._syms[repr(window.name)]
         assert isinstance(source.type, MemRefType)
         assert isinstance(window.type, T.Window)
         dest_type = self._to_mlir_type(window.type.as_tensor, source.type.memory_space)
         output_sizes = self._emit_shape(window.type.as_tensor)
 
-        offsets_idx = self._to_index_list(indices, self._emit)
-        sizes_idx = self._to_index_list(output_sizes, self._emit)
-        strides_idx = self._to_index_list([1] * len(indices), self._emit)
+        offsets_idx = self._to_index_list(indices)
+        sizes_idx = self._to_index_list(output_sizes)
+        strides_idx = self._to_index_list([1] * len(indices))
 
         self.builder.insert(subview := memref.SubviewOp.get(source, offsets_idx, sizes_idx, strides_idx, dest_type))
         return subview.result
@@ -419,7 +415,7 @@ class IRGenerator:
         self._par_counter += 1
         atypes = [ptr] * 4 + [syms[n].type for n in names]
         ftype = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in atypes], llvm.LLVMVoidType())
-        with self._scoped_state(inherit=False):
+        with self._scoped_state():
             blk = Block(arg_types=atypes)
             region = Region(blk)
             self.builder = Builder(insertion_point=InsertPoint.at_end(blk))
@@ -661,7 +657,7 @@ class IRGenerator:
             input_types.append(mlir_type)
         func_type = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType())
 
-        with self._scoped_state(inherit=False):
+        with self._scoped_state():
             block = Block(arg_types=input_types)
             func_region = Region(block)
             self.builder = Builder(insertion_point=InsertPoint.at_end(block))
