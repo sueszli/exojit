@@ -1,4 +1,4 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from xdsl.backend.llvm.convert_op import _CAST_OP_NAMES
@@ -35,26 +35,18 @@ _CAST_OP_NAMES[FPTruncOp] = "fptrunc"
 #     2. rewritememreftypes           — erase memreftype -> llvm.ptr everywhere
 #     3. reconcile-unrealized-casts   — clean up identity casts left behind
 #
-# example (convertloadpattern):
-# -----------------------------
-#     memref.load %buf[%i, %j] : memref<4x8xf32>
+# example (convertloadstorepattern):
+# ----------------------------------
+#     memref.store %v, %buf[%i, %j] : memref<4x4xf32>
 #     =>
-#     %stride = llvm.mul %1, 8          ; stride[0] = dim[1] = 8
-#     %off0   = llvm.mul %i, %stride    ; i * 8
-#     %off1   = llvm.mul %j, %1         ; j * 1
-#     %flat   = llvm.add %off0, %off1   ; i*8 + j
-#     %bytes  = llvm.mul %flat, 4       ; * sizeof(f32)
-#     %ptr    = llvm.inttoptr ...       ; base + bytes
-#     %val    = llvm.load %ptr : f32
-
-
-def _unwrap_i64(val: SSAValue) -> SSAValue:
-    # peek through unrealized_cast(x:i64 -> index) to recover the original i64
-    if isinstance(val, OpResult) and isinstance(val.op, UnrealizedConversionCastOp):
-        inputs = list(val.op.operands)
-        if len(inputs) == 1 and inputs[0].type == i64:
-            return inputs[0]
-    return val
+#     %c1     = llvm.mlir.constant(1)   ; stride[1] = 1
+#     %c4     = llvm.mlir.constant(4)   ; dim[1] = 4
+#     %stride = llvm.mul %c1, %c4       ; stride[0] = dim[1] = 4
+#     %off0   = llvm.mul %i, %stride    ; i * 4
+#     %off1   = llvm.mul %j, %c1        ; j * 1
+#     %flat   = llvm.add %off0, %off1   ; i*4 + j
+#     %ptr    = llvm.getelementptr inbounds %buf[%flat] : f32
+#     llvm.store %v, %ptr : f32
 
 
 def _loop_upper_bound_as_i64(index: SSAValue) -> SSAValue | None:
@@ -80,88 +72,48 @@ def _iconst(ins, n: int) -> SSAValue:
     return ins(llvm.ConstantOp(IntegerAttr(n, i64), i64)).result
 
 
-def _flat_offset(indices: Sequence[SSAValue], rank: int, dim_size_fn, ins) -> SSAValue | None:
-    # row-major strides: stride[last]=1, stride[i]=stride[i+1]*dim[i+1]
-    strides: list[SSAValue] = [_iconst(ins, 1)] * rank
-    for i in range(rank - 2, -1, -1):
-        strides[i] = ins(llvm.MulOp(strides[i + 1], dim_size_fn(i + 1))).res
-
-    # flat element offset = sum(index_i * stride_i)
-    flat: SSAValue | None = None
-    for idx, stride in zip(indices, strides):
-        term = ins(llvm.MulOp(_unwrap_i64(idx), stride)).res
-        flat = term if flat is None else ins(llvm.AddOp(flat, term)).res
-    return flat
-
-
-def _offset_ptr_gep(base: SSAValue, indices: Sequence[SSAValue], rank: int, dim_size_fn, elem_type, ins) -> SSAValue:
-    # compute &base[indices] using gep with element type (for scalar load/store, enables llvm vectorization)
-    flat = _flat_offset(indices, rank, dim_size_fn, ins)
-    # cast base memref -> llvm.ptr, then add byte offset via ptr-to-int round-trip
-    base_ptr = ins(UnrealizedConversionCastOp.get([base], [LLVMPointerType()])).results[0]
-    if flat is None:
-        return base_ptr
-    return ins(llvm.GEPOp(base_ptr, [GEP_USE_SSA_VAL], elem_type, ssa_indices=[flat], inbounds=True)).result
-
-
-def _offset_ptr_raw(base: SSAValue, indices: Sequence[SSAValue], rank: int, dim_size_fn, elem_size: int, ins) -> SSAValue:
-    # compute &base[indices] using ptrtoint/inttoptr (for subview. produces type-agnostic ptr)
-    flat = _flat_offset(indices, rank, dim_size_fn, ins)
-    base_ptr = ins(UnrealizedConversionCastOp.get([base], [LLVMPointerType()])).results[0]
-    if flat is None:
-        return base_ptr
-    byte_offset = ins(llvm.MulOp(flat, _iconst(ins, elem_size))).res
-    ptr_int = ins(llvm.PtrToIntOp(base_ptr)).output
-    target_int = ins(llvm.AddOp(ptr_int, byte_offset)).res
-    return ins(llvm.IntToPtrOp(target_int)).output
-
-
-def _dim_size_fn(shape: tuple[int, ...], indices: Sequence[SSAValue], ins: Callable) -> Callable[[int], SSAValue]:
-    # return a closure that resolves dimension i to its runtime ssa size (static constant or dynamic loop bound)
+def _base_and_offset(base: SSAValue, indices: Sequence[SSAValue], shape: tuple[int, ...], ins) -> tuple[SSAValue, SSAValue | None]:
     def dim_size(i: int) -> SSAValue:
+        # static constant, or the dynamic loop bound the index is derived from
         if shape[i] != DYNAMIC_INDEX:
             return _iconst(ins, shape[i])
         ub = _loop_upper_bound_as_i64(indices[i])
         assert ub is not None
         return ub
 
-    return dim_size
+    # row-major strides: stride[last]=1, stride[i]=stride[i+1]*dim[i+1]
+    strides: list[SSAValue] = [_iconst(ins, 1)] * len(shape)
+    for i in range(len(shape) - 2, -1, -1):
+        strides[i] = ins(llvm.MulOp(strides[i + 1], dim_size(i + 1))).res
+
+    # flat element offset = sum(index_i * stride_i)
+    flat: SSAValue | None = None
+    for idx, stride in zip(indices, strides):
+        # peek through unrealized_cast(x:i64 -> index) to recover the original i64
+        if isinstance(idx, OpResult) and isinstance(idx.op, UnrealizedConversionCastOp) and len(idx.op.operands) == 1 and idx.op.operands[0].type == i64:
+            idx = idx.op.operands[0]
+        term = ins(llvm.MulOp(idx, stride)).res
+        flat = term if flat is None else ins(llvm.AddOp(flat, term)).res
+
+    return ins(UnrealizedConversionCastOp.get([base], [LLVMPointerType()])).results[0], flat
 
 
-def _get_target_ptr(memref_val: SSAValue, memref_type: builtin.MemRefType, indices: list[SSAValue], rewriter: PatternRewriter) -> SSAValue:
-    # compute &memref_val[indices] using gep (enables llvm auto-vectorization for scalar load/store)
-    shape = memref_type.get_shape()
-    ins = rewriter.insert_op
-    return _offset_ptr_gep(memref_val, indices, len(shape), _dim_size_fn(shape, indices, ins), memref_type.element_type, ins)
-
-
-@dataclass
-class ConvertLoadPattern(RewritePattern):
-    # memref.load %buf[%i, %j] => ptr arithmetic + llvm.load
+class ConvertLoadStorePattern(RewritePattern):
+    # memref.load/store %buf[%i, %j] => ptr arithmetic + llvm.load/store
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: memref.LoadOp, rewriter: PatternRewriter, /):
+    def match_and_rewrite(self, op: memref.LoadOp | memref.StoreOp, rewriter: PatternRewriter, /):
         memref_type = op.memref.type
         assert isa(memref_type, builtin.MemRefType)
         if not isa(memref_type.layout, builtin.NoneAttr):
             return  # skip affine map layouts
-        target_ptr = _get_target_ptr(op.memref, memref_type, list(op.indices), rewriter)
-        rewriter.replace_op(op, llvm.LoadOp(target_ptr, op.res.type))
+        ins = rewriter.insert_op
+        ptr, flat = _base_and_offset(op.memref, list(op.indices), memref_type.get_shape(), ins)
+        if flat is not None:
+            # gep with element type (rather than raw byte math) enables llvm auto-vectorization
+            ptr = ins(llvm.GEPOp(ptr, [GEP_USE_SSA_VAL], memref_type.element_type, ssa_indices=[flat], inbounds=True)).result
+        rewriter.replace_op(op, llvm.LoadOp(ptr, op.res.type) if isinstance(op, memref.LoadOp) else llvm.StoreOp(op.value, ptr))
 
 
-@dataclass
-class ConvertStorePattern(RewritePattern):
-    # memref.store %val, %buf[%i, %j] => ptr arithmetic + llvm.store
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: memref.StoreOp, rewriter: PatternRewriter, /):
-        memref_type = op.memref.type
-        assert isa(memref_type, builtin.MemRefType)
-        if not isa(memref_type.layout, builtin.NoneAttr):
-            return  # skip affine map layouts
-        target_ptr = _get_target_ptr(op.memref, memref_type, list(op.indices), rewriter)
-        rewriter.replace_op(op, llvm.StoreOp(op.value, target_ptr))
-
-
-@dataclass
 class ConvertSubviewPattern(RewritePattern):
     # memref.subview %buf[offsets] => ptr to the start of the slice
     #
@@ -176,33 +128,23 @@ class ConvertSubviewPattern(RewritePattern):
             return  # skip affine map layouts
         src_shape = src_type.get_shape()
         assert all(d != DYNAMIC_INDEX for d in src_shape), "dynamic source dims in subview not supported"
+        assert isinstance(src_type.element_type, builtin.FixedBitwidthType)
 
         ins = rewriter.insert_op
 
         # merge static_offsets (constants) and dynamic offsets (ssa values) into one list
-        all_offsets: list[SSAValue] = []
         dyn_iter = iter(op.offsets)
-        for soff in op.static_offsets.iter_values():
-            if soff == DYNAMIC_INDEX:
-                all_offsets.append(next(dyn_iter))
-            else:
-                all_offsets.append(_iconst(ins, soff))
+        all_offsets = [next(dyn_iter) if soff == DYNAMIC_INDEX else _iconst(ins, soff) for soff in op.static_offsets.iter_values()]
 
-        assert isinstance(src_type.element_type, builtin.FixedBitwidthType)
-        result_ptr = _offset_ptr_raw(op.source, all_offsets, len(src_shape), lambda i: _iconst(ins, src_shape[i]), src_type.element_type.size, ins)
+        # ptrtoint/inttoptr rather than gep, so the result stays type-agnostic
+        ptr, flat = _base_and_offset(op.source, all_offsets, src_shape, ins)
+        if flat is not None:
+            byte_offset = ins(llvm.MulOp(flat, _iconst(ins, src_type.element_type.size))).res
+            ptr_int = ins(llvm.PtrToIntOp(ptr)).output
+            ptr = ins(llvm.IntToPtrOp(ins(llvm.AddOp(ptr_int, byte_offset)).res)).output
 
         # wrap result as memreftype so downstream load/store patterns still see the right shape for stride computation
-        rewriter.replace_op(op, UnrealizedConversionCastOp.get([result_ptr], [op.result.type]))
-
-
-@dataclass
-class ConvertReinterpretCastOp(RewritePattern):
-    # reinterpret_cast just changes the memref metadata (shape/strides) without moving data.
-    # after rewritememreftypes erases all memreftype -> llvm.ptr, both sides become the same type,
-    # so this turns into an identity cast that reconcile-unrealized-casts will remove.
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: memref.ReinterpretCastOp, rewriter: PatternRewriter, /):
-        rewriter.replace_matched_op(UnrealizedConversionCastOp.get([op.source], [op.result.type]))
+        rewriter.replace_op(op, UnrealizedConversionCastOp.get([ptr], [op.result.type]))
 
 
 @dataclass(frozen=True)
@@ -210,17 +152,7 @@ class ExtendedConvertMemRefToPtr(ModulePass):
     name = "extended-convert-memref-to-ptr"
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
-        PatternRewriteWalker(
-            GreedyRewritePatternApplier(
-                [
-                    ConvertCastOp(),
-                    ConvertLoadPattern(),
-                    ConvertStorePattern(),
-                    ConvertSubviewPattern(),
-                    ConvertReinterpretCastOp(),
-                ]
-            )
-        ).rewrite_module(op)
+        PatternRewriteWalker(GreedyRewritePatternApplier([ConvertCastOp(), ConvertLoadStorePattern(), ConvertSubviewPattern()])).rewrite_module(op)
 
 
 #
