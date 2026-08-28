@@ -30,10 +30,10 @@ from xdsl.backend.llvm.convert import convert_module
 from xdsl.builder import Builder
 from xdsl.context import Context
 from xdsl.dialects import llvm, memref
-from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, ArrayAttr, BoolAttr, Builtin, DictionaryAttr, FloatAttr, IndexType, IntAttr, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnitAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
+from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, ArrayAttr, Builtin, DictionaryAttr, FloatAttr, IndexType, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnitAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
 from xdsl.dialects.llvm import BrOp, FNegOp
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
-from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
+from xdsl.ir import Attribute, Block, Operation, Region, SSAValue
 from xdsl.jit.c_type_context import CTypeContext, register_builtin_types
 from xdsl.jit.llvm.c_type_context import register_llvm_types, to_c_func_type
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriteWalker
@@ -168,25 +168,12 @@ class IRGenerator:
 
     def _expr_const(self, const: LoopIR.Const, expected_type: Attribute | None = None) -> SSAValue:
         # lower loopir literal to llvm.mlir.constant op
-        if isinstance(const.type, T.Num) and expected_type is not None:
-            mlir_type = expected_type
-        else:
-            mlir_type = self._to_mlir_type(const.type)
+        mlir_type = expected_type if isinstance(const.type, T.Num) and expected_type is not None else self._to_mlir_type(const.type)
         assert isinstance(const.val, (int, float))
-
-        if mlir_type in [f16, f32, f64]:
-            assert isinstance(mlir_type, AnyFloat)
-            attr = FloatAttr(const.val, mlir_type)
-        elif mlir_type in [i8, i16, i32, i64]:
-            assert isinstance(mlir_type, IntegerType)
-            attr = IntegerAttr(IntAttr(int(const.val)), mlir_type)
-        elif mlir_type == i1:
-            assert isinstance(const.val, int)
-            attr = BoolAttr(const.val, i1)
-        else:
-            assert False
-
-        return self._emit(llvm.ConstantOp(attr, mlir_type))
+        if isinstance(mlir_type, AnyFloat):
+            return self._emit(llvm.ConstantOp(FloatAttr(const.val, mlir_type), mlir_type))
+        assert isinstance(mlir_type, IntegerType)
+        return self._int_const(int(const.val), mlir_type)
 
     def _expr_read(self, read: LoopIR.Read) -> SSAValue:
         # lower loopir read to arith/memref ops
@@ -303,7 +290,7 @@ class IRGenerator:
         output_type = self._to_mlir_type(extern.f.typecheck(extern.args))
         return self._emit(llvm.CallOp(name, *args, return_type=output_type))
 
-    def _expr(self, expr: object, expected_type: Attribute | None = None) -> OpResult | SSAValue:
+    def _expr(self, expr: object, expected_type: Attribute | None = None) -> SSAValue:
         # dispatch loopir expression node to its typed lowering method
         match expr:
             case LoopIR.Read():
