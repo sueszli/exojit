@@ -74,6 +74,9 @@ class IRGenerator:
         assert op.results
         return op.results[0]
 
+    def _int_const(self, value: int, int_type: IntegerType = i64) -> SSAValue:
+        return self._emit(llvm.ConstantOp(IntegerAttr(value, int_type), int_type))
+
     def _insert_at_module(self, op: Operation) -> None:
         Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0])).insert(op)
 
@@ -113,7 +116,7 @@ class IRGenerator:
                 assert mem_space is not None
                 inner = self._to_mlir_type(exo_type.type)
                 assert inner in {f16, f32, f64, i8, i16, i32, i64}
-                shape = self._shape(exo_type)
+                shape = [self._static_dim(dim) for dim in exo_type.shape()]
                 return MemRefType(inner, shape, NoneAttr(), mem_space)
             case _:
                 assert False
@@ -132,29 +135,13 @@ class IRGenerator:
             case _:
                 assert False
 
-    def _shape(self, tensor: T.Tensor) -> list[int]:
-        return [self._static_dim(expr) for expr in tensor.shape()]
-
     def _emit_shape(self, tensor: T.Tensor) -> list[int | SSAValue]:
         # variable/computed dims -> live ssa values, for stride/offset arithmetic
-
-        def from_expr(expr: LoopIR.expr) -> int | SSAValue:
-            match expr:
-                case LoopIR.Read():
-                    return self._syms[repr(expr.name)]
-                case LoopIR.BinOp():
-                    return self._expr_binop(expr)
-                case _:
-                    return self._static_dim(expr)
-
-        return [from_expr(expr) for expr in tensor.shape()]
-
-    def _zero_index(self) -> list[SSAValue]:
-        return [self._emit(llvm.ConstantOp(IntegerAttr(0, i64), i64))]
+        return [self._expr(dim) if isinstance(dim, (LoopIR.Read, LoopIR.BinOp)) else self._static_dim(dim) for dim in tensor.shape()]
 
     def _memref_load(self, memref_val: SSAValue, idx: list[SSAValue]) -> SSAValue:
         if len(idx) == 0:
-            idx = self._zero_index()
+            idx = [self._int_const(0)]
         indices = [self._emit(UnrealizedConversionCastOp.get([index], [IndexType()])) for index in idx]
         self.builder.insert(load := memref.LoadOp.get(memref_val, indices))
         return load.res
@@ -163,7 +150,7 @@ class IRGenerator:
         # emit memref.store with i64->index casts, handling scalar memref cases
         if len(idx) == 0:
             assert isinstance(memref_val.type, MemRefType) and memref_val.type.get_shape() == (1,)
-            idx = self._zero_index()
+            idx = [self._int_const(0)]
 
         index_indices = [self._emit(UnrealizedConversionCastOp.get([index], [IndexType()])) for index in idx]
 
@@ -216,7 +203,7 @@ class IRGenerator:
             return self._emit(FNegOp(expr, fast_math=llvm.FastMathAttr("fast")))
         elif mlir_type in [i8, i16, i32, i64]:
             assert isinstance(mlir_type, IntegerType)
-            zero = self._emit(llvm.ConstantOp(IntegerAttr(0, mlir_type), mlir_type))
+            zero = self._int_const(0, mlir_type)
             return self._emit(llvm.SubOp(zero, expr))
         else:
             assert False
@@ -388,12 +375,9 @@ class IRGenerator:
         hi = self._expr(s.hi)
         ptr = llvm.LLVMPointerType()
 
-        def c(v: int, t: IntegerType = i64) -> SSAValue:
-            return self._emit(llvm.ConstantOp(IntegerAttr(v, t), t))
-
         st = lambda v, p: self.builder.insert(llvm.StoreOp(v, p))
         ext = lambda v: v if v.type == i64 else self._emit(llvm.SExtOp(v, i64))
-        alloc = lambda t: self._emit(llvm.AllocaOp(c(1), t))
+        alloc = lambda t: self._emit(llvm.AllocaOp(self._int_const(1), t))
 
         def flat(sd):  # flatten ScopedDict parent chain
             d = flat(sd.parent) if sd.parent else {}
@@ -431,16 +415,16 @@ class IRGenerator:
             lower_p = alloc(i64)
             upper_p = alloc(i64)
             stride_p = alloc(i64)
-            st(c(0, i32), is_last_p)
+            st(self._int_const(0, i32), is_last_p)
             lo64 = ext(lo_v)
-            hi_incl = self._emit(llvm.SubOp(ext(hi_v), c(1)))  # [lo, hi) -> [lo, hi-1]
+            hi_incl = self._emit(llvm.SubOp(ext(hi_v), self._int_const(1)))  # [lo, hi) -> [lo, hi-1]
             st(lo64, lower_p)
             st(hi_incl, upper_p)
-            st(c(1), stride_p)
+            st(self._int_const(1), stride_p)
 
             # partition [lo, hi-1] across threads (schedule 34 = static)
             null = self._emit(llvm.ZeroOp(result_types=[ptr]))
-            self.builder.insert(llvm.CallOp("__kmpc_for_static_init_8", null, gtid, c(34, i32), is_last_p, lower_p, upper_p, stride_p, c(1), c(1)))
+            self.builder.insert(llvm.CallOp("__kmpc_for_static_init_8", null, gtid, self._int_const(34, i32), is_last_p, lower_p, upper_p, stride_p, self._int_const(1), self._int_const(1)))
 
             # this thread's chunk; clamp upper to original hi-1
             adj_lo = self._emit(llvm.LoadOp(lower_p, i64))
@@ -465,7 +449,7 @@ class IRGenerator:
                 self._syms[repr(s.iter)] = self._emit(llvm.TruncOp(iv, lo.type)) if i64 != lo.type else iv
                 for stmt in s.body:
                     self._stmt(stmt)
-                self.builder.insert(BrOp(hdr, self._emit(llvm.AddOp(iv, c(1)))))
+                self.builder.insert(BrOp(hdr, self._emit(llvm.AddOp(iv, self._int_const(1)))))
             r.add_block(exit_)  # exit: static_fini + ret
             self.builder = Builder(insertion_point=InsertPoint.at_end(exit_))
             self.builder.insert(llvm.CallOp("__kmpc_for_static_fini", self._emit(llvm.ZeroOp(result_types=[ptr])), self._emit(llvm.LoadOp(blk.args[0], i32))))
@@ -473,7 +457,7 @@ class IRGenerator:
         self._insert_at_module(llvm.FuncOp(oname, ftype, linkage=llvm.LinkageAttr("external"), body=region))
 
         # caller: fork_call(loc=null, argc, @outlined, lo*, hi*, ...shared_as_ptr)
-        args = [self._emit(llvm.ZeroOp(result_types=[ptr])), c(len(names) + 2, i32), self._emit(llvm.AddressOfOp(oname, ptr)), lo_p, hi_p]
+        args = [self._emit(llvm.ZeroOp(result_types=[ptr])), self._int_const(len(names) + 2, i32), self._emit(llvm.AddressOfOp(oname, ptr)), lo_p, hi_p]
         args += [self._emit(UnrealizedConversionCastOp.get([syms[n]], [ptr])) if syms[n].type != ptr else syms[n] for n in names]
         self.builder.insert(llvm.CallOp("__kmpc_fork_call", *args))
 
@@ -486,7 +470,7 @@ class IRGenerator:
         hi = self._expr(for_stmt.hi)
         assert lo.type == hi.type
         assert isinstance(lo.type, IntegerType)
-        step = self._emit(llvm.ConstantOp(IntegerAttr(1, lo.type), lo.type))
+        step = self._int_const(1, lo.type)
 
         region = self.builder.insertion_point.block.parent_region()
         assert region is not None
@@ -538,10 +522,10 @@ class IRGenerator:
 
         if mem_name == "DRAM":
             elem_bytes = {f16: 2, f32: 4, f64: 8, i8: 1, i16: 2, i32: 4, i64: 8}[mlir_type.element_type]
-            size_val = self._emit(llvm.ConstantOp(IntegerAttr(total_elements * elem_bytes, i64), i64))  # malloc takes bytes
+            size_val = self._int_const(total_elements * elem_bytes)  # malloc takes bytes
             raw_ptr = self._emit(llvm.CallOp("malloc", size_val, return_type=llvm.LLVMPointerType()))
         else:
-            size_val = self._emit(llvm.ConstantOp(IntegerAttr(total_elements, i64), i64))  # alloca takes element count
+            size_val = self._int_const(total_elements)  # alloca takes element count
             raw_ptr = self._emit(llvm.AllocaOp(size_val, mlir_type.element_type))
 
         result = self._emit(UnrealizedConversionCastOp.get([raw_ptr], [mlir_type]))
