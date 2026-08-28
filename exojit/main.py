@@ -4,6 +4,7 @@ import hashlib
 import math
 import numbers
 import re
+import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, MutableSequence, Sequence
@@ -812,8 +813,18 @@ def _disk_cache(name: object, generate: Callable[[], str]) -> str:
 def _load_libomp() -> None:
     if sys.platform != "darwin":
         return llvmlite.binding.load_library_permanently("libgomp.so.1")
+
+    def brew_prefix(pkg: str) -> str | None:
+        try:
+            return subprocess.run(["brew", "--prefix", pkg], capture_output=True, text=True, check=True).stdout.strip()
+        except subprocess.CalledProcessError, FileNotFoundError:
+            return None
+
     candidates = [f"{prefix}/opt/{pkg}/lib/libomp.dylib" for prefix in ("/opt/homebrew", "/usr/local") for pkg in ("libomp", "llvm")]
     lib = next((c for c in candidates if Path(c).exists()), None)
+    if lib is None:  # non-default homebrew prefix
+        candidates += [f"{prefix}/lib/libomp.dylib" for pkg in ("libomp", "llvm") if (prefix := brew_prefix(pkg))]
+        lib = next((c for c in candidates if Path(c).exists()), None)
     assert lib, f"libomp not found; tried {candidates}"
     llvmlite.binding.load_library_permanently(lib)
 
