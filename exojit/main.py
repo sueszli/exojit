@@ -561,25 +561,13 @@ class IRGenerator:
         result = self._expr_window(stmt.rhs)
         self._syms[repr(stmt.name)] = result
 
-    @staticmethod
-    def _is_mutated(name: str, body: list[LoopIR.stmt]) -> bool:
-        return any(repr(sym) == name for sym, _ in get_writes_of_stmts(body))
-
-    @staticmethod
-    def _coerce_arg(arg_val: SSAValue, callee_arg: LoopIR.fnarg, callee_body: list[LoopIR.stmt], type_fn: Callable[[object, Attribute | None], Attribute], emit_fn: Callable[[Operation], SSAValue]) -> SSAValue:
-        # reconcile mlir type and shape mismatches (e.g. caller has memref<8xf32>, callee expects memref<?xf32>) via memref.cast
-        mem_space = StringAttr(callee_arg.mem.name()) if callee_arg.mem is not None else None
-        callee_type = type_fn(callee_arg.type, mem_space)
-
-        # scalars passed by reference (callee writes to them) must arrive as memref<1xt>
-        scalar_passed_by_ref = not isinstance(callee_type, MemRefType) and IRGenerator._is_mutated(repr(callee_arg.name), callee_body)
-        if scalar_passed_by_ref:
-            callee_type = MemRefType(callee_type, [1], NoneAttr())
-
-        if isinstance(arg_val.type, MemRefType) and isinstance(callee_type, MemRefType) and arg_val.type != callee_type:
-            return emit_fn(memref.CastOp.get(arg_val, callee_type))
-
-        return arg_val
+    def _arg_type(self, arg: LoopIR.fnarg, body: list[LoopIR.stmt]) -> Attribute:
+        # scalars passed by reference (the body writes to them) must arrive as memref<1xt>
+        mem_space = StringAttr(arg.mem.name()) if arg.mem is not None else None
+        mlir_type = self._to_mlir_type(arg.type, mem_space)
+        if not isinstance(mlir_type, MemRefType) and any(repr(sym) == repr(arg.name) for sym, _ in get_writes_of_stmts(body)):
+            mlir_type = MemRefType(mlir_type, [1], NoneAttr())
+        return mlir_type
 
     def _stmt_call(self, call: LoopIR.Call) -> None:
         # lower call to func.call. emit extern decl for intrinsics, recurse for procs
@@ -588,16 +576,17 @@ class IRGenerator:
             assert len(call.args) == len(call.f.args)
             args = []
             for arg, callee_arg in zip(call.args, call.f.args):
-                mem_space = StringAttr(callee_arg.mem.name()) if callee_arg.mem is not None else None
-                callee_type = self._to_mlir_type(callee_arg.type, mem_space)
-                scalar_passed_by_ref = not isinstance(callee_type, MemRefType) and self._is_mutated(repr(callee_arg.name), call.f.body)
-                if scalar_passed_by_ref:
+                callee_type = self._arg_type(callee_arg, call.f.body)
+                if isinstance(callee_type, MemRefType) and not callee_arg.type.is_tensor_or_window():
                     assert isinstance(arg, LoopIR.Read) and not arg.idx, "writable scalar call arguments must be scalar lvalues"
                     arg_val = self._syms[repr(arg.name)]
                     assert isinstance(arg_val.type, MemRefType)
                 else:
                     arg_val = self._expr(arg)
-                args.append(self._coerce_arg(arg_val, callee_arg, call.f.body, self._to_mlir_type, self._emit))
+                # reconcile mlir type and shape mismatches (e.g. caller has memref<8xf32>, callee expects memref<?xf32>) via memref.cast
+                if isinstance(arg_val.type, MemRefType) and isinstance(callee_type, MemRefType) and arg_val.type != callee_type:
+                    arg_val = self._emit(memref.CastOp.get(arg_val, callee_type))
+                args.append(arg_val)
         else:
             args = [self._expr(arg) for arg in call.args]
 
@@ -646,14 +635,7 @@ class IRGenerator:
             return
         self.seen_proc_names.add(procedure.name)
 
-        # build func signature: map each arg to its mlir type, wrapping mutated scalars in memref<1x>
-        input_types = []
-        for arg in procedure.args:
-            mem = StringAttr(arg.mem.name()) if arg.mem is not None else None
-            mlir_type = self._to_mlir_type(arg.type, mem)
-            if not isinstance(mlir_type, MemRefType) and self._is_mutated(repr(arg.name), procedure.body):
-                mlir_type = MemRefType(mlir_type, [1], NoneAttr())
-            input_types.append(mlir_type)
+        input_types = [self._arg_type(arg, procedure.body) for arg in procedure.args]
         func_type = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType())
 
         with self._scoped_state():
