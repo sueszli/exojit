@@ -99,8 +99,6 @@ class IRGenerator:
     def _to_mlir_type(self, exo_type: object, mem_space: Attribute | None = None) -> Attribute:
         # map exo type (t.f32, t.tensor, etc.) to mlir type (f32, memref, etc.)
         match exo_type:
-            case SSAValue():
-                return exo_type.type
             case T.F16():
                 return f16
             case T.F32() | T.Num():
