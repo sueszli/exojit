@@ -1,4 +1,4 @@
-## `xdsl.jit.llvm.backend.llvm_jit` is not usable for a performance compiler
+# `xdsl.jit.llvm.backend.llvm_jit` is not usable for a performance compiler
 
 `llvm_jit` builds its target machine with a bare
 `Target.from_default_triple().create_target_machine()` and runs no module pass
@@ -19,7 +19,7 @@ so exojit keeps `_target_machine()` and `_to_llvmlite_moduleref()` and builds
 its own MCJIT engine. to drop them, `llvm_jit` needs optional `target_machine`
 and module-pass-pipeline parameters, or needs to accept a pre-built `ModuleRef`.
 
-## no assembly emission
+# no assembly emission
 
 `--asm` needs `TargetMachine.emit_assembly`. xDSL's `LLVMTarget.emit` only
 prints LLVM IR, so `to_asm()` stays here until there is an asm target upstream.
