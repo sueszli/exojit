@@ -36,14 +36,19 @@ def assert_weights_match(state_dict, atol: float = 1e-5) -> None:
     total = 0
     rows = ((k, i, rr, cr) for k in ref for i, (rr, cr) in enumerate(zip(ref[k], cur[k])))
     all_cells = itertools.chain.from_iterable(((k, i, j, r, c) for j, (r, c) in enumerate(zip(rr, cr))) for k, i, rr, cr in rows)
+    nan_loc = ""
     for k, i, j, r, c in all_cells:
         d = abs(r - c)
         total += 1
-        violations += d > atol
-        if d <= max_diff:
+        if d <= atol:
             continue
-        max_diff, max_loc = d, f"{k}[{i}][{j}]"
-    assert violations == 0, f"weights mismatch (atol={atol}): {violations}/{total} params exceed tolerance, max diff={max_diff:.2e} at {max_loc}"
+        violations += 1
+        if math.isnan(d):
+            nan_loc = nan_loc or f"{k}[{i}][{j}]"
+        elif d > max_diff:
+            max_diff, max_loc = d, f"{k}[{i}][{j}]"
+    detail = f"first nan at {nan_loc}" if nan_loc else f"max diff={max_diff:.2e} at {max_loc}"
+    assert violations == 0, f"weights mismatch (atol={atol}): {violations}/{total} params exceed tolerance, {detail}"
 
 
 def save_times(step_times: list[float]) -> None:
