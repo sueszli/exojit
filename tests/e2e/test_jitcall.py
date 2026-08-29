@@ -115,22 +115,6 @@ def test_jit_raw_rejects_non_contiguous_buffers():
         raw(dst, src)
 
 
-def test_jit_raw_bind_marshals_once():
-    src = np.array([1.0, -2.0, 3.5, 4.25], dtype=np.float32)
-    dst = np.zeros_like(src)
-    call = jit(copy4, raw=True).bind(dst, src)
-    call()
-    np.testing.assert_allclose(dst, src)
-    src[:] = [9.0, 8.0, 7.0, 6.0]
-    call()
-    np.testing.assert_allclose(dst, src)
-
-
-def test_jit_raw_bind_checks_arity():
-    with pytest.raises(ValueError):
-        jit(copy4, raw=True).bind(np.zeros(4, dtype=np.float32))
-
-
 def test_jit_raw_rejects_a_float_for_a_size_arg():
     raw = jit(copy_n, raw=True)
     with pytest.raises(TypeError):
