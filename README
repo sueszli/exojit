@@ -29,11 +29,6 @@ usage:
     $ uv run exojit example.py --c
     $ uv run example.py
 
-example.py is a self-contained uv script, so it also runs straight from a
-checkout-free environment:
-
-    $ uv run https://raw.githubusercontent.com/sueszli/exojit/main/example.py
-
 
 how it works:
 
