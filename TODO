@@ -1,0 +1,25 @@
+## `xdsl.jit.llvm.backend.llvm_jit` is not usable for a performance compiler
+
+`llvm_jit` builds its target machine with a bare
+`Target.from_default_triple().create_target_machine()` and runs no module pass
+pipeline at all. on our IR that is a 3.5x regression:
+
+| pipeline | saxpy |
+| --- | --- |
+| `llvm_jit` as shipped (no O3) | 398.8 us |
+| same IR + our O3 module passes | 120.4 us |
+| same IR + O3 + host-cpu target machine | 130.0 us |
+
+the gap is entirely the missing pass pipeline; the host-cpu/features target
+machine is worth nothing measurable here, though it still matters on x86 where
+feature detection gates AVX-512. the engine itself is fine -- handing `llvm_jit`
+already-optimised IR gets back to parity (140.2 us).
+
+so exojit keeps `_target_machine()` and `_to_llvmlite_moduleref()` and builds
+its own MCJIT engine. to drop them, `llvm_jit` needs optional `target_machine`
+and module-pass-pipeline parameters, or needs to accept a pre-built `ModuleRef`.
+
+## no assembly emission
+
+`--asm` needs `TargetMachine.emit_assembly`. xDSL's `LLVMTarget.emit` only
+prints LLVM IR, so `to_asm()` stays here until there is an asm target upstream.
