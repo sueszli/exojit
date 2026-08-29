@@ -24,11 +24,11 @@ F64X2 = VectorType(f64, [2])
 
 
 def _handler(op_fn: OpFn | None, vec_type: VectorType, *operands: int, load_order: tuple[int, ...] = ()) -> Handler:
-    # load the call args named by `load_order` (defaults to `operands`, duplicates loaded once),
-    # apply `op_fn` to the values named by `operands`, store the result to args[0].
-    # index 0 = dst, 1 = first src, 2 = second src, ...
+    # arg 0 is dst, 1.. are srcs: load `load_order` (default `operands`), apply `op_fn` over `operands`, store to arg 0
+    arity = max((*operands, *load_order)) + 1
+
     def handle(args: list[SSAValue]) -> tuple[Operation, ...]:
-        assert len(args) == max((*operands, *load_order)) + 1, f"expected {max((*operands, *load_order)) + 1} operands, got {len(args)}"
+        assert len(args) == arity, f"expected {arity} operands, got {len(args)}"
         loads: dict[int, llvm.LoadOp] = {}
         for i in load_order or operands:
             if i not in loads:
@@ -45,7 +45,7 @@ def _handler(op_fn: OpFn | None, vec_type: VectorType, *operands: int, load_orde
 
 
 def _broadcast_handler(vec_type: VectorType) -> Handler:
-    # dst[:] = [*scalar_ptr] * n_lanes  (scalar_ptr is already !llvm.ptr at this stage of the pipeline)
+    # dst[:] = [*scalar_ptr] * n_lanes; scalar_ptr is already !llvm.ptr here
     def handle(args: list[SSAValue]) -> tuple[Operation, ...]:
         assert len(args) == 2, f"expected 2 operands, got {len(args)}"
         load = llvm.LoadOp(args[1], vec_type.element_type)
