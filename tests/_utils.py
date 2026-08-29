@@ -20,16 +20,13 @@ from exo.core.LoopIR import LoopIR
 from xdsl.dialects.builtin import ModuleOp
 
 DTYPES: dict[str, type] = {
-    "f16": np.float16,
     "f32": np.float32,
     "f64": np.float64,
     "i8": np.int8,
     "ui8": np.uint8,
-    "i16": np.int16,
     "ui16": np.uint16,
     "i32": np.int32,
     "size": np.int64,
-    "index": np.int64,
 }
 
 
@@ -78,16 +75,6 @@ def _build_mlir_so(source: str) -> Path:
     return d / "lib.so"
 
 
-def _exo_bin_path(proc: Procedure) -> Path:
-    d = Path(tempfile.mkdtemp())
-    exo_compile_procs([proc], d, "o.c", "o.h")
-    return _build_exo_so((d / "o.c").read_text(), d)
-
-
-def _mlir_bin_path(module: ModuleOp) -> Path:
-    return _build_mlir_so(str(module))
-
-
 def _call(fn: Callable, proc_ir: Any, kwargs: dict[str, Any], *, ctx: bool = False) -> dict[str, np.ndarray]:
     # marshal args and invoke a ctypes function (argtypes must be set at load time)
     args: list = [None] if ctx else []
@@ -110,7 +97,9 @@ def _call(fn: Callable, proc_ir: Any, kwargs: dict[str, Any], *, ctx: bool = Fal
 def compile_exo(proc: Procedure) -> Callable[..., dict[str, np.ndarray]]:
     # proc -> exo c shared lib -> callable
     proc_ir = proc._loopir_proc
-    so_path = _exo_bin_path(proc)
+    d = Path(tempfile.mkdtemp())
+    exo_compile_procs([proc], d, "o.c", "o.h")
+    so_path = _build_exo_so((d / "o.c").read_text(), d)
     lib_fn = getattr(ctypes.CDLL(str(so_path)), proc_ir.name)
     lib_fn.argtypes = [ctypes.c_void_p] * (len(proc_ir.args) + 1)  # +1 for exo ctx
     lib_fn.restype = None
@@ -120,7 +109,7 @@ def compile_exo(proc: Procedure) -> Callable[..., dict[str, np.ndarray]]:
 def compile_mlir(proc: Procedure, module: ModuleOp) -> Callable[..., dict[str, np.ndarray]]:
     # proc + mlir module -> shared lib -> callable
     proc_ir = proc._loopir_proc
-    so_path = _mlir_bin_path(module)
+    so_path = _build_mlir_so(str(module))
     lib_fn = getattr(ctypes.CDLL(str(so_path)), proc_ir.name)
     lib_fn.argtypes = [ctypes.c_void_p] * len(proc_ir.args)
     lib_fn.restype = None

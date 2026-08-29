@@ -14,7 +14,6 @@ from exojit.main import jit, to_mlir
 # xdsl irdl holds raw ctypes pointers. gc finalizer ordering -> dangling ptr -> segfault
 _gc.disable()
 _gc.set_threshold(0)
-_gc.enable = lambda: None
 _gc.collect = lambda *a, **kw: 0
 
 
