@@ -24,10 +24,15 @@ a just in time compiler for the exo language.
 
 usage:
 
-    $ uv run exojit examples/demo.py --mlir
-    $ uv run exojit examples/demo.py --asm
-    $ uv run exojit examples/demo.py --c
-    $ uv run examples/demo.py
+    $ uv run exojit example.py --mlir
+    $ uv run exojit example.py --asm
+    $ uv run exojit example.py --c
+    $ uv run example.py
+
+example.py is a self-contained uv script, so it also runs straight from a
+checkout-free environment:
+
+    $ uv run https://raw.githubusercontent.com/sueszli/exojit/main/example.py
 
 
 how it works:
