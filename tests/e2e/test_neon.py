@@ -7,6 +7,7 @@ from copy import deepcopy
 import numpy as np
 import pytest
 from exo import *
+from exo.libs.externs import select, sqrt
 from exo.platforms.neon import Neon
 
 from exojit.main import jit
@@ -377,3 +378,182 @@ def test_neon_fma_f64():
 def test_neon_broadcast_f64():
     bufs = _jit_call(neon_broadcast_store_f64, out=[0.0] * 2, s=42.0)
     np.testing.assert_allclose(bufs["out"], [42.0, 42.0])
+
+
+#
+# f32x4 arithmetic, accumulate and unary intrinsics
+#
+
+
+@instr("neon_add_f32x4({dst_data}, {a_data}, {b_data});")
+def neon_add_f32x4(dst: [f32][4] @ Neon, a: [f32][4] @ Neon, b: [f32][4] @ Neon):
+    assert stride(dst, 0) == 1
+    assert stride(a, 0) == 1
+    assert stride(b, 0) == 1
+    for i in seq(0, 4):
+        dst[i] = a[i] + b[i]
+
+
+@instr("neon_sub_f32x4({dst_data}, {a_data}, {b_data});")
+def neon_sub_f32x4(dst: [f32][4] @ Neon, a: [f32][4] @ Neon, b: [f32][4] @ Neon):
+    assert stride(dst, 0) == 1
+    assert stride(a, 0) == 1
+    assert stride(b, 0) == 1
+    for i in seq(0, 4):
+        dst[i] = a[i] - b[i]
+
+
+@instr("neon_mul_f32x4({dst_data}, {a_data}, {b_data});")
+def neon_mul_f32x4(dst: [f32][4] @ Neon, a: [f32][4] @ Neon, b: [f32][4] @ Neon):
+    assert stride(dst, 0) == 1
+    assert stride(a, 0) == 1
+    assert stride(b, 0) == 1
+    for i in seq(0, 4):
+        dst[i] = a[i] * b[i]
+
+
+@instr("neon_div_f32x4({dst_data}, {a_data}, {b_data});")
+def neon_div_f32x4(dst: [f32][4] @ Neon, a: [f32][4] @ Neon, b: [f32][4] @ Neon):
+    assert stride(dst, 0) == 1
+    assert stride(a, 0) == 1
+    assert stride(b, 0) == 1
+    for i in seq(0, 4):
+        dst[i] = a[i] / b[i]
+
+
+@instr("neon_add_acc_f32x4({dst_data}, {src_data});")
+def neon_add_acc_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ Neon):
+    assert stride(dst, 0) == 1
+    assert stride(src, 0) == 1
+    for i in seq(0, 4):
+        dst[i] = dst[i] + src[i]
+
+
+@instr("neon_sub_acc_f32x4({dst_data}, {src_data});")
+def neon_sub_acc_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ Neon):
+    assert stride(dst, 0) == 1
+    assert stride(src, 0) == 1
+    for i in seq(0, 4):
+        dst[i] = dst[i] - src[i]
+
+
+@instr("neon_mul_acc_f32x4({dst_data}, {src_data});")
+def neon_mul_acc_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ Neon):
+    assert stride(dst, 0) == 1
+    assert stride(src, 0) == 1
+    for i in seq(0, 4):
+        dst[i] = dst[i] * src[i]
+
+
+@instr("neon_div_acc_f32x4({dst_data}, {src_data});")
+def neon_div_acc_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ Neon):
+    assert stride(dst, 0) == 1
+    assert stride(src, 0) == 1
+    for i in seq(0, 4):
+        dst[i] = dst[i] / src[i]
+
+
+@instr("neon_fmax_acc_f32x4({dst_data}, {src_data});")
+def neon_fmax_acc_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ Neon):
+    assert stride(dst, 0) == 1
+    assert stride(src, 0) == 1
+    for i in seq(0, 4):
+        dst[i] = select(dst[i], src[i], src[i], dst[i])
+
+
+@instr("neon_sqrt_f32x4({dst_data}, {src_data});")
+def neon_sqrt_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ Neon):
+    assert stride(dst, 0) == 1
+    assert stride(src, 0) == 1
+    for i in seq(0, 4):
+        dst[i] = sqrt(src[i])
+
+
+@instr("neon_square_f32x4({dst_data}, {src_data});")
+def neon_square_f32x4(dst: [f32][4] @ Neon, src: [f32][4] @ Neon):
+    assert stride(dst, 0) == 1
+    assert stride(src, 0) == 1
+    for i in seq(0, 4):
+        dst[i] = src[i] * src[i]
+
+
+@proc
+def neon_binop_kernels(add: f32[4] @ DRAM, sub: f32[4] @ DRAM, mul: f32[4] @ DRAM, div: f32[4] @ DRAM, x: f32[4] @ DRAM, y: f32[4] @ DRAM):
+    a: f32[4] @ Neon
+    b: f32[4] @ Neon
+    c: f32[4] @ Neon
+    neon_loadu_f32x4(a, x[0:4])
+    neon_loadu_f32x4(b, y[0:4])
+    neon_add_f32x4(c, a, b)
+    neon_storeu_f32x4(add[0:4], c)
+    neon_sub_f32x4(c, a, b)
+    neon_storeu_f32x4(sub[0:4], c)
+    neon_mul_f32x4(c, a, b)
+    neon_storeu_f32x4(mul[0:4], c)
+    neon_div_f32x4(c, a, b)
+    neon_storeu_f32x4(div[0:4], c)
+
+
+@proc
+def neon_acc_kernels(add: f32[4] @ DRAM, sub: f32[4] @ DRAM, mul: f32[4] @ DRAM, div: f32[4] @ DRAM, mx: f32[4] @ DRAM, x: f32[4] @ DRAM):
+    s: f32[4] @ Neon
+    acc: f32[4] @ Neon
+    neon_loadu_f32x4(s, x[0:4])
+    neon_loadu_f32x4(acc, add[0:4])
+    neon_add_acc_f32x4(acc, s)
+    neon_storeu_f32x4(add[0:4], acc)
+    neon_loadu_f32x4(acc, sub[0:4])
+    neon_sub_acc_f32x4(acc, s)
+    neon_storeu_f32x4(sub[0:4], acc)
+    neon_loadu_f32x4(acc, mul[0:4])
+    neon_mul_acc_f32x4(acc, s)
+    neon_storeu_f32x4(mul[0:4], acc)
+    neon_loadu_f32x4(acc, div[0:4])
+    neon_div_acc_f32x4(acc, s)
+    neon_storeu_f32x4(div[0:4], acc)
+    neon_loadu_f32x4(acc, mx[0:4])
+    neon_fmax_acc_f32x4(acc, s)
+    neon_storeu_f32x4(mx[0:4], acc)
+
+
+@proc
+def neon_unop_kernels(root: f32[4] @ DRAM, sq: f32[4] @ DRAM, x: f32[4] @ DRAM):
+    a: f32[4] @ Neon
+    c: f32[4] @ Neon
+    neon_loadu_f32x4(a, x[0:4])
+    neon_sqrt_f32x4(c, a)
+    neon_storeu_f32x4(root[0:4], c)
+    neon_square_f32x4(c, a)
+    neon_storeu_f32x4(sq[0:4], c)
+
+
+def test_neon_f32x4_binops():
+    x = [6.0, 8.0, 10.0, 12.0]
+    y = [3.0, 2.0, 5.0, 4.0]
+    bufs = _jit_call(neon_binop_kernels, add=[0.0] * 4, sub=[0.0] * 4, mul=[0.0] * 4, div=[0.0] * 4, x=x, y=y)
+    xa, ya = np.array(x, dtype=np.float32), np.array(y, dtype=np.float32)
+    np.testing.assert_allclose(bufs["add"], xa + ya)
+    np.testing.assert_allclose(bufs["sub"], xa - ya)
+    np.testing.assert_allclose(bufs["mul"], xa * ya)
+    np.testing.assert_allclose(bufs["div"], xa / ya)
+
+
+def test_neon_f32x4_accumulate():
+    seed = [1.0, 2.0, 3.0, 4.0]
+    x = [10.0, 20.0, 30.0, 40.0]
+    mx = [15.0, 5.0, 35.0, 25.0]
+    bufs = _jit_call(neon_acc_kernels, add=list(seed), sub=list(seed), mul=list(seed), div=list(seed), mx=list(mx), x=x)
+    sa, xa, ma = np.array(seed, dtype=np.float32), np.array(x, dtype=np.float32), np.array(mx, dtype=np.float32)
+    np.testing.assert_allclose(bufs["add"], sa + xa)
+    np.testing.assert_allclose(bufs["sub"], sa - xa)
+    np.testing.assert_allclose(bufs["mul"], sa * xa)
+    np.testing.assert_allclose(bufs["div"], sa / xa)
+    np.testing.assert_allclose(bufs["mx"], np.maximum(ma, xa))
+
+
+def test_neon_f32x4_unops():
+    x = [4.0, 9.0, 16.0, 25.0]
+    bufs = _jit_call(neon_unop_kernels, root=[0.0] * 4, sq=[0.0] * 4, x=x)
+    xa = np.array(x, dtype=np.float32)
+    np.testing.assert_allclose(bufs["root"], np.sqrt(xa), rtol=1e-6)
+    np.testing.assert_allclose(bufs["sq"], xa * xa)
