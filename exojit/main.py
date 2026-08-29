@@ -820,13 +820,20 @@ def _load_libomp() -> None:
         except subprocess.CalledProcessError, FileNotFoundError:
             return None
 
+    def load_first(paths: list[str]) -> bool:
+        for lib in paths:
+            try:
+                llvmlite.binding.load_library_permanently(lib)
+                return True
+            except RuntimeError:  # missing, or built for another architecture
+                continue
+        return False
+
     candidates = [f"{prefix}/opt/{pkg}/lib/libomp.dylib" for prefix in ("/opt/homebrew", "/usr/local") for pkg in ("libomp", "llvm")]
-    lib = next((c for c in candidates if Path(c).exists()), None)
-    if lib is None:  # non-default homebrew prefix
-        candidates += [f"{prefix}/lib/libomp.dylib" for pkg in ("libomp", "llvm") if (prefix := brew_prefix(pkg))]
-        lib = next((c for c in candidates if Path(c).exists()), None)
-    assert lib, f"libomp not found; tried {candidates}"
-    llvmlite.binding.load_library_permanently(lib)
+    if load_first(candidates):
+        return
+    brewed = [f"{prefix}/lib/libomp.dylib" for pkg in ("libomp", "llvm") if (prefix := brew_prefix(pkg))]
+    assert load_first(brewed), f"libomp not found; tried {candidates + brewed}"
 
 
 @cache
