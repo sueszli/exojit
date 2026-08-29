@@ -768,10 +768,7 @@ llvmlite.binding.initialize_native_asmprinter()
 def _target_machine() -> llvmlite.binding.TargetMachine:
     # llvmlite target machines are not safe to reuse after MCJIT compilation.
     # do not cache to avoid stale target-data pointers during later `--asm` runs.
-    target = llvmlite.binding.Target.from_default_triple()
-    cpu = llvmlite.binding.get_host_cpu_name()
-    features = llvmlite.binding.get_host_cpu_features().flatten()
-    return target.create_target_machine(cpu=cpu, features=features, opt=3)
+    return llvmlite.binding.Target.from_default_triple().create_target_machine(cpu=llvmlite.binding.get_host_cpu_name(), features=llvmlite.binding.get_host_cpu_features().flatten(), opt=3)
 
 
 def _to_llvm_ir(module: ModuleOp) -> str:
@@ -788,12 +785,8 @@ def _to_llvm_ir(module: ModuleOp) -> str:
 def _to_llvmlite_moduleref(ir: str) -> tuple[llvmlite.binding.ModuleRef, llvmlite.binding.TargetMachine]:
     mod_ref = llvmlite.binding.parse_assembly(ir)
     tm = _target_machine()
-    pto = llvmlite.binding.PipelineTuningOptions()
-    pto.speed_level = 3
-    pto.loop_vectorization = True
+    pto = llvmlite.binding.PipelineTuningOptions(speed_level=3)
     pto.slp_vectorization = True
-    pto.loop_interleaving = True
-    pto.loop_unrolling = True
     pb = llvmlite.binding.create_pass_builder(tm, pto)
     pb.getModulePassManager().run(mod_ref, pb)
     return mod_ref, tm
@@ -805,43 +798,42 @@ def to_asm(module: ModuleOp) -> str:
     return tm.emit_assembly(mod_ref)
 
 
-@cache
-def _ir_cache_dir() -> Path:
+def _disk_cache(name: object, generate: Callable[[], str]) -> str:
     # hash all compiler sources -> .cache/exojit/{hash}/. auto-invalidates when compiler code changes.
     src_dir = Path(__file__).resolve().parent
-    hasher = hashlib.sha256()
-    for py_file in sorted(src_dir.glob("*.py")):
-        hasher.update(py_file.read_bytes())
-    cache_dir = src_dir.parent / ".cache" / "exojit" / hasher.hexdigest()[:12]
+    cache_dir = src_dir.parent / ".cache" / "exojit" / hashlib.sha256(b"".join(f.read_bytes() for f in sorted(src_dir.glob("*.py")))).hexdigest()[:12]
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir
-
-
-def _disk_cache(name: object, generate: Callable[[], str]) -> str:
-    path = _ir_cache_dir() / f"{name}.ll"
-    if path.exists():
-        return path.read_text()
-    ir_text = generate()
-    path.write_text(ir_text)
-    return ir_text
+    path = cache_dir / f"{name}.ll"
+    if not path.exists():
+        path.write_text(generate())
+    return path.read_text()
 
 
 @cache
 def _load_libomp() -> None:
     if sys.platform != "darwin":
         return llvmlite.binding.load_library_permanently("libgomp.so.1")
-    candidates = ["/opt/homebrew/opt/libomp/lib/libomp.dylib"]
-    for pkg in ("libomp", "llvm"):
+
+    def brew_prefix(pkg: str) -> str | None:
         try:
-            prefix = subprocess.run(["brew", "--prefix", pkg], capture_output=True, text=True, check=True).stdout.strip()
-            candidates.append(f"{prefix}/lib/libomp.dylib")
+            return subprocess.run(["brew", "--prefix", pkg], capture_output=True, text=True, check=True).stdout.strip()
         except subprocess.CalledProcessError, FileNotFoundError:
-            pass
-    for lib in candidates:
-        if Path(lib).exists():
-            llvmlite.binding.load_library_permanently(lib)
-            return
-    assert False, f"libomp not found; tried {candidates}"
+            return None
+
+    def load_first(paths: list[str]) -> bool:
+        for lib in paths:
+            try:
+                llvmlite.binding.load_library_permanently(lib)
+                return True
+            except RuntimeError:  # missing, or built for another architecture
+                continue
+        return False
+
+    candidates = [f"{prefix}/opt/{pkg}/lib/libomp.dylib" for prefix in ("/opt/homebrew", "/usr/local") for pkg in ("libomp", "llvm")]
+    if load_first(candidates):
+        return
+    brewed = [f"{prefix}/lib/libomp.dylib" for pkg in ("libomp", "llvm") if (prefix := brew_prefix(pkg))]
+    assert load_first(brewed), f"libomp not found; tried {candidates + brewed}"
 
 
 @cache
@@ -860,19 +852,6 @@ def _c_signature(module: ModuleOp, name: str) -> str:
     return f"{signature.output}(*)({', '.join(signature.inputs) or 'void'})"
 
 
-def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
-    # Exo resolves window and callee writes when classifying pointer mutability.
-    written = {sym for sym, _ in get_writes_of_stmts(proc.body)}
-
-    def kind(arg: LoopIR.fnarg) -> int:
-        if arg.type.is_tensor_or_window():
-            return 2 if arg.name in written else 1
-        assert isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)), f"unsupported JIT argument type for {arg.name}: {arg.type}"
-        return 0
-
-    return bytes(kind(arg) for arg in proc.args)
-
-
 def _jit_eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
     # resolve a dynamic tensor dimension against the size arguments seen so far
     bounds = constant_bound(expr, {sym: (value, value) for sym, value in env.items()})
@@ -882,18 +861,7 @@ def _jit_eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
 
 def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writable: bool) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], object]:
     # build one argument converter for tensor or window inputs
-    jit_tensor_c_types = {
-        "f32": "float",
-        "f64": "double",
-        "i8": "int8_t",
-        "ui8": "uint8_t",
-        "i16": "int16_t",
-        "ui16": "uint16_t",
-        "i32": "int32_t",
-        "index": "int64_t",
-        "size": "int64_t",
-        "bool": "_Bool",
-    }
+    jit_tensor_c_types = {"f32": "float", "f64": "double", "i8": "int8_t", "ui8": "uint8_t", "ui16": "uint16_t", "i32": "int32_t", "index": "int64_t", "size": "int64_t", "bool": "_Bool"}
     shape = tensor_type.shape()
     basetype = str(tensor_type.basetype())
     assert basetype in jit_tensor_c_types, f"unsupported JIT tensor dtype: {basetype}"
@@ -902,46 +870,37 @@ def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writab
     def is_seq(x: object) -> TypeGuard[Sequence[object]]:
         return isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray, memoryview))
 
-    def linearize(value: object) -> tuple[list[object], list[tuple[MutableSequence[object], int]]]:
-        if not is_seq(value):
-            return [value], []
-        target = value if writable else None
-        if target is not None:
-            assert isinstance(target, MutableSequence), f"argument {index + 1}: writable tensor args passed as Python sequences must be mutable at every level"
-        flat: list[object] = []
-        leaves: list[tuple[MutableSequence[object], int]] = []
+    def linearize(value: Sequence[object], flat: list[object], leaves: list[tuple[MutableSequence[object], int]]) -> None:
+        assert not writable or isinstance(value, MutableSequence), f"argument {index + 1}: writable tensor args passed as Python sequences must be mutable at every level"
         for i, item in enumerate(value):
             if is_seq(item):
-                child_flat, child_leaves = linearize(item)
-                flat.extend(child_flat)
-                leaves.extend(child_leaves)
+                linearize(item, flat, leaves)
             else:
                 flat.append(item)
-                if target is not None:
-                    leaves.append((target, i))
-        return flat, leaves
+                if writable:
+                    leaves.append((cast(MutableSequence[object], value), i))
 
     def convert(value: object, shape_env: dict[object, int], keepalive: list[object], syncbacks: list[Callable[[], None]]) -> object:
         assert not (isinstance(value, (bytes, bytearray, memoryview)) or (hasattr(value, "ndim") and hasattr(value, "dtype") and hasattr(value, "shape") and getattr(value, "ndim", 0) > 0)), f"argument {index + 1}: direct buffer inputs are not supported by jit(); pass Python lists/scalars or use jit(proc, raw=True)"
         numel = math.prod(_jit_eval_shape_expr(expr, shape_env) for expr in shape)
-
-        if not is_seq(value):
+        flat: list[object] = []
+        leaves: list[tuple[MutableSequence[object], int]] = []
+        if is_seq(value):
+            linearize(value, flat, leaves)
+        else:
             assert numel == 1, f"argument {index + 1}: expected {numel} values, got scalar {type(value).__name__}"
             assert not writable, f"argument {index + 1}: writable scalar tensor args require a mutable sequence"
             assert isinstance(value, numbers.Real), f"argument {index + 1}: expected scalar numeric data, got {type(value).__name__}"
-            flat = [value]
-            leaves: list[tuple[MutableSequence[object], int]] = []
-        else:
-            flat, leaves = linearize(value)
-            assert len(flat) == numel, f"argument {index + 1}: expected {numel} values, got {len(flat)}"
+            flat.append(value)
+        assert len(flat) == numel, f"argument {index + 1}: expected {numel} values, got {len(flat)}"
 
         buf = ffi.new(f"{c_type}[{numel}]", flat)
         keepalive.append(buf)
         if writable:
 
-            def sync(leaf_refs=leaves, cffi_buf=buf):
-                for offset, (target, idx) in enumerate(leaf_refs):
-                    target[idx] = cffi_buf[offset]
+            def sync() -> None:
+                for offset, (target, idx) in enumerate(leaves):
+                    target[idx] = buf[offset]
 
             syncbacks.append(sync)
         return int(ffi.cast("uintptr_t", buf))
@@ -960,46 +919,44 @@ def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
     engine.finalize_object()
     engine.run_static_constructors()
 
-    ffi, kinds = FFI(), _jit_arg_kinds(proc._loopir_proc)
+    ir_args = proc._loopir_proc.args
+    for arg in ir_args:
+        assert arg.type.is_tensor_or_window() or isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)), f"unsupported JIT argument type for {arg.name}: {arg.type}"
+    written = {sym for sym, _ in get_writes_of_stmts(proc._loopir_proc.body)}  # Exo resolves window and callee writes when classifying pointer mutability
+    kinds = [arg.name in written if arg.type.is_tensor_or_window() else None for arg in ir_args]  # None: passed by value, False/True: pointer, writable or not
+
+    ffi = FFI()
     address = engine.get_function_address(proc.name())
     assert address, f"no address for symbol after compilation: {proc.name()}"
     fn = ffi.cast(_c_signature(mlir_module, proc.name()), address)
 
     def call(*args) -> None:
-        fn(*[arg if not kind else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind == 2) for arg, kind in zip(args, kinds, strict=True)])
+        fn(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
 
     # mcjit owns the jitted code, so the engine has to outlive every call into it
     cast(Any, call)._engine = engine
 
-    names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in proc._loopir_proc.args]
+    names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in ir_args]
     if raw:
         wrapped = lambda *args, **kwargs: call(*(tuple(kwargs[name] for name in names) if kwargs else args))
         cast(Any, wrapped)._raw = call
         return wrapped
 
     converters = []
-    for i, arg in enumerate(proc._loopir_proc.args):
-        match arg.type:
-            case T.Tensor() | T.Window():
-                tensor_type = arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type
-                converters.append(_jit_tensor_converter(ffi=ffi, index=i, tensor_type=tensor_type, writable=kinds[i] == 2))
-            case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
-                name = arg.name
+    for i, (arg, kind) in enumerate(zip(ir_args, kinds, strict=True)):
+        if kind is None:
 
-                def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=name) -> int:
-                    converted = int(value)
-                    shape_env[name] = converted
-                    return converted
+            def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=arg.name) -> int:
+                shape_env[name] = converted = int(value)
+                return converted
 
-                converters.append(convert)
-            case _:
-                assert False, f"unsupported JIT argument type for {arg.name}: {arg.type}"
+            converters.append(convert)
+        else:
+            converters.append(_jit_tensor_converter(ffi=ffi, index=i, tensor_type=arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type, writable=kind))
 
     def wrapped(*args, **kwargs):
         args = tuple(kwargs[name] for name in names) if kwargs else args
-        shape_env: dict[object, int] = {}
-        keepalive: list[object] = []
-        syncbacks: list[Callable[[], None]] = []
+        shape_env, keepalive, syncbacks = {}, [], []
         call(*[conv(arg, shape_env, keepalive, syncbacks) for conv, arg in zip(converters, args, strict=True)])
         for sync in syncbacks:
             sync()
@@ -1027,11 +984,7 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
 def _dedup_proc_names(user_module: object) -> list[Procedure]:
     exported = getattr(user_module, "__all__", None)
     symbols = user_module.__dict__.items() if exported is None else ((name, getattr(user_module, name)) for name in exported)
-    procs = [proc for name, proc in symbols if not name.startswith("_") and isinstance(proc, Procedure) and not proc.is_instr()]
-    by_name: dict[str, Procedure] = {}
-    for proc in reversed(procs):
-        by_name.setdefault(proc.name(), proc)
-    return list(by_name.values())[::-1]
+    return list({proc.name(): proc for name, proc in symbols if not name.startswith("_") and isinstance(proc, Procedure) and not proc.is_instr()}.values())
 
 
 @click.command()
