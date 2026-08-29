@@ -30,10 +30,10 @@ from xdsl.backend.llvm.convert import convert_module
 from xdsl.builder import Builder
 from xdsl.context import Context
 from xdsl.dialects import llvm, memref
-from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, ArrayAttr, BoolAttr, Builtin, DictionaryAttr, FloatAttr, IndexType, IntAttr, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnitAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
+from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, ArrayAttr, Builtin, DictionaryAttr, FloatAttr, IndexType, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnitAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
 from xdsl.dialects.llvm import BrOp, FNegOp
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
-from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
+from xdsl.ir import Attribute, Block, Operation, Region, SSAValue
 from xdsl.jit.c_type_context import CTypeContext, register_builtin_types
 from xdsl.jit.llvm.c_type_context import register_llvm_types, to_c_func_type
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriteWalker
@@ -53,7 +53,6 @@ class IRGenerator:
     module: ModuleOp
     builder: Builder
     symbol_table: ScopedDict[str, SSAValue] | None
-    type_table: ScopedDict[str, LoopIR.type | type[LoopIR.type]] | None
     seen_proc_names: set[str]
     seen_extern_decls: set[str]
 
@@ -61,7 +60,6 @@ class IRGenerator:
         self.module = ModuleOp([])
         self.builder = Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0]))
         self.symbol_table = None
-        self.type_table = None
         self.seen_proc_names = set()
         self.seen_extern_decls = set()
         self._par_counter = 0  # for naming
@@ -71,40 +69,36 @@ class IRGenerator:
         assert self.symbol_table is not None
         return self.symbol_table
 
-    @property
-    def _types(self) -> ScopedDict[str, LoopIR.type | type[LoopIR.type]]:
-        assert self.type_table is not None
-        return self.type_table
-
     def _emit(self, op: Operation) -> SSAValue:
         self.builder.insert(op)
         assert op.results
         return op.results[0]
 
+    def _int_const(self, value: int, int_type: IntegerType = i64) -> SSAValue:
+        return self._emit(llvm.ConstantOp(IntegerAttr(value, int_type), int_type))
+
+    @staticmethod
+    def _void_fn_type(input_types: Sequence[Attribute]) -> llvm.LLVMFunctionType:
+        # memrefs reach callees as bare pointers
+        return llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType())
+
     def _insert_at_module(self, op: Operation) -> None:
         Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0])).insert(op)
 
     @contextmanager
-    def _scoped_state(self, *, inherit: bool = True):
-        # save and restore builder/symbol/type state across nested scopes
+    def _scoped_state(self):
+        # save and restore builder/symbol state across nested scopes
         parent_builder = self.builder
         parent_symbol_table = self.symbol_table
-        parent_type_table = self.type_table
-        if not inherit:
-            self.symbol_table = ScopedDict[str, SSAValue]()
-            self.type_table = ScopedDict[str, LoopIR.type | type[LoopIR.type]]()
         try:
             yield
         finally:
             self.builder = parent_builder
             self.symbol_table = parent_symbol_table
-            self.type_table = parent_type_table
 
     def _to_mlir_type(self, exo_type: object, mem_space: Attribute | None = None) -> Attribute:
         # map exo type (t.f32, t.tensor, etc.) to mlir type (f32, memref, etc.)
         match exo_type:
-            case SSAValue():
-                return exo_type.type
             case T.F16():
                 return f16
             case T.F32() | T.Num():
@@ -125,7 +119,7 @@ class IRGenerator:
                 assert mem_space is not None
                 inner = self._to_mlir_type(exo_type.type)
                 assert inner in {f16, f32, f64, i8, i16, i32, i64}
-                shape = self._shape(exo_type)
+                shape = [self._static_dim(dim) for dim in exo_type.shape()]
                 return MemRefType(inner, shape, NoneAttr(), mem_space)
             case _:
                 assert False
@@ -144,29 +138,13 @@ class IRGenerator:
             case _:
                 assert False
 
-    def _shape(self, tensor: T.Tensor) -> list[int]:
-        return [self._static_dim(expr) for expr in tensor.shape()]
-
     def _emit_shape(self, tensor: T.Tensor) -> list[int | SSAValue]:
         # variable/computed dims -> live ssa values, for stride/offset arithmetic
-
-        def from_expr(expr: LoopIR.expr) -> int | SSAValue:
-            match expr:
-                case LoopIR.Read():
-                    return self._syms[repr(expr.name)]
-                case LoopIR.BinOp():
-                    return self._expr_binop(expr)
-                case _:
-                    return self._static_dim(expr)
-
-        return [from_expr(expr) for expr in tensor.shape()]
-
-    def _zero_index(self) -> list[SSAValue]:
-        return [self._emit(llvm.ConstantOp(IntegerAttr(0, i64), i64))]
+        return [self._expr(dim) if isinstance(dim, (LoopIR.Read, LoopIR.BinOp)) else self._static_dim(dim) for dim in tensor.shape()]
 
     def _memref_load(self, memref_val: SSAValue, idx: list[SSAValue]) -> SSAValue:
         if len(idx) == 0:
-            idx = self._zero_index()
+            idx = [self._int_const(0)]
         indices = [self._emit(UnrealizedConversionCastOp.get([index], [IndexType()])) for index in idx]
         self.builder.insert(load := memref.LoadOp.get(memref_val, indices))
         return load.res
@@ -175,7 +153,7 @@ class IRGenerator:
         # emit memref.store with i64->index casts, handling scalar memref cases
         if len(idx) == 0:
             assert isinstance(memref_val.type, MemRefType) and memref_val.type.get_shape() == (1,)
-            idx = self._zero_index()
+            idx = [self._int_const(0)]
 
         index_indices = [self._emit(UnrealizedConversionCastOp.get([index], [IndexType()])) for index in idx]
 
@@ -188,25 +166,12 @@ class IRGenerator:
 
     def _expr_const(self, const: LoopIR.Const, expected_type: Attribute | None = None) -> SSAValue:
         # lower loopir literal to llvm.mlir.constant op
-        if isinstance(const.type, T.Num) and expected_type is not None:
-            mlir_type = expected_type
-        else:
-            mlir_type = self._to_mlir_type(const.type)
+        mlir_type = expected_type if isinstance(const.type, T.Num) and expected_type is not None else self._to_mlir_type(const.type)
         assert isinstance(const.val, (int, float))
-
-        if mlir_type in [f16, f32, f64]:
-            assert isinstance(mlir_type, AnyFloat)
-            attr = FloatAttr(const.val, mlir_type)
-        elif mlir_type in [i8, i16, i32, i64]:
-            assert isinstance(mlir_type, IntegerType)
-            attr = IntegerAttr(IntAttr(int(const.val)), mlir_type)
-        elif mlir_type == i1:
-            assert isinstance(const.val, int)
-            attr = BoolAttr(const.val, i1)
-        else:
-            assert False
-
-        return self._emit(llvm.ConstantOp(attr, mlir_type))
+        if isinstance(mlir_type, AnyFloat):
+            return self._emit(llvm.ConstantOp(FloatAttr(const.val, mlir_type), mlir_type))
+        assert isinstance(mlir_type, IntegerType)
+        return self._int_const(int(const.val), mlir_type)
 
     def _expr_read(self, read: LoopIR.Read) -> SSAValue:
         # lower loopir read to arith/memref ops
@@ -228,24 +193,22 @@ class IRGenerator:
             return self._emit(FNegOp(expr, fast_math=llvm.FastMathAttr("fast")))
         elif mlir_type in [i8, i16, i32, i64]:
             assert isinstance(mlir_type, IntegerType)
-            zero = self._emit(llvm.ConstantOp(IntegerAttr(0, mlir_type), mlir_type))
+            zero = self._int_const(0, mlir_type)
             return self._emit(llvm.SubOp(zero, expr))
         else:
             assert False
 
-    @staticmethod
-    def _cmp_binop(lhs: SSAValue, rhs: SSAValue, op: str, emit: Callable[[Operation], SSAValue]) -> SSAValue:
+    def _cmp_binop(self, lhs: SSAValue, rhs: SSAValue, op: str) -> SSAValue:
         P = llvm.ICmpPredicateFlag
         integer_cmp_table = {"==": P.EQ.to_int(), "!=": P.NE.to_int(), "<": P.SLT.to_int(), "<=": P.SLE.to_int(), ">": P.SGT.to_int(), ">=": P.SGE.to_int()}
-        fcmp_predicates: dict[str, tuple[str, bool]] = {"oeq": ("==", True), "ogt": (">", True), "oge": (">=", True), "olt": ("<", True), "ole": ("<=", True), "one": ("!=", True), "ord": ("ord", True), "ueq": ("==", False), "ugt": (">", False), "uge": (">=", False), "ult": ("<", False), "ule": ("<=", False), "une": ("!=", False), "uno": ("uno", False)}
-        float_cmp_table = {op: pred for pred, (op, ordered) in fcmp_predicates.items() if ordered and op not in ("ord", "uno")}
+        float_cmp_table = {"==": "oeq", "!=": "one", "<": "olt", "<=": "ole", ">": "ogt", ">=": "oge"}
         assert lhs.type == rhs.type
         if lhs.type == i1:
             bool_ops = {"and": llvm.AndOp, "or": llvm.OrOp}
-            return emit(bool_ops[op](lhs, rhs))
+            return self._emit(bool_ops[op](lhs, rhs))
         if lhs.type in [i8, i16, i32, i64]:
-            return emit(llvm.ICmpOp(lhs, rhs, IntegerAttr(integer_cmp_table[op], i64)))
-        return emit(llvm.FCmpOp(lhs, rhs, float_cmp_table[op]))
+            return self._emit(llvm.ICmpOp(lhs, rhs, IntegerAttr(integer_cmp_table[op], i64)))
+        return self._emit(llvm.FCmpOp(lhs, rhs, float_cmp_table[op]))
 
     def _expr_binop(self, binop: LoopIR.BinOp) -> SSAValue:
         if not isinstance(binop.type, T.Num):
@@ -262,7 +225,7 @@ class IRGenerator:
             mlir_type = lhs.type
 
         if mlir_type == i1:
-            return self._cmp_binop(lhs, rhs, binop.op, self._emit)
+            return self._cmp_binop(lhs, rhs, binop.op)
 
         float_ops = {"+": llvm.FAddOp, "-": llvm.FSubOp, "*": llvm.FMulOp, "/": llvm.FDivOp}
         int_ops = {"+": llvm.AddOp, "-": llvm.SubOp, "*": llvm.MulOp, "/": llvm.SDivOp, "%": llvm.SRemOp}
@@ -272,35 +235,33 @@ class IRGenerator:
             return self._emit(int_ops[binop.op](lhs, rhs))
         assert False
 
-    @staticmethod
-    def _window_access(access: object, expr_fn: Callable[[object], SSAValue]) -> SSAValue:
+    def _window_access(self, access: object) -> SSAValue:
         match access:
             case LoopIR.Point():
-                return expr_fn(access.pt)
+                return self._expr(access.pt)
             case LoopIR.Interval():
-                return expr_fn(access.lo)
+                return self._expr(access.lo)
             case _:
                 assert False
 
-    @staticmethod
-    def _to_index_list(values: Sequence[SSAValue | int], emit: Callable[[Operation], SSAValue]) -> list:
+    def _to_index_list(self, values: Sequence[SSAValue | int]) -> list:
         # cast i64 ssavalues to index type, pass through static ints as-is for subviewop
         static, dynamic = split_dynamic_index_list(values, DYNAMIC_INDEX)
-        casted = [emit(UnrealizedConversionCastOp.get([value], [IndexType()])) for value in dynamic]
+        casted = [self._emit(UnrealizedConversionCastOp.get([value], [IndexType()])) for value in dynamic]
         return get_dynamic_index_list(static, casted, DYNAMIC_INDEX)
 
     def _expr_window(self, window: LoopIR.WindowExpr) -> SSAValue:
         # lower window expression to memref.subview
-        indices = [self._window_access(access, self._expr) for access in window.idx]
+        indices = [self._window_access(access) for access in window.idx]
         source = self._syms[repr(window.name)]
         assert isinstance(source.type, MemRefType)
         assert isinstance(window.type, T.Window)
         dest_type = self._to_mlir_type(window.type.as_tensor, source.type.memory_space)
         output_sizes = self._emit_shape(window.type.as_tensor)
 
-        offsets_idx = self._to_index_list(indices, self._emit)
-        sizes_idx = self._to_index_list(output_sizes, self._emit)
-        strides_idx = self._to_index_list([1] * len(indices), self._emit)
+        offsets_idx = self._to_index_list(indices)
+        sizes_idx = self._to_index_list(output_sizes)
+        strides_idx = self._to_index_list([1] * len(indices))
 
         self.builder.insert(subview := memref.SubviewOp.get(source, offsets_idx, sizes_idx, strides_idx, dest_type))
         return subview.result
@@ -327,7 +288,7 @@ class IRGenerator:
         output_type = self._to_mlir_type(extern.f.typecheck(extern.args))
         return self._emit(llvm.CallOp(name, *args, return_type=output_type))
 
-    def _expr(self, expr: object, expected_type: Attribute | None = None) -> OpResult | SSAValue:
+    def _expr(self, expr: object, expected_type: Attribute | None = None) -> SSAValue:
         # dispatch loopir expression node to its typed lowering method
         match expr:
             case LoopIR.Read():
@@ -397,6 +358,33 @@ class IRGenerator:
         region.add_block(merge_block)
         self.builder = Builder(insertion_point=InsertPoint.at_end(merge_block))
 
+    def _counted_loop(self, lo: SSAValue, hi: SSAValue, predicate: llvm.ICmpPredicateFlag, iter_name: str, iter_type: Attribute, body: list[LoopIR.stmt], step: Callable[[], SSAValue]) -> None:
+        # counted loop as header/body/exit blocks, carrying the induction variable as a header argument
+        region = self.builder.insertion_point.block.parent_region()
+        assert region is not None
+        header_block = Block(arg_types=[lo.type])
+        body_block = Block()
+        exit_block = Block()
+        region.add_block(header_block)
+        region.add_block(body_block)
+        self.builder.insert(BrOp(header_block, lo))
+
+        self.builder = Builder(insertion_point=InsertPoint.at_end(header_block))
+        iv = header_block.args[0]
+        cond = self._emit(llvm.ICmpOp(iv, hi, IntegerAttr(predicate.to_int(), i64)))
+        self.builder.insert(llvm.CondBrOp(cond, body_block, [], exit_block, []))
+
+        with self._scoped_state():
+            self.builder = Builder(insertion_point=InsertPoint.at_end(body_block))
+            self.symbol_table = ScopedDict(self._syms)
+            self._syms[iter_name] = iv if iv.type == iter_type else self._emit(llvm.TruncOp(iv, iter_type))
+            for stmt in body:
+                self._stmt(stmt)
+            self.builder.insert(BrOp(header_block, self._emit(llvm.AddOp(iv, step()))))
+
+        region.add_block(exit_block)
+        self.builder = Builder(insertion_point=InsertPoint.at_end(exit_block))
+
     def _stmt_for_par(self, s: LoopIR.For) -> None:
         # par() loop -> __kmpc_fork_call(@outlined, lo, hi, ...shared)
         # outlined fn: static_init_8 -> loop [adj_lo, adj_hi] -> static_fini
@@ -404,21 +392,12 @@ class IRGenerator:
         hi = self._expr(s.hi)
         ptr = llvm.LLVMPointerType()
 
-        def c(v: int, t: IntegerType = i64) -> SSAValue:
-            return self._emit(llvm.ConstantOp(IntegerAttr(v, t), t))
-
         st = lambda v, p: self.builder.insert(llvm.StoreOp(v, p))
         ext = lambda v: v if v.type == i64 else self._emit(llvm.SExtOp(v, i64))
-        alloc = lambda t: self._emit(llvm.AllocaOp(c(1), t))
+        alloc = lambda t: self._emit(llvm.AllocaOp(self._int_const(1), t))
 
-        def flat(sd):  # flatten ScopedDict parent chain
-            d = flat(sd.parent) if sd.parent else {}
-            d.update(sd.local_scope)
-            return d
-
-        # shared captures: all live vars passed to outlined fn
-        syms = flat(self._syms)
-        types = flat(self._types)
+        flat = lambda sd: {**(flat(sd.parent) if sd.parent else {}), **sd.local_scope}  # flatten ScopedDict parent chain
+        syms = flat(self._syms)  # shared captures: all live vars passed to outlined fn
         names = list(syms.keys())
 
         # bounds passed by pointer
@@ -431,16 +410,14 @@ class IRGenerator:
         oname = f"__omp_outlined_{self._par_counter}"
         self._par_counter += 1
         atypes = [ptr] * 4 + [syms[n].type for n in names]
-        ftype = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in atypes], llvm.LLVMVoidType())
-        with self._scoped_state(inherit=False):
+        ftype = self._void_fn_type(atypes)
+        with self._scoped_state():
             blk = Block(arg_types=atypes)
             region = Region(blk)
             self.builder = Builder(insertion_point=InsertPoint.at_end(blk))
             self.symbol_table = ScopedDict()
-            self.type_table = ScopedDict()
             for i, n in enumerate(names):  # bind shared captures (args[4:])
                 self._syms[n] = blk.args[4 + i]
-                self._types[n] = types[n]
             gtid = self._emit(llvm.LoadOp(blk.args[0], i32))
             lo_v = self._emit(llvm.LoadOp(blk.args[2], lo.type))
             hi_v = self._emit(llvm.LoadOp(blk.args[3], hi.type))
@@ -450,51 +427,30 @@ class IRGenerator:
             lower_p = alloc(i64)
             upper_p = alloc(i64)
             stride_p = alloc(i64)
-            st(c(0, i32), is_last_p)
+            st(self._int_const(0, i32), is_last_p)
             lo64 = ext(lo_v)
-            hi_incl = self._emit(llvm.SubOp(ext(hi_v), c(1)))  # [lo, hi) -> [lo, hi-1]
+            hi_incl = self._emit(llvm.SubOp(ext(hi_v), self._int_const(1)))  # [lo, hi) -> [lo, hi-1]
             st(lo64, lower_p)
             st(hi_incl, upper_p)
-            st(c(1), stride_p)
+            st(self._int_const(1), stride_p)
 
             # partition [lo, hi-1] across threads (schedule 34 = static)
             null = self._emit(llvm.ZeroOp(result_types=[ptr]))
-            self.builder.insert(llvm.CallOp("__kmpc_for_static_init_8", null, gtid, c(34, i32), is_last_p, lower_p, upper_p, stride_p, c(1), c(1)))
+            self.builder.insert(llvm.CallOp("__kmpc_for_static_init_8", null, gtid, self._int_const(34, i32), is_last_p, lower_p, upper_p, stride_p, self._int_const(1), self._int_const(1)))
 
             # this thread's chunk; clamp upper to original hi-1
             adj_lo = self._emit(llvm.LoadOp(lower_p, i64))
             adj_hi_raw = self._emit(llvm.LoadOp(upper_p, i64))
             adj_hi = self._emit(llvm.SelectOp(self._emit(llvm.ICmpOp(adj_hi_raw, hi_incl, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64))), adj_hi_raw, hi_incl))
 
-            # loop: header(iv) -> body -> back-edge
-            r = blk.parent_region()
-            assert r is not None
-            hdr = Block(arg_types=[i64])
-            body = Block()
-            exit_ = Block()
-            r.add_block(hdr)
-            r.add_block(body)
-            self.builder.insert(BrOp(hdr, adj_lo))
-            self.builder = Builder(insertion_point=InsertPoint.at_end(hdr))
-            iv = hdr.args[0]
-            self.builder.insert(llvm.CondBrOp(self._emit(llvm.ICmpOp(iv, adj_hi, IntegerAttr(llvm.ICmpPredicateFlag.SLE.to_int(), i64))), body, [], exit_, []))
-            with self._scoped_state():  # body: bind iter, emit stmts, iv++
-                self.builder = Builder(insertion_point=InsertPoint.at_end(body))
-                self.symbol_table = ScopedDict(self._syms)
-                self.type_table = ScopedDict(self._types)
-                self._syms[repr(s.iter)] = self._emit(llvm.TruncOp(iv, lo.type)) if i64 != lo.type else iv
-                self._types[repr(s.iter)] = T.Index
-                for stmt in s.body:
-                    self._stmt(stmt)
-                self.builder.insert(BrOp(hdr, self._emit(llvm.AddOp(iv, c(1)))))
-            r.add_block(exit_)  # exit: static_fini + ret
-            self.builder = Builder(insertion_point=InsertPoint.at_end(exit_))
+            # loop over [adj_lo, adj_hi], then static_fini + ret
+            self._counted_loop(adj_lo, adj_hi, llvm.ICmpPredicateFlag.SLE, repr(s.iter), lo.type, s.body, lambda: self._int_const(1))
             self.builder.insert(llvm.CallOp("__kmpc_for_static_fini", self._emit(llvm.ZeroOp(result_types=[ptr])), self._emit(llvm.LoadOp(blk.args[0], i32))))
             self.builder.insert(llvm.ReturnOp())
         self._insert_at_module(llvm.FuncOp(oname, ftype, linkage=llvm.LinkageAttr("external"), body=region))
 
         # caller: fork_call(loc=null, argc, @outlined, lo*, hi*, ...shared_as_ptr)
-        args = [self._emit(llvm.ZeroOp(result_types=[ptr])), c(len(names) + 2, i32), self._emit(llvm.AddressOfOp(oname, ptr)), lo_p, hi_p]
+        args = [self._emit(llvm.ZeroOp(result_types=[ptr])), self._int_const(len(names) + 2, i32), self._emit(llvm.AddressOfOp(oname, ptr)), lo_p, hi_p]
         args += [self._emit(UnrealizedConversionCastOp.get([syms[n]], [ptr])) if syms[n].type != ptr else syms[n] for n in names]
         self.builder.insert(llvm.CallOp("__kmpc_fork_call", *args))
 
@@ -502,48 +458,12 @@ class IRGenerator:
         if isinstance(for_stmt.loop_mode, LoopIR.Par):
             return self._stmt_for_par(for_stmt)
 
-        # lower for loop to cf.br/cond_br with header, body, and exit blocks
         lo = self._expr(for_stmt.lo)
         hi = self._expr(for_stmt.hi)
         assert lo.type == hi.type
         assert isinstance(lo.type, IntegerType)
-        step = self._emit(llvm.ConstantOp(IntegerAttr(1, lo.type), lo.type))
-
-        region = self.builder.insertion_point.block.parent_region()
-        assert region is not None
-        header_block = Block(arg_types=[lo.type])
-        body_block = Block()
-        exit_block = Block()
-        region.add_block(header_block)
-        region.add_block(body_block)
-
-        # branch from current block to header with initial iv
-        self.builder.insert(BrOp(header_block, lo))
-
-        # header: condition check
-        self.builder = Builder(insertion_point=InsertPoint.at_end(header_block))
-        iv = header_block.args[0]
-        cond = self._emit(llvm.ICmpOp(iv, hi, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64)))
-        self.builder.insert(llvm.CondBrOp(cond, body_block, [], exit_block, []))
-
-        # body: emit loop body in a child symbol scope
-        with self._scoped_state():
-            self.builder = Builder(insertion_point=InsertPoint.at_end(body_block))
-            self.symbol_table = ScopedDict(self._syms)
-            self.type_table = ScopedDict(self._types)
-            self._syms[repr(for_stmt.iter)] = iv
-            self._types[repr(for_stmt.iter)] = T.Index
-
-            for stmt in for_stmt.body:
-                self._stmt(stmt)
-
-            # after body: increment iv and branch back to header
-            next_iv = self._emit(llvm.AddOp(iv, step))
-            self.builder.insert(BrOp(header_block, next_iv))
-
-        # continue at exit block
-        region.add_block(exit_block)
-        self.builder = Builder(insertion_point=InsertPoint.at_end(exit_block))
+        step = self._int_const(1, lo.type)
+        self._counted_loop(lo, hi, llvm.ICmpPredicateFlag.SLT, repr(for_stmt.iter), lo.type, for_stmt.body, lambda: step)
 
     def _stmt_alloc(self, alloc: LoopIR.Alloc) -> None:
         # lower alloc to llvm.call @malloc (dram) or llvm.alloca (stack)
@@ -561,15 +481,14 @@ class IRGenerator:
 
         if mem_name == "DRAM":
             elem_bytes = {f16: 2, f32: 4, f64: 8, i8: 1, i16: 2, i32: 4, i64: 8}[mlir_type.element_type]
-            size_val = self._emit(llvm.ConstantOp(IntegerAttr(total_elements * elem_bytes, i64), i64))  # malloc takes bytes
+            size_val = self._int_const(total_elements * elem_bytes)  # malloc takes bytes
             raw_ptr = self._emit(llvm.CallOp("malloc", size_val, return_type=llvm.LLVMPointerType()))
         else:
-            size_val = self._emit(llvm.ConstantOp(IntegerAttr(total_elements, i64), i64))  # alloca takes element count
+            size_val = self._int_const(total_elements)  # alloca takes element count
             raw_ptr = self._emit(llvm.AllocaOp(size_val, mlir_type.element_type))
 
         result = self._emit(UnrealizedConversionCastOp.get([raw_ptr], [mlir_type]))
         self._syms[repr(alloc.name)] = result
-        self._types[repr(alloc.name)] = alloc.type
 
     def _stmt_free(self, free: LoopIR.Free) -> None:
         # lower free to llvm.call @free (dram) or no-op (stack)
@@ -585,27 +504,14 @@ class IRGenerator:
         assert isinstance(stmt.rhs, LoopIR.WindowExpr) and isinstance(stmt.rhs.type, T.Window)
         result = self._expr_window(stmt.rhs)
         self._syms[repr(stmt.name)] = result
-        self._types[repr(stmt.name)] = stmt.rhs.type.as_tensor
 
-    @staticmethod
-    def _is_mutated(name: str, body: list[LoopIR.stmt]) -> bool:
-        return any(repr(sym) == name for sym, _ in get_writes_of_stmts(body))
-
-    @staticmethod
-    def _coerce_arg(arg_val: SSAValue, callee_arg: LoopIR.fnarg, callee_body: list[LoopIR.stmt], type_fn: Callable[[object, Attribute | None], Attribute], emit_fn: Callable[[Operation], SSAValue]) -> SSAValue:
-        # reconcile mlir type and shape mismatches (e.g. caller has memref<8xf32>, callee expects memref<?xf32>) via memref.cast
-        mem_space = StringAttr(callee_arg.mem.name()) if callee_arg.mem is not None else None
-        callee_type = type_fn(callee_arg.type, mem_space)
-
-        # scalars passed by reference (callee writes to them) must arrive as memref<1xt>
-        scalar_passed_by_ref = not isinstance(callee_type, MemRefType) and IRGenerator._is_mutated(repr(callee_arg.name), callee_body)
-        if scalar_passed_by_ref:
-            callee_type = MemRefType(callee_type, [1], NoneAttr())
-
-        if isinstance(arg_val.type, MemRefType) and isinstance(callee_type, MemRefType) and arg_val.type != callee_type:
-            return emit_fn(memref.CastOp.get(arg_val, callee_type))
-
-        return arg_val
+    def _arg_type(self, arg: LoopIR.fnarg, body: list[LoopIR.stmt]) -> Attribute:
+        # scalars passed by reference (the body writes to them) must arrive as memref<1xt>
+        mem_space = StringAttr(arg.mem.name()) if arg.mem is not None else None
+        mlir_type = self._to_mlir_type(arg.type, mem_space)
+        if not isinstance(mlir_type, MemRefType) and any(repr(sym) == repr(arg.name) for sym, _ in get_writes_of_stmts(body)):
+            mlir_type = MemRefType(mlir_type, [1], NoneAttr())
+        return mlir_type
 
     def _stmt_call(self, call: LoopIR.Call) -> None:
         # lower call to func.call. emit extern decl for intrinsics, recurse for procs
@@ -614,29 +520,23 @@ class IRGenerator:
             assert len(call.args) == len(call.f.args)
             args = []
             for arg, callee_arg in zip(call.args, call.f.args):
-                mem_space = StringAttr(callee_arg.mem.name()) if callee_arg.mem is not None else None
-                callee_type = self._to_mlir_type(callee_arg.type, mem_space)
-                scalar_passed_by_ref = not isinstance(callee_type, MemRefType) and self._is_mutated(repr(callee_arg.name), call.f.body)
-                if scalar_passed_by_ref:
+                callee_type = self._arg_type(callee_arg, call.f.body)
+                if isinstance(callee_type, MemRefType) and not callee_arg.type.is_tensor_or_window():
                     assert isinstance(arg, LoopIR.Read) and not arg.idx, "writable scalar call arguments must be scalar lvalues"
                     arg_val = self._syms[repr(arg.name)]
                     assert isinstance(arg_val.type, MemRefType)
                 else:
                     arg_val = self._expr(arg)
-                args.append(self._coerce_arg(arg_val, callee_arg, call.f.body, self._to_mlir_type, self._emit))
+                # reconcile mlir type and shape mismatches (e.g. caller has memref<8xf32>, callee expects memref<?xf32>) via memref.cast
+                if isinstance(arg_val.type, MemRefType) and isinstance(callee_type, MemRefType) and arg_val.type != callee_type:
+                    arg_val = self._emit(memref.CastOp.get(arg_val, callee_type))
+                args.append(arg_val)
         else:
             args = [self._expr(arg) for arg in call.args]
 
         if call.f.instr is not None and call.f.name not in self.seen_extern_decls:
             self.seen_extern_decls.add(call.f.name)
-            input_types = [SSAValue.get(arg).type for arg in args]
-            self._insert_at_module(
-                llvm.FuncOp(
-                    call.f.name,
-                    llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType()),
-                    llvm.LinkageAttr("external"),
-                )
-            )
+            self._insert_at_module(llvm.FuncOp(call.f.name, self._void_fn_type([SSAValue.get(arg).type for arg in args]), llvm.LinkageAttr("external")))
 
         self.builder.insert(llvm.CallOp(call.f.name, *args))
 
@@ -672,23 +572,15 @@ class IRGenerator:
             return
         self.seen_proc_names.add(procedure.name)
 
-        # build func signature: map each arg to its mlir type, wrapping mutated scalars in memref<1x>
-        input_types = []
-        for arg in procedure.args:
-            mem = StringAttr(arg.mem.name()) if arg.mem is not None else None
-            mlir_type = self._to_mlir_type(arg.type, mem)
-            if not isinstance(mlir_type, MemRefType) and self._is_mutated(repr(arg.name), procedure.body):
-                mlir_type = MemRefType(mlir_type, [1], NoneAttr())
-            input_types.append(mlir_type)
-        func_type = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType())
+        input_types = [self._arg_type(arg, procedure.body) for arg in procedure.args]
+        func_type = self._void_fn_type(input_types)
 
-        with self._scoped_state(inherit=False):
+        with self._scoped_state():
             block = Block(arg_types=input_types)
             func_region = Region(block)
             self.builder = Builder(insertion_point=InsertPoint.at_end(block))
 
             self.symbol_table = ScopedDict(local_scope={repr(arg.name): val for arg, val in zip(procedure.args, block.args)})
-            self.type_table = ScopedDict(local_scope={repr(arg.name): arg.type for arg in procedure.args})
 
             for stmt in procedure.body:
                 self._stmt(stmt)
@@ -722,25 +614,20 @@ def _context() -> Context:
 
 def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
     ctx = _context()
-
     module = IRGenerator().generate(procs)
+    _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
+    _simplify = lambda: (CanonicalizePass().apply(ctx, module), CommonSubexpressionElimination().apply(ctx, module), module.verify())
 
-    CanonicalizePass().apply(ctx, module)
-    CommonSubexpressionElimination().apply(ctx, module)
-    module.verify()
+    _simplify()
 
     # full lowering to llvm dialect
-    _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
     ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
     _rewrite([RewriteMemRefTypes()])  # memreftype -> llvm.ptr on all values
     _rewrite([ConvertVecIntrinsic()])  # vec_*/neon_* calls -> llvm ops
     ReconcileUnrealizedCastsPass().apply(ctx, module)  # fold paired unrealized casts
     module.verify()
 
-    CanonicalizePass().apply(ctx, module)
-    CommonSubexpressionElimination().apply(ctx, module)
-    module.verify()
-
+    _simplify()
     return module
 
 
