@@ -654,61 +654,72 @@ class LLVMBackend:
     _jit_backend = LLVMJITBackend(lowering=(), opt_level=3)
 
 
-class JITRuntime:
-    @staticmethod
-    def _eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
-        # resolve a dynamic tensor dimension against the size arguments seen so far
-        bounds = constant_bound(expr, {sym: (value, value) for sym, value in env.items()})
-        assert bounds is not None and bounds[0] is not None and bounds[0] == bounds[1], f"could not resolve dynamic tensor shape from {expr}"
-        return bounds[0]
+_JIT_C_TYPES = {"f32": "float", "f64": "double", "i8": "int8_t", "ui8": "uint8_t", "ui16": "uint16_t", "i32": "int32_t", "index": "int64_t", "size": "int64_t", "bool": "_Bool"}
 
-    @staticmethod
-    def _tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writable: bool) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], object]:
-        jit_tensor_c_types = {"f32": "float", "f64": "double", "i8": "int8_t", "ui8": "uint8_t", "ui16": "uint16_t", "i32": "int32_t", "index": "int64_t", "size": "int64_t", "bool": "_Bool"}
-        shape = tensor_type.shape()
-        basetype = str(tensor_type.basetype())
-        assert basetype in jit_tensor_c_types, f"unsupported JIT tensor dtype: {basetype}"
-        c_type = jit_tensor_c_types[basetype]
 
-        def is_seq(x: object) -> TypeGuard[Sequence[object]]:
-            return isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray, memoryview))
+def _is_seq(x: object) -> TypeGuard[Sequence[object]]:
+    return isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray, memoryview))
 
-        def linearize(value: Sequence[object], flat: list[object], leaves: list[tuple[MutableSequence[object], int]]) -> None:
-            assert not writable or isinstance(value, MutableSequence), f"argument {index + 1}: writable tensor args passed as Python sequences must be mutable at every level"
-            for i, item in enumerate(value):
-                if is_seq(item):
-                    linearize(item, flat, leaves)
-                else:
-                    flat.append(item)
-                    if writable:
-                        leaves.append((cast(MutableSequence[object], value), i))
 
-        def convert(value: object, shape_env: dict[object, int], keepalive: list[object], syncbacks: list[Callable[[], None]]) -> object:
-            assert not (isinstance(value, (bytes, bytearray, memoryview)) or (hasattr(value, "ndim") and hasattr(value, "dtype") and hasattr(value, "shape") and getattr(value, "ndim", 0) > 0)), f"argument {index + 1}: direct buffer inputs are not supported by jit(); pass Python lists/scalars or use jit(proc, raw=True)"
-            numel = math.prod(JITRuntime._eval_shape_expr(expr, shape_env) for expr in shape)
-            flat: list[object] = []
-            leaves: list[tuple[MutableSequence[object], int]] = []
-            if is_seq(value):
-                linearize(value, flat, leaves)
+def _flatten_seq(value: Sequence[object], writable: bool, arg_label: str) -> tuple[list[object], list[tuple[MutableSequence[object], int]]]:
+    """Recursively flatten a nested sequence into (flat_values, leaf_locations)."""
+    flat: list[object] = []
+    leaves: list[tuple[MutableSequence[object], int]] = []
+    stack: list[Sequence[object]] = [value]
+    while stack:
+        seq = stack.pop()
+        assert not writable or isinstance(seq, MutableSequence), f"{arg_label}: writable tensor args passed as Python sequences must be mutable at every level"
+        for i, item in enumerate(seq):
+            if _is_seq(item):
+                stack.append(item)
             else:
-                assert numel == 1, f"argument {index + 1}: expected {numel} values, got scalar {type(value).__name__}"
-                assert not writable, f"argument {index + 1}: writable scalar tensor args require a mutable sequence"
-                assert isinstance(value, numbers.Real), f"argument {index + 1}: expected scalar numeric data, got {type(value).__name__}"
-                flat.append(value)
-            assert len(flat) == numel, f"argument {index + 1}: expected {numel} values, got {len(flat)}"
-            buf = ffi.new(f"{c_type}[{numel}]", flat)
-            keepalive.append(buf)
-            if writable:
+                flat.append(item)
+                if writable:
+                    leaves.append((cast(MutableSequence[object], seq), i))
+    return flat, leaves
 
-                def sync() -> None:
-                    for offset, (target, idx) in enumerate(leaves):
-                        target[idx] = buf[offset]
 
-                syncbacks.append(sync)
-            return int(ffi.cast("uintptr_t", buf))
+def _eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
+    """Resolve a dynamic tensor dimension against the size arguments seen so far."""
+    bounds = constant_bound(expr, {sym: (value, value) for sym, value in env.items()})
+    assert bounds is not None and bounds[0] is not None and bounds[0] == bounds[1], f"could not resolve dynamic tensor shape from {expr}"
+    return bounds[0]
 
-        return convert
 
+def _make_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writable: bool) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], object]:
+    """Build one argument converter for tensor or window inputs."""
+    shape = tensor_type.shape()
+    basetype = str(tensor_type.basetype())
+    assert basetype in _JIT_C_TYPES, f"unsupported JIT tensor dtype: {basetype}"
+    c_type = _JIT_C_TYPES[basetype]
+    label = f"argument {index + 1}"
+
+    def convert(value: object, shape_env: dict[object, int], keepalive: list[object], syncbacks: list[Callable[[], None]]) -> object:
+        assert not (isinstance(value, (bytes, bytearray, memoryview)) or (hasattr(value, "ndim") and hasattr(value, "dtype") and hasattr(value, "shape") and getattr(value, "ndim", 0) > 0)), f"{label}: direct buffer inputs are not supported by jit(); pass Python lists/scalars or use jit(proc, raw=True)"
+        numel = math.prod(_eval_shape_expr(expr, shape_env) for expr in shape)
+        if _is_seq(value):
+            flat, leaves = _flatten_seq(value, writable, label)
+        else:
+            assert numel == 1, f"{label}: expected {numel} values, got scalar {type(value).__name__}"
+            assert not writable, f"{label}: writable scalar tensor args require a mutable sequence"
+            assert isinstance(value, numbers.Real), f"{label}: expected scalar numeric data, got {type(value).__name__}"
+            flat, leaves = [value], []
+        assert len(flat) == numel, f"{label}: expected {numel} values, got {len(flat)}"
+        buf = ffi.new(f"{c_type}[{numel}]", flat)
+        keepalive.append(buf)
+        if writable:
+
+            def _sync(buf=buf, leaves=leaves) -> None:
+                for offset, (target, idx) in enumerate(leaves):
+                    target[idx] = buf[offset]
+
+            syncbacks.append(_sync)
+        return int(ffi.cast("uintptr_t", buf))
+
+    return convert
+
+
+class JITRuntime:
     @staticmethod
     def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
         mlir_module = to_mlir(proc)
@@ -740,7 +751,7 @@ class JITRuntime:
 
                 converters.append(convert)
             else:
-                converters.append(JITRuntime._tensor_converter(ffi=ffi, index=i, tensor_type=arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type, writable=kind))
+                converters.append(_make_tensor_converter(ffi=ffi, index=i, tensor_type=arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type, writable=kind))
 
         def wrapped(*args, **kwargs):
             args = tuple(kwargs[name] for name in names) if kwargs else args
