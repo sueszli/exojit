@@ -522,31 +522,200 @@ class IRGenerator:
         return self.module
 
 
-@cache
-def _context() -> Context:
-    ctx = Context()
-    ctx.load_dialect(Builtin)
-    ctx.load_dialect(llvm.LLVM)
-    ctx.load_dialect(memref.MemRef)
-    return ctx
+class LLVMBackend:
+    @staticmethod
+    @cache
+    def _context() -> Context:
+        ctx = Context()
+        ctx.load_dialect(Builtin)
+        ctx.load_dialect(llvm.LLVM)
+        ctx.load_dialect(memref.MemRef)
+        return ctx
+
+    @staticmethod
+    def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
+        ctx = LLVMBackend._context()
+        module = IRGenerator().generate(procs)
+        _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
+        _simplify = lambda: (CanonicalizePass().apply(ctx, module), CommonSubexpressionElimination().apply(ctx, module), module.verify())
+
+        _simplify()
+
+        # full lowering to llvm dialect
+        ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
+        _rewrite([RewriteMemRefTypes()])  # memreftype -> llvm.ptr on all values
+        ReconcileUnrealizedCastsPass().apply(ctx, module)  # fold paired unrealized casts
+        module.verify()
+
+        _simplify()
+        return module
+
+    @staticmethod
+    def _target_machine() -> llvmlite.binding.TargetMachine:
+        # llvmlite target machines are not safe to reuse after MCJIT compilation.
+        # do not cache to avoid stale target-data pointers during later `--asm` runs.
+        return llvmlite.binding.Target.from_default_triple().create_target_machine(cpu=llvmlite.binding.get_host_cpu_name(), features=llvmlite.binding.get_host_cpu_features().flatten(), opt=3)
+
+    @staticmethod
+    def _to_llvm_ir(module: ModuleOp) -> str:
+        # xdsl mlir (llvm dialect) -> llvm ir text, pinned to the host target
+        module = module.clone()
+        for func_op in module.ops:
+            # noalias lets llvm's loop vectorizer assume buffers do not overlap
+            assert isinstance(func_op, llvm.FuncOp)
+            func_op.arg_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(input_type, llvm.LLVMPointerType) else {}) for input_type in func_op.function_type.inputs])
+        tm = LLVMBackend._target_machine()
+        return str(convert_module(module, fallback_target_triple=tm.triple, data_layout=str(tm.target_data)))
+
+    @staticmethod
+    def _to_llvmlite_moduleref(ir: str) -> tuple[llvmlite.binding.ModuleRef, llvmlite.binding.TargetMachine]:
+        mod_ref = llvmlite.binding.parse_assembly(ir)
+        tm = LLVMBackend._target_machine()
+        pto = llvmlite.binding.PipelineTuningOptions(speed_level=3)
+        pto.slp_vectorization = True
+        pb = llvmlite.binding.create_pass_builder(tm, pto)
+        pb.getModulePassManager().run(mod_ref, pb)
+        return mod_ref, tm
+
+    @staticmethod
+    def _disk_cache(name: object, generate: Callable[[], str]) -> str:
+        # hash all compiler sources -> .cache/exojit/{hash}/. auto-invalidates when compiler code changes.
+        src_dir = Path(__file__).resolve().parent
+        cache_dir = src_dir.parent / ".cache" / "exojit" / hashlib.sha256(b"".join(f.read_bytes() for f in sorted(src_dir.glob("*.py")))).hexdigest()[:12]
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / f"{name}.ll"
+        if not path.exists():
+            path.write_text(generate())
+        return path.read_text()
 
 
-def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
-    ctx = _context()
-    module = IRGenerator().generate(procs)
-    _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
-    _simplify = lambda: (CanonicalizePass().apply(ctx, module), CommonSubexpressionElimination().apply(ctx, module), module.verify())
+class JITRuntime:
+    @staticmethod
+    @cache
+    def _c_type_context() -> CTypeContext:
+        ctx = CTypeContext()
+        register_builtin_types(ctx)
+        register_llvm_types(ctx)
+        return ctx
 
-    _simplify()
+    @staticmethod
+    def _c_signature(module: ModuleOp, name: str) -> str:
+        # cffi abi declaration for the entry point, derived from its llvm function type
+        func_op = SymbolTable.lookup_symbol(module, name)
+        assert isinstance(func_op, llvm.FuncOp)
+        signature = to_c_func_type(JITRuntime._c_type_context(), func_op.function_type)
+        return f"{signature.output}(*)({', '.join(signature.inputs) or 'void'})"
 
-    # full lowering to llvm dialect
-    ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
-    _rewrite([RewriteMemRefTypes()])  # memreftype -> llvm.ptr on all values
-    ReconcileUnrealizedCastsPass().apply(ctx, module)  # fold paired unrealized casts
-    module.verify()
+    @staticmethod
+    def _eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
+        # resolve a dynamic tensor dimension against the size arguments seen so far
+        bounds = constant_bound(expr, {sym: (value, value) for sym, value in env.items()})
+        assert bounds is not None and bounds[0] is not None and bounds[0] == bounds[1], f"could not resolve dynamic tensor shape from {expr}"
+        return bounds[0]
 
-    _simplify()
-    return module
+    @staticmethod
+    def _tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writable: bool) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], object]:
+        # build one argument converter for tensor or window inputs
+        jit_tensor_c_types = {"f32": "float", "f64": "double", "i8": "int8_t", "ui8": "uint8_t", "ui16": "uint16_t", "i32": "int32_t", "index": "int64_t", "size": "int64_t", "bool": "_Bool"}
+        shape = tensor_type.shape()
+        basetype = str(tensor_type.basetype())
+        assert basetype in jit_tensor_c_types, f"unsupported JIT tensor dtype: {basetype}"
+        c_type = jit_tensor_c_types[basetype]
+
+        def is_seq(x: object) -> TypeGuard[Sequence[object]]:
+            return isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray, memoryview))
+
+        def linearize(value: Sequence[object], flat: list[object], leaves: list[tuple[MutableSequence[object], int]]) -> None:
+            assert not writable or isinstance(value, MutableSequence), f"argument {index + 1}: writable tensor args passed as Python sequences must be mutable at every level"
+            for i, item in enumerate(value):
+                if is_seq(item):
+                    linearize(item, flat, leaves)
+                else:
+                    flat.append(item)
+                    if writable:
+                        leaves.append((cast(MutableSequence[object], value), i))
+
+        def convert(value: object, shape_env: dict[object, int], keepalive: list[object], syncbacks: list[Callable[[], None]]) -> object:
+            assert not (isinstance(value, (bytes, bytearray, memoryview)) or (hasattr(value, "ndim") and hasattr(value, "dtype") and hasattr(value, "shape") and getattr(value, "ndim", 0) > 0)), f"argument {index + 1}: direct buffer inputs are not supported by jit(); pass Python lists/scalars or use jit(proc, raw=True)"
+            numel = math.prod(JITRuntime._eval_shape_expr(expr, shape_env) for expr in shape)
+            flat: list[object] = []
+            leaves: list[tuple[MutableSequence[object], int]] = []
+            if is_seq(value):
+                linearize(value, flat, leaves)
+            else:
+                assert numel == 1, f"argument {index + 1}: expected {numel} values, got scalar {type(value).__name__}"
+                assert not writable, f"argument {index + 1}: writable scalar tensor args require a mutable sequence"
+                assert isinstance(value, numbers.Real), f"argument {index + 1}: expected scalar numeric data, got {type(value).__name__}"
+                flat.append(value)
+            assert len(flat) == numel, f"argument {index + 1}: expected {numel} values, got {len(flat)}"
+
+            buf = ffi.new(f"{c_type}[{numel}]", flat)
+            keepalive.append(buf)
+            if writable:
+
+                def sync() -> None:
+                    for offset, (target, idx) in enumerate(leaves):
+                        target[idx] = buf[offset]
+
+                syncbacks.append(sync)
+            return int(ffi.cast("uintptr_t", buf))
+
+        return convert
+
+    @staticmethod
+    def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
+        mlir_module = to_mlir(proc)
+        ir_text = LLVMBackend._disk_cache(hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16], lambda: LLVMBackend._to_llvm_ir(mlir_module))
+        mod_ref, tm = LLVMBackend._to_llvmlite_moduleref(ir_text)
+
+        engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
+        engine.finalize_object()
+        engine.run_static_constructors()
+
+        ir_args = proc._loopir_proc.args
+        for arg in ir_args:
+            assert arg.type.is_tensor_or_window() or isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)), f"unsupported JIT argument type for {arg.name}: {arg.type}"
+        written = {sym for sym, _ in get_writes_of_stmts(proc._loopir_proc.body)}  # Exo resolves window and callee writes when classifying pointer mutability
+        kinds = [arg.name in written if arg.type.is_tensor_or_window() else None for arg in ir_args]  # None: passed by value, False/True: pointer, writable or not
+
+        ffi = FFI()
+        address = engine.get_function_address(proc.name())
+        assert address, f"no address for symbol after compilation: {proc.name()}"
+        fn = ffi.cast(JITRuntime._c_signature(mlir_module, proc.name()), address)
+
+        def call(*args) -> None:
+            fn(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
+
+        # mcjit owns the jitted code, so the engine has to outlive every call into it
+        cast(Any, call)._engine = engine
+
+        names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in ir_args]
+        if raw:
+            wrapped = lambda *args, **kwargs: call(*(tuple(kwargs[name] for name in names) if kwargs else args))
+            cast(Any, wrapped)._raw = call
+            return wrapped
+
+        converters = []
+        for i, (arg, kind) in enumerate(zip(ir_args, kinds, strict=True)):
+            if kind is None:
+
+                def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=arg.name) -> int:
+                    shape_env[name] = converted = int(value)
+                    return converted
+
+                converters.append(convert)
+            else:
+                converters.append(JITRuntime._tensor_converter(ffi=ffi, index=i, tensor_type=arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type, writable=kind))
+
+        def wrapped(*args, **kwargs):
+            args = tuple(kwargs[name] for name in names) if kwargs else args
+            shape_env, keepalive, syncbacks = {}, [], []
+            call(*[conv(arg, shape_env, keepalive, syncbacks) for conv, arg in zip(converters, args, strict=True)])
+            for sync in syncbacks:
+                sync()
+
+        cast(Any, wrapped)._raw = call
+        return wrapped
 
 
 def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
@@ -562,176 +731,11 @@ def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
         proc = WindowAnalysis().apply_proc(proc)
         return MemoryAnalysis().run(proc)
 
-    return _lower([exo_analyze(proc) for proc in unique_procs])
+    return LLVMBackend._lower([exo_analyze(proc) for proc in unique_procs])
 
 
 llvmlite.binding.initialize_native_target()
 llvmlite.binding.initialize_native_asmprinter()
-
-
-def _target_machine() -> llvmlite.binding.TargetMachine:
-    # llvmlite target machines are not safe to reuse after MCJIT compilation.
-    # do not cache to avoid stale target-data pointers during later `--asm` runs.
-    return llvmlite.binding.Target.from_default_triple().create_target_machine(cpu=llvmlite.binding.get_host_cpu_name(), features=llvmlite.binding.get_host_cpu_features().flatten(), opt=3)
-
-
-def _to_llvm_ir(module: ModuleOp) -> str:
-    # xdsl mlir (llvm dialect) -> llvm ir text, pinned to the host target
-    module = module.clone()
-    for func_op in module.ops:
-        # noalias lets llvm's loop vectorizer assume buffers do not overlap
-        assert isinstance(func_op, llvm.FuncOp)
-        func_op.arg_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(input_type, llvm.LLVMPointerType) else {}) for input_type in func_op.function_type.inputs])
-    tm = _target_machine()
-    return str(convert_module(module, fallback_target_triple=tm.triple, data_layout=str(tm.target_data)))
-
-
-def _to_llvmlite_moduleref(ir: str) -> tuple[llvmlite.binding.ModuleRef, llvmlite.binding.TargetMachine]:
-    mod_ref = llvmlite.binding.parse_assembly(ir)
-    tm = _target_machine()
-    pto = llvmlite.binding.PipelineTuningOptions(speed_level=3)
-    pto.slp_vectorization = True
-    pb = llvmlite.binding.create_pass_builder(tm, pto)
-    pb.getModulePassManager().run(mod_ref, pb)
-    return mod_ref, tm
-
-
-def _disk_cache(name: object, generate: Callable[[], str]) -> str:
-    # hash all compiler sources -> .cache/exojit/{hash}/. auto-invalidates when compiler code changes.
-    src_dir = Path(__file__).resolve().parent
-    cache_dir = src_dir.parent / ".cache" / "exojit" / hashlib.sha256(b"".join(f.read_bytes() for f in sorted(src_dir.glob("*.py")))).hexdigest()[:12]
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    path = cache_dir / f"{name}.ll"
-    if not path.exists():
-        path.write_text(generate())
-    return path.read_text()
-
-
-@cache
-def _c_type_context() -> CTypeContext:
-    ctx = CTypeContext()
-    register_builtin_types(ctx)
-    register_llvm_types(ctx)
-    return ctx
-
-
-def _c_signature(module: ModuleOp, name: str) -> str:
-    # cffi abi declaration for the entry point, derived from its llvm function type
-    func_op = SymbolTable.lookup_symbol(module, name)
-    assert isinstance(func_op, llvm.FuncOp)
-    signature = to_c_func_type(_c_type_context(), func_op.function_type)
-    return f"{signature.output}(*)({', '.join(signature.inputs) or 'void'})"
-
-
-def _jit_eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
-    # resolve a dynamic tensor dimension against the size arguments seen so far
-    bounds = constant_bound(expr, {sym: (value, value) for sym, value in env.items()})
-    assert bounds is not None and bounds[0] is not None and bounds[0] == bounds[1], f"could not resolve dynamic tensor shape from {expr}"
-    return bounds[0]
-
-
-def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writable: bool) -> Callable[[object, dict[object, int], list[object], list[Callable[[], None]]], object]:
-    # build one argument converter for tensor or window inputs
-    jit_tensor_c_types = {"f32": "float", "f64": "double", "i8": "int8_t", "ui8": "uint8_t", "ui16": "uint16_t", "i32": "int32_t", "index": "int64_t", "size": "int64_t", "bool": "_Bool"}
-    shape = tensor_type.shape()
-    basetype = str(tensor_type.basetype())
-    assert basetype in jit_tensor_c_types, f"unsupported JIT tensor dtype: {basetype}"
-    c_type = jit_tensor_c_types[basetype]
-
-    def is_seq(x: object) -> TypeGuard[Sequence[object]]:
-        return isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray, memoryview))
-
-    def linearize(value: Sequence[object], flat: list[object], leaves: list[tuple[MutableSequence[object], int]]) -> None:
-        assert not writable or isinstance(value, MutableSequence), f"argument {index + 1}: writable tensor args passed as Python sequences must be mutable at every level"
-        for i, item in enumerate(value):
-            if is_seq(item):
-                linearize(item, flat, leaves)
-            else:
-                flat.append(item)
-                if writable:
-                    leaves.append((cast(MutableSequence[object], value), i))
-
-    def convert(value: object, shape_env: dict[object, int], keepalive: list[object], syncbacks: list[Callable[[], None]]) -> object:
-        assert not (isinstance(value, (bytes, bytearray, memoryview)) or (hasattr(value, "ndim") and hasattr(value, "dtype") and hasattr(value, "shape") and getattr(value, "ndim", 0) > 0)), f"argument {index + 1}: direct buffer inputs are not supported by jit(); pass Python lists/scalars or use jit(proc, raw=True)"
-        numel = math.prod(_jit_eval_shape_expr(expr, shape_env) for expr in shape)
-        flat: list[object] = []
-        leaves: list[tuple[MutableSequence[object], int]] = []
-        if is_seq(value):
-            linearize(value, flat, leaves)
-        else:
-            assert numel == 1, f"argument {index + 1}: expected {numel} values, got scalar {type(value).__name__}"
-            assert not writable, f"argument {index + 1}: writable scalar tensor args require a mutable sequence"
-            assert isinstance(value, numbers.Real), f"argument {index + 1}: expected scalar numeric data, got {type(value).__name__}"
-            flat.append(value)
-        assert len(flat) == numel, f"argument {index + 1}: expected {numel} values, got {len(flat)}"
-
-        buf = ffi.new(f"{c_type}[{numel}]", flat)
-        keepalive.append(buf)
-        if writable:
-
-            def sync() -> None:
-                for offset, (target, idx) in enumerate(leaves):
-                    target[idx] = buf[offset]
-
-            syncbacks.append(sync)
-        return int(ffi.cast("uintptr_t", buf))
-
-    return convert
-
-
-def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
-    mlir_module = to_mlir(proc)
-    ir_text = _disk_cache(hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16], lambda: _to_llvm_ir(mlir_module))
-    mod_ref, tm = _to_llvmlite_moduleref(ir_text)
-
-    engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
-    engine.finalize_object()
-    engine.run_static_constructors()
-
-    ir_args = proc._loopir_proc.args
-    for arg in ir_args:
-        assert arg.type.is_tensor_or_window() or isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)), f"unsupported JIT argument type for {arg.name}: {arg.type}"
-    written = {sym for sym, _ in get_writes_of_stmts(proc._loopir_proc.body)}  # Exo resolves window and callee writes when classifying pointer mutability
-    kinds = [arg.name in written if arg.type.is_tensor_or_window() else None for arg in ir_args]  # None: passed by value, False/True: pointer, writable or not
-
-    ffi = FFI()
-    address = engine.get_function_address(proc.name())
-    assert address, f"no address for symbol after compilation: {proc.name()}"
-    fn = ffi.cast(_c_signature(mlir_module, proc.name()), address)
-
-    def call(*args) -> None:
-        fn(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
-
-    # mcjit owns the jitted code, so the engine has to outlive every call into it
-    cast(Any, call)._engine = engine
-
-    names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in ir_args]
-    if raw:
-        wrapped = lambda *args, **kwargs: call(*(tuple(kwargs[name] for name in names) if kwargs else args))
-        cast(Any, wrapped)._raw = call
-        return wrapped
-
-    converters = []
-    for i, (arg, kind) in enumerate(zip(ir_args, kinds, strict=True)):
-        if kind is None:
-
-            def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=arg.name) -> int:
-                shape_env[name] = converted = int(value)
-                return converted
-
-            converters.append(convert)
-        else:
-            converters.append(_jit_tensor_converter(ffi=ffi, index=i, tensor_type=arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type, writable=kind))
-
-    def wrapped(*args, **kwargs):
-        args = tuple(kwargs[name] for name in names) if kwargs else args
-        shape_env, keepalive, syncbacks = {}, [], []
-        call(*[conv(arg, shape_env, keepalive, syncbacks) for conv, arg in zip(converters, args, strict=True)])
-        for sync in syncbacks:
-            sync()
-
-    cast(Any, wrapped)._raw = call
-    return wrapped
 
 
 def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedure] | None = None):
@@ -745,7 +749,7 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
         proc = Procedure(parser.result())
     if optimize:
         proc = optimize(proc)
-    return _jit_compile(proc, raw=raw)
+    return JITRuntime.compile(proc, raw=raw)
 
 
 def _dedup_proc_names(user_module: object) -> list[Procedure]:
@@ -772,7 +776,7 @@ def cli(source: Path, fmt: Literal["c", "mlir", "asm"] | None):
             text = str(to_mlir(procs))
         case "asm":
             # xdsl mlir -> native assembly text
-            mod_ref, tm = _to_llvmlite_moduleref(_to_llvm_ir(to_mlir(procs)))
+            mod_ref, tm = LLVMBackend._to_llvmlite_moduleref(LLVMBackend._to_llvm_ir(to_mlir(procs)))
             text = tm.emit_assembly(mod_ref)
 
     click.echo(text)
