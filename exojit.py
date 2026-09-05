@@ -715,37 +715,113 @@ class JITRuntime:
         raw_jit = LLVMBackend._jit_backend.jit(mlir_module, proc.name(), LLVMBackend._context())
         fn = raw_jit.c_func
         ir_args = proc._loopir_proc.args
-        for arg in ir_args:
-            assert arg.type.is_tensor_or_window() or isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)), f"unsupported JIT argument type for {arg.name}: {arg.type}"
-        written = {sym for sym, _ in get_writes_of_stmts(proc._loopir_proc.body)}  # Exo resolves window and callee writes when classifying pointer mutability
-        kinds = [arg.name in written if arg.type.is_tensor_or_window() else None for arg in ir_args]  # None: passed by value, False/True: pointer, writable or not
         ffi = FFI()
 
-        def call(*args) -> None:
-            fn(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
+        # Validate argument types and classify mutability.
+        # kinds: None = passed by value, True/False = pointer (writable or not)
+        _scalar_types = (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)
+        for arg in ir_args:
+            assert arg.type.is_tensor_or_window() or isinstance(arg.type, _scalar_types), f"unsupported JIT argument type for {arg.name}: {arg.type}"
+        # Exo resolves window and callee writes when classifying pointer mutability
+        written = {sym for sym, _ in get_writes_of_stmts(proc._loopir_proc.body)}
+        kinds = [arg.name in written if arg.type.is_tensor_or_window() else None for arg in ir_args]
 
-        cast(Any, call)._raw_jit = raw_jit  # mcjit owns the jitted code, so the raw_jit (which retains the engine) must outlive every call
+        # Build the low-level call wrapper.
+        # mcjit owns the jitted code, so the raw_jit (which retains the
+        # engine) must outlive every call — we pin it on the closure.
+        call = JITRuntime._make_raw_caller(fn, ffi, kinds)
+        cast(Any, call)._raw_jit = raw_jit
+
+        # Clean Exo name suffixes (e.g. "n_3" -> "n") for kwarg dispatch.
         names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in ir_args]
+
         if raw:
-            wrapped = lambda *args, **kwargs: call(*(tuple(kwargs[name] for name in names) if kwargs else args))
-            cast(Any, wrapped)._raw = call
-            return wrapped
-        converters = []
+            return JITRuntime._wrap_raw(call, names)
+
+        converters = JITRuntime._build_converters(ir_args, kinds, ffi)
+        return JITRuntime._wrap_with_converters(call, names, converters)
+
+    # ------------------------------------------------------------------
+    # Private helpers used by compile()
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_raw_caller(fn: Callable[..., None], ffi: FFI, kinds: list[bool | None]) -> Callable[..., None]:
+        """Wrap the C function pointer so each arg is coerced correctly."""
+
+        def _coerce_arg(arg: object, kind: bool | None) -> object:
+            if kind is None:
+                return arg
+            if isinstance(arg, int):
+                return ffi.cast("void *", arg)
+            return ffi.from_buffer(cast(Any, arg), require_writable=kind)
+
+        def call(*args: object) -> None:
+            fn(*[_coerce_arg(arg, kind) for arg, kind in zip(args, kinds, strict=True)])
+
+        return call
+
+    @staticmethod
+    def _wrap_raw(call: Callable[..., None], names: list[str]) -> Callable[..., None]:
+        """Return a thin wrapper that resolves kwargs by name."""
+
+        def wrapped(*args: object, **kwargs: object) -> None:
+            positional = tuple(kwargs[n] for n in names) if kwargs else args
+            call(*positional)
+
+        cast(Any, wrapped)._raw = call
+        return wrapped
+
+    @staticmethod
+    def _build_converters(
+        ir_args: Sequence[LoopIR.fnarg],
+        kinds: list[bool | None],
+        ffi: FFI,
+    ) -> list[Callable[..., object]]:
+        """Build one converter per argument (scalar or tensor)."""
+        converters: list[Callable[..., object]] = []
         for i, (arg, kind) in enumerate(zip(ir_args, kinds, strict=True)):
             if kind is None:
-
-                def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=arg.name) -> int:
-                    shape_env[name] = converted = int(value)
-                    return converted
-
-                converters.append(convert)
+                converters.append(JITRuntime._scalar_converter(arg.name))
             else:
-                converters.append(JITRuntime._tensor_converter(ffi=ffi, index=i, tensor_type=arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type, writable=kind))
+                tensor_type = arg.type.as_tensor if isinstance(arg.type, T.Window) else cast(T.Tensor, arg.type)
+                converters.append(JITRuntime._tensor_converter(ffi=ffi, index=i, tensor_type=tensor_type, writable=kind))
+        return converters
 
-        def wrapped(*args, **kwargs):
-            args = tuple(kwargs[name] for name in names) if kwargs else args
-            shape_env, keepalive, syncbacks = {}, [], []
-            call(*[conv(arg, shape_env, keepalive, syncbacks) for conv, arg in zip(converters, args, strict=True)])
+    @staticmethod
+    def _scalar_converter(
+        name: object,
+    ) -> Callable[
+        [SupportsInt | str, dict[object, int], list[object], list[Callable[[], None]]],
+        int,
+    ]:
+        """Return a converter that casts to int and records into shape_env."""
+
+        def convert(
+            value: SupportsInt | str,
+            shape_env: dict[object, int],
+            _keepalive: list[object],
+            _syncbacks: list[Callable[[], None]],
+        ) -> int:
+            shape_env[name] = converted = int(value)
+            return converted
+
+        return convert
+
+    @staticmethod
+    def _wrap_with_converters(
+        call: Callable[..., None],
+        names: list[str],
+        converters: list[Callable[..., object]],
+    ) -> Callable[..., None]:
+        """Return the full wrapper that converts Python values before calling."""
+
+        def wrapped(*args: object, **kwargs: object) -> None:
+            positional = tuple(kwargs[n] for n in names) if kwargs else args
+            shape_env: dict[object, int] = {}
+            keepalive: list[object] = []
+            syncbacks: list[Callable[[], None]] = []
+            call(*[conv(arg, shape_env, keepalive, syncbacks) for conv, arg in zip(converters, positional, strict=True)])
             for sync in syncbacks:
                 sync()
 
