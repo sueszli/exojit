@@ -8,7 +8,7 @@ precommit-hook:
 
 .PHONY: fmt
 fmt:
-	uvx ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016 exojit.py microgpt tests example.py
+	uvx ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016,PLC0206,SIM115 exojit.py microgpt tests example.py
 	uvx ruff format --line-length 5000 --target-version py314 exojit.py microgpt tests example.py
 
 .PHONY: lint
@@ -18,7 +18,7 @@ lint:
 
 .PHONY: microgpt
 microgpt:
-	uv run python microgpt/parity.py
+	uv run python microgpt/exojit_impl.py
 
 .PHONY: tests
 tests:
@@ -34,7 +34,13 @@ precommit:
 	$(MAKE) microgpt
 	$(MAKE) tests
 
-.PHONY: kernels
-kernels:
+.PHONY: benchmark
+benchmark:
 	uv sync
+	uv run python microgpt/original_impl.py
+	uv run python microgpt/plain_impl.py
+	uv run python microgpt/numpy_impl.py
+	uv run python microgpt/torch_impl.py
+	uv run python microgpt/jax_impl.py
+	uv run python microgpt/exojit_impl.py
 	uv run python microgpt/kernels/run.py
