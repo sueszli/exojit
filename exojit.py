@@ -252,6 +252,7 @@ class RewriteMemRefTypes(TypeConversionPattern):
     def convert_type(self, type: MemRefType) -> llvm.LLVMPointerType:
         return llvm.LLVMPointerType()
 
+
 # ===----------------------------------------------------------------------=== #
 # exojit
 # ===----------------------------------------------------------------------=== #

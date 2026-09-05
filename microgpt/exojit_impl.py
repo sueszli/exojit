@@ -1,17 +1,7 @@
-# /// script
-# requires-python = "==3.14.*"
-# dependencies = [
-#   "exojit @ git+https://github.com/sueszli/exojit",
-# ]
-# ///
-
 from __future__ import annotations
 
 import csv
 import ctypes
-import itertools
-import json
-import math
 import random
 import time
 from itertools import accumulate
@@ -22,6 +12,7 @@ from exo import *
 from exo.libs.externs import expf, select, sqrt
 from exo.libs.memories import DRAM_STACK
 from exo.stdlib.scheduling import simplify
+from utils import assert_weights_match
 
 from exojit import jit
 
@@ -38,7 +29,6 @@ CAUSAL_MASK_VALUE = -1e10
 ATTN_SCALE = 1.0 / HEAD_DIM**0.5
 INV_N = 1.0 / N_EMBED
 
-WEIGHTS_PATH = Path(__file__).resolve().parent / "weights.json"
 TIMES_PATH = Path(__file__).resolve().parent / "times.csv"
 
 
@@ -416,43 +406,6 @@ def train_loop(vocab_size: size, total_params: size, emb: f64[BLOCK_SIZE, N_EMBE
         attention_layer_bwd(dx1, g_attn_wq, g_attn_wk, g_attn_wv, g_attn_wo, dattn_out, dx0, x0, attn_xn, attn_rms, q, k, v, attn_w, out_flat, dq, dk, dv, attn_wq, attn_wk, attn_wv, attn_wo)
         embed_layer_bwd(vocab_size, step, g_wte, g_wpe, dx1, emb, rms_init, all_input_ids)
         adam(total_params, flat_params, flat_grads, opt_m, opt_v, lr, beta1_t, beta2_t)
-
-
-#
-# assertions
-#
-
-
-def assert_weights_match(state_dict, atol: float = 1e-5) -> None:
-    assert WEIGHTS_PATH.exists(), f"weights file not found: {WEIGHTS_PATH}"
-
-    with WEIGHTS_PATH.open() as f:
-        ref = json.load(f)
-    cur = {k: [[v for v in row] for row in mat] for k, mat in state_dict.items()}
-    assert set(ref) == set(cur), f"key mismatch: ref={set(ref) - set(cur)} cur={set(cur) - set(ref)}"
-
-    for k in ref:
-        assert len(ref[k]) == len(cur[k]) and len(ref[k][0]) == len(cur[k][0]), f"shape mismatch '{k}': {len(ref[k])}x{len(ref[k][0])} vs {len(cur[k])}x{len(cur[k][0])}"
-
-    max_diff = 0.0
-    max_loc = ""
-    violations = 0
-    total = 0
-    rows = ((k, i, rr, cr) for k in ref for i, (rr, cr) in enumerate(zip(ref[k], cur[k])))
-    all_cells = itertools.chain.from_iterable(((k, i, j, r, c) for j, (r, c) in enumerate(zip(rr, cr))) for k, i, rr, cr in rows)
-    nan_loc = ""
-    for k, i, j, r, c in all_cells:
-        d = abs(r - c)
-        total += 1
-        if d <= atol:
-            continue
-        violations += 1
-        if math.isnan(d):
-            nan_loc = nan_loc or f"{k}[{i}][{j}]"
-        elif d > max_diff:
-            max_diff, max_loc = d, f"{k}[{i}][{j}]"
-    detail = f"first nan at {nan_loc}" if nan_loc else f"max diff={max_diff:.2e} at {max_loc}"
-    assert violations == 0, f"weights mismatch (atol={atol}): {violations}/{total} params exceed tolerance, {detail}"
 
 
 def assert_no_perf_regression(actual_us: float, tolerance: float = 0.20) -> None:
