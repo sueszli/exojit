@@ -705,7 +705,8 @@ class IRGenerator:
 
             self.builder.insert(llvm.ReturnOp())
 
-        self._insert_at_module(llvm.FuncOp(procedure.name, func_type, linkage=llvm.LinkageAttr("external"), body=func_region))
+        noalias_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(t, LLVMPointerType) else {}) for t in input_types])
+        self._insert_at_module(llvm.FuncOp(procedure.name, func_type, linkage=llvm.LinkageAttr("external"), body=func_region, other_props={"arg_attrs": noalias_attrs}))
 
     def generate(self, procs: list[LoopIR.proc]) -> ModuleOp:
         for proc in procs:
@@ -743,15 +744,6 @@ class LLVMBackend:
         return module
 
     _jit_backend = LLVMJITBackend(lowering=(), opt_level=3)
-
-    @staticmethod
-    def _annotate_noalias(module: ModuleOp) -> ModuleOp:
-        # noalias lets llvm's loop vectorizer assume buffers do not overlap
-        module = module.clone()
-        for func_op in module.ops:
-            assert isinstance(func_op, llvm.FuncOp)
-            func_op.arg_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(input_type, llvm.LLVMPointerType) else {}) for input_type in func_op.function_type.inputs])
-        return module
 
 
 class JITRuntime:
@@ -813,7 +805,7 @@ class JITRuntime:
 
     @staticmethod
     def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
-        mlir_module = LLVMBackend._annotate_noalias(to_mlir(proc))
+        mlir_module = to_mlir(proc)
         raw_jit = LLVMBackend._jit_backend.jit(mlir_module, proc.name(), LLVMBackend._context())
         fn = raw_jit.c_func
 
