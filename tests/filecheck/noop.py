@@ -8,7 +8,6 @@
 # CHECK-NEXT:   llvm.func @free(!llvm.ptr)
 # CHECK-NEXT: }
 
-
 from __future__ import annotations
 
 from exo import *

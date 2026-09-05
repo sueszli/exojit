@@ -1,38 +1,43 @@
 # RUN: uv run exojit --mlir %s | filecheck %s
 
 # CHECK: builtin.module {
-# CHECK-NEXT:   llvm.func @reduce_float(%0: !llvm.ptr, %1: !llvm.ptr) {
-# CHECK-NEXT:     %2 = llvm.mlir.constant(0) : i64
-# CHECK-NEXT:     %3 = llvm.mlir.constant(8) : i64
-# CHECK-NEXT:     %4 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     llvm.br ^bb1(%2 : i64)
-# CHECK-NEXT:   ^bb1(%5: i64):
-# CHECK-NEXT:     %6 = llvm.icmp "slt" %5, %3 : i64
-# CHECK-NEXT:     llvm.cond_br %6, ^bb2, ^bb3
+# CHECK-NEXT:   llvm.func @reduce_float(%offset_pointer: !llvm.ptr, %offset_pointer_1: !llvm.ptr) {
+# CHECK-NEXT:     %0 = llvm.mlir.constant(0) : i64
+# CHECK-NEXT:     %1 = llvm.mlir.constant(8) : i64
+# CHECK-NEXT:     %2 = llvm.mlir.constant(1) : i64
+# CHECK-NEXT:     llvm.br ^bb1(%0 : i64)
+# CHECK-NEXT:   ^bb1(%3: i64):
+# CHECK-NEXT:     %4 = llvm.icmp "slt" %3, %1 : i64
+# CHECK-NEXT:     llvm.cond_br %4, ^bb2, ^bb3
 # CHECK-NEXT:   ^bb2:
-# CHECK-NEXT:     %7 = llvm.mlir.constant(0) : i64
-# CHECK-NEXT:     %8 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     %9 = llvm.mul %5, %8 : i64
-# CHECK-NEXT:     %10 = llvm.getelementptr inbounds %0[%9] : (!llvm.ptr, i64) -> !llvm.ptr, f32
-# CHECK-NEXT:     %11 = llvm.load %10 : !llvm.ptr -> f32
-# CHECK-NEXT:     %12 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     %13 = llvm.mul %7, %12 : i64
-# CHECK-NEXT:     %14 = llvm.getelementptr inbounds %1[%13] : (!llvm.ptr, i64) -> !llvm.ptr, f32
-# CHECK-NEXT:     %15 = llvm.load %14 : !llvm.ptr -> f32
-# CHECK-NEXT:     %16 = llvm.fadd %15, %11 {fastmathFlags = #llvm.fastmath<fast>} : f32
-# CHECK-NEXT:     %17 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     %18 = llvm.mul %7, %17 : i64
-# CHECK-NEXT:     %19 = llvm.getelementptr inbounds %1[%18] : (!llvm.ptr, i64) -> !llvm.ptr, f32
-# CHECK-NEXT:     llvm.store %16, %19 : f32, !llvm.ptr
-# CHECK-NEXT:     %20 = llvm.add %5, %4 : i64
-# CHECK-NEXT:     llvm.br ^bb1(%20 : i64)
+# CHECK-NEXT:     %5 = llvm.mlir.constant(0) : i64
+# CHECK-NEXT:     %bytes_per_element = llvm.mlir.constant(4) : i64
+# CHECK-NEXT:     %scaled_pointer_offset = llvm.mul %3, %bytes_per_element : i64
+# CHECK-NEXT:     %offset_pointer_2 = llvm.ptrtoint %offset_pointer : !llvm.ptr to i64
+# CHECK-NEXT:     %offset_pointer_3 = llvm.add %offset_pointer_2, %scaled_pointer_offset : i64
+# CHECK-NEXT:     %offset_pointer_4 = llvm.inttoptr %offset_pointer_3 : i64 to !llvm.ptr
+# CHECK-NEXT:     %6 = llvm.load %offset_pointer_4 : !llvm.ptr -> f32
+# CHECK-NEXT:     %bytes_per_element_1 = llvm.mlir.constant(4) : i64
+# CHECK-NEXT:     %scaled_pointer_offset_1 = llvm.mul %5, %bytes_per_element_1 : i64
+# CHECK-NEXT:     %offset_pointer_5 = llvm.ptrtoint %offset_pointer_1 : !llvm.ptr to i64
+# CHECK-NEXT:     %offset_pointer_6 = llvm.add %offset_pointer_5, %scaled_pointer_offset_1 : i64
+# CHECK-NEXT:     %offset_pointer_7 = llvm.inttoptr %offset_pointer_6 : i64 to !llvm.ptr
+# CHECK-NEXT:     %7 = llvm.load %offset_pointer_7 : !llvm.ptr -> f32
+# CHECK-NEXT:     %8 = llvm.fadd %7, %6 {fastmathFlags = #llvm.fastmath<fast>} : f32
+# CHECK-NEXT:     %bytes_per_element_2 = llvm.mlir.constant(4) : i64
+# CHECK-NEXT:     %scaled_pointer_offset_2 = llvm.mul %5, %bytes_per_element_2 : i64
+# CHECK-NEXT:     %offset_pointer_8 = llvm.ptrtoint %offset_pointer_1 : !llvm.ptr to i64
+# CHECK-NEXT:     %offset_pointer_9 = llvm.add %offset_pointer_8, %scaled_pointer_offset_2 : i64
+# CHECK-NEXT:     %offset_pointer_10 = llvm.inttoptr %offset_pointer_9 : i64 to !llvm.ptr
+# CHECK-NEXT:     llvm.store %8, %offset_pointer_10 : f32, !llvm.ptr
+# CHECK-NEXT:     %9 = llvm.add %3, %2 : i64
+# CHECK-NEXT:     llvm.br ^bb1(%9 : i64)
 # CHECK-NEXT:   ^bb3:
 # CHECK-NEXT:     llvm.return
 # CHECK-NEXT:   }
 # CHECK-NEXT:   llvm.func @malloc(i64) -> !llvm.ptr
 # CHECK-NEXT:   llvm.func @free(!llvm.ptr)
 # CHECK-NEXT: }
-
 
 from __future__ import annotations
 

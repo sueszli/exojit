@@ -1,53 +1,49 @@
 # RUN: uv run exojit --mlir %s | filecheck %s
 
 # CHECK: builtin.module {
-# CHECK-NEXT:   llvm.func @set_first(%0: !llvm.ptr) {
-# CHECK-NEXT:     %1 = llvm.mlir.constant(0) : i64
-# CHECK-NEXT:     %2 = llvm.mlir.constant(1.000000e+00 : f32) : f32
-# CHECK-NEXT:     %3 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     %4 = llvm.mul %1, %3 : i64
-# CHECK-NEXT:     %5 = llvm.getelementptr inbounds %0[%4] : (!llvm.ptr, i64) -> !llvm.ptr, f32
-# CHECK-NEXT:     llvm.store %2, %5 : f32, !llvm.ptr
+# CHECK-NEXT:   llvm.func @set_first(%offset_pointer: !llvm.ptr) {
+# CHECK-NEXT:     %0 = llvm.mlir.constant(0) : i64
+# CHECK-NEXT:     %1 = llvm.mlir.constant(1.000000e+00 : f32) : f32
+# CHECK-NEXT:     %bytes_per_element = llvm.mlir.constant(4) : i64
+# CHECK-NEXT:     %scaled_pointer_offset = llvm.mul %0, %bytes_per_element : i64
+# CHECK-NEXT:     %offset_pointer_1 = llvm.ptrtoint %offset_pointer : !llvm.ptr to i64
+# CHECK-NEXT:     %offset_pointer_2 = llvm.add %offset_pointer_1, %scaled_pointer_offset : i64
+# CHECK-NEXT:     %offset_pointer_3 = llvm.inttoptr %offset_pointer_2 : i64 to !llvm.ptr
+# CHECK-NEXT:     llvm.store %1, %offset_pointer_3 : f32, !llvm.ptr
 # CHECK-NEXT:     llvm.return
 # CHECK-NEXT:   }
-# CHECK-NEXT:   llvm.func @inner(%6: !llvm.ptr) {
-# CHECK-NEXT:     %7 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     %8 = llvm.mlir.constant(0) : i64
-# CHECK-NEXT:     %9 = llvm.mlir.constant(4) : i64
-# CHECK-NEXT:     %10 = llvm.mul %7, %9 : i64
-# CHECK-NEXT:     %11 = llvm.mul %7, %10 : i64
-# CHECK-NEXT:     %12 = llvm.mul %8, %7 : i64
-# CHECK-NEXT:     %13 = llvm.add %11, %12 : i64
-# CHECK-NEXT:     %14 = llvm.mul %13, %9 : i64
-# CHECK-NEXT:     %15 = llvm.ptrtoint %6 : !llvm.ptr to i64
-# CHECK-NEXT:     %16 = llvm.add %15, %14 : i64
-# CHECK-NEXT:     %17 = llvm.inttoptr %16 : i64 to !llvm.ptr
-# CHECK-NEXT:     llvm.call @set_first(%17) : (!llvm.ptr) -> ()
+# CHECK-NEXT:   llvm.func @inner(%offset_pointer_4: !llvm.ptr) {
+# CHECK-NEXT:     %2 = llvm.mlir.constant(1) : i64
+# CHECK-NEXT:     %3 = llvm.mlir.constant(0) : i64
+# CHECK-NEXT:     %c4 = llvm.mlir.constant(4) : i64
+# CHECK-NEXT:     %increment = llvm.mul %c4, %2 : i64
+# CHECK-NEXT:     %subview = llvm.add %increment, %3 : i64
+# CHECK-NEXT:     %scaled_pointer_offset_1 = llvm.mul %subview, %c4 : i64
+# CHECK-NEXT:     %offset_pointer_5 = llvm.ptrtoint %offset_pointer_4 : !llvm.ptr to i64
+# CHECK-NEXT:     %offset_pointer_6 = llvm.add %offset_pointer_5, %scaled_pointer_offset_1 : i64
+# CHECK-NEXT:     %offset_pointer_7 = llvm.inttoptr %offset_pointer_6 : i64 to !llvm.ptr
+# CHECK-NEXT:     llvm.call @set_first(%offset_pointer_7) : (!llvm.ptr) -> ()
 # CHECK-NEXT:     llvm.return
 # CHECK-NEXT:   }
-# CHECK-NEXT:   llvm.func @outer(%18: !llvm.ptr) {
-# CHECK-NEXT:     %19 = llvm.mlir.constant(2) : i64
-# CHECK-NEXT:     %20 = llvm.mlir.constant(0) : i64
-# CHECK-NEXT:     %21 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     %22 = llvm.mlir.constant(4) : i64
-# CHECK-NEXT:     %23 = llvm.mul %21, %22 : i64
-# CHECK-NEXT:     %24 = llvm.mul %23, %22 : i64
-# CHECK-NEXT:     %25 = llvm.mul %19, %24 : i64
-# CHECK-NEXT:     %26 = llvm.mul %20, %23 : i64
-# CHECK-NEXT:     %27 = llvm.add %25, %26 : i64
-# CHECK-NEXT:     %28 = llvm.mul %20, %21 : i64
-# CHECK-NEXT:     %29 = llvm.add %27, %28 : i64
-# CHECK-NEXT:     %30 = llvm.mul %29, %22 : i64
-# CHECK-NEXT:     %31 = llvm.ptrtoint %18 : !llvm.ptr to i64
-# CHECK-NEXT:     %32 = llvm.add %31, %30 : i64
-# CHECK-NEXT:     %33 = llvm.inttoptr %32 : i64 to !llvm.ptr
-# CHECK-NEXT:     llvm.call @inner(%33) : (!llvm.ptr) -> ()
+# CHECK-NEXT:   llvm.func @outer(%offset_pointer_8: !llvm.ptr) {
+# CHECK-NEXT:     %4 = llvm.mlir.constant(2) : i64
+# CHECK-NEXT:     %5 = llvm.mlir.constant(0) : i64
+# CHECK-NEXT:     %c16 = llvm.mlir.constant(16) : i64
+# CHECK-NEXT:     %increment_1 = llvm.mul %c16, %4 : i64
+# CHECK-NEXT:     %c4_1 = llvm.mlir.constant(4) : i64
+# CHECK-NEXT:     %increment_2 = llvm.mul %c4_1, %5 : i64
+# CHECK-NEXT:     %subview_1 = llvm.add %increment_1, %increment_2 : i64
+# CHECK-NEXT:     %subview_2 = llvm.add %subview_1, %5 : i64
+# CHECK-NEXT:     %scaled_pointer_offset_2 = llvm.mul %subview_2, %c4_1 : i64
+# CHECK-NEXT:     %offset_pointer_9 = llvm.ptrtoint %offset_pointer_8 : !llvm.ptr to i64
+# CHECK-NEXT:     %offset_pointer_10 = llvm.add %offset_pointer_9, %scaled_pointer_offset_2 : i64
+# CHECK-NEXT:     %offset_pointer_11 = llvm.inttoptr %offset_pointer_10 : i64 to !llvm.ptr
+# CHECK-NEXT:     llvm.call @inner(%offset_pointer_11) : (!llvm.ptr) -> ()
 # CHECK-NEXT:     llvm.return
 # CHECK-NEXT:   }
 # CHECK-NEXT:   llvm.func @malloc(i64) -> !llvm.ptr
 # CHECK-NEXT:   llvm.func @free(!llvm.ptr)
 # CHECK-NEXT: }
-
 
 from __future__ import annotations
 

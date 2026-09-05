@@ -1,56 +1,54 @@
 # RUN: uv run exojit --mlir %s | filecheck %s
 
 # CHECK: builtin.module {
-# CHECK-NEXT:   llvm.func @set_row(%0: !llvm.ptr) {
-# CHECK-NEXT:     %1 = llvm.mlir.constant(0) : i64
-# CHECK-NEXT:     %2 = llvm.mlir.constant(4) : i64
-# CHECK-NEXT:     %3 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     llvm.br ^bb1(%1 : i64)
-# CHECK-NEXT:   ^bb1(%4: i64):
-# CHECK-NEXT:     %5 = llvm.icmp "slt" %4, %2 : i64
-# CHECK-NEXT:     llvm.cond_br %5, ^bb2, ^bb3
+# CHECK-NEXT:   llvm.func @set_row(%offset_pointer: !llvm.ptr) {
+# CHECK-NEXT:     %0 = llvm.mlir.constant(0) : i64
+# CHECK-NEXT:     %1 = llvm.mlir.constant(4) : i64
+# CHECK-NEXT:     %2 = llvm.mlir.constant(1) : i64
+# CHECK-NEXT:     llvm.br ^bb1(%0 : i64)
+# CHECK-NEXT:   ^bb1(%3: i64):
+# CHECK-NEXT:     %4 = llvm.icmp "slt" %3, %1 : i64
+# CHECK-NEXT:     llvm.cond_br %4, ^bb2, ^bb3
 # CHECK-NEXT:   ^bb2:
-# CHECK-NEXT:     %6 = llvm.mlir.constant(0.000000e+00 : f32) : f32
-# CHECK-NEXT:     %7 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     %8 = llvm.mul %4, %7 : i64
-# CHECK-NEXT:     %9 = llvm.getelementptr inbounds %0[%8] : (!llvm.ptr, i64) -> !llvm.ptr, f32
-# CHECK-NEXT:     llvm.store %6, %9 : f32, !llvm.ptr
-# CHECK-NEXT:     %10 = llvm.add %4, %3 : i64
-# CHECK-NEXT:     llvm.br ^bb1(%10 : i64)
+# CHECK-NEXT:     %5 = llvm.mlir.constant(0.000000e+00 : f32) : f32
+# CHECK-NEXT:     %bytes_per_element = llvm.mlir.constant(4) : i64
+# CHECK-NEXT:     %scaled_pointer_offset = llvm.mul %3, %bytes_per_element : i64
+# CHECK-NEXT:     %offset_pointer_1 = llvm.ptrtoint %offset_pointer : !llvm.ptr to i64
+# CHECK-NEXT:     %offset_pointer_2 = llvm.add %offset_pointer_1, %scaled_pointer_offset : i64
+# CHECK-NEXT:     %offset_pointer_3 = llvm.inttoptr %offset_pointer_2 : i64 to !llvm.ptr
+# CHECK-NEXT:     llvm.store %5, %offset_pointer_3 : f32, !llvm.ptr
+# CHECK-NEXT:     %6 = llvm.add %3, %2 : i64
+# CHECK-NEXT:     llvm.br ^bb1(%6 : i64)
 # CHECK-NEXT:   ^bb3:
 # CHECK-NEXT:     llvm.return
 # CHECK-NEXT:   }
-# CHECK-NEXT:   llvm.func @window_row(%11: !llvm.ptr) {
-# CHECK-NEXT:     %12 = llvm.mlir.constant(0) : i64
-# CHECK-NEXT:     %13 = llvm.mlir.constant(4) : i64
-# CHECK-NEXT:     %14 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     llvm.br ^bb1(%12 : i64)
-# CHECK-NEXT:   ^bb1(%15: i64):
-# CHECK-NEXT:     %16 = llvm.icmp "slt" %15, %13 : i64
-# CHECK-NEXT:     llvm.cond_br %16, ^bb2, ^bb3
+# CHECK-NEXT:   llvm.func @window_row(%offset_pointer_4: !llvm.ptr) {
+# CHECK-NEXT:     %7 = llvm.mlir.constant(0) : i64
+# CHECK-NEXT:     %8 = llvm.mlir.constant(4) : i64
+# CHECK-NEXT:     %9 = llvm.mlir.constant(1) : i64
+# CHECK-NEXT:     llvm.br ^bb1(%7 : i64)
+# CHECK-NEXT:   ^bb1(%10: i64):
+# CHECK-NEXT:     %11 = llvm.icmp "slt" %10, %8 : i64
+# CHECK-NEXT:     llvm.cond_br %11, ^bb2, ^bb3
 # CHECK-NEXT:   ^bb2:
-# CHECK-NEXT:     %17 = llvm.mlir.constant(0) : i64
-# CHECK-NEXT:     %18 = llvm.mlir.constant(1) : i64
-# CHECK-NEXT:     %19 = llvm.mlir.constant(4) : i64
-# CHECK-NEXT:     %20 = llvm.mul %18, %19 : i64
-# CHECK-NEXT:     %21 = llvm.mul %15, %20 : i64
-# CHECK-NEXT:     %22 = llvm.mul %17, %18 : i64
-# CHECK-NEXT:     %23 = llvm.add %21, %22 : i64
-# CHECK-NEXT:     %24 = llvm.mlir.constant(4) : i64
-# CHECK-NEXT:     %25 = llvm.mul %23, %24 : i64
-# CHECK-NEXT:     %26 = llvm.ptrtoint %11 : !llvm.ptr to i64
-# CHECK-NEXT:     %27 = llvm.add %26, %25 : i64
-# CHECK-NEXT:     %28 = llvm.inttoptr %27 : i64 to !llvm.ptr
-# CHECK-NEXT:     llvm.call @set_row(%28) : (!llvm.ptr) -> ()
-# CHECK-NEXT:     %29 = llvm.add %15, %14 : i64
-# CHECK-NEXT:     llvm.br ^bb1(%29 : i64)
+# CHECK-NEXT:     %12 = llvm.mlir.constant(0) : i64
+# CHECK-NEXT:     %c4 = llvm.mlir.constant(4) : i64
+# CHECK-NEXT:     %increment = llvm.mul %c4, %10 : i64
+# CHECK-NEXT:     %subview = llvm.add %increment, %12 : i64
+# CHECK-NEXT:     %bytes_per_element_1 = llvm.mlir.constant(4) : i64
+# CHECK-NEXT:     %scaled_pointer_offset_1 = llvm.mul %subview, %bytes_per_element_1 : i64
+# CHECK-NEXT:     %offset_pointer_5 = llvm.ptrtoint %offset_pointer_4 : !llvm.ptr to i64
+# CHECK-NEXT:     %offset_pointer_6 = llvm.add %offset_pointer_5, %scaled_pointer_offset_1 : i64
+# CHECK-NEXT:     %offset_pointer_7 = llvm.inttoptr %offset_pointer_6 : i64 to !llvm.ptr
+# CHECK-NEXT:     llvm.call @set_row(%offset_pointer_7) : (!llvm.ptr) -> ()
+# CHECK-NEXT:     %13 = llvm.add %10, %9 : i64
+# CHECK-NEXT:     llvm.br ^bb1(%13 : i64)
 # CHECK-NEXT:   ^bb3:
 # CHECK-NEXT:     llvm.return
 # CHECK-NEXT:   }
 # CHECK-NEXT:   llvm.func @malloc(i64) -> !llvm.ptr
 # CHECK-NEXT:   llvm.func @free(!llvm.ptr)
 # CHECK-NEXT: }
-
 
 from __future__ import annotations
 

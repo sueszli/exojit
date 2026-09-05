@@ -6,7 +6,6 @@ import re
 import tempfile
 from collections.abc import Callable, MutableSequence, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from typing import Any, Literal, SupportsInt, TypeGuard, cast
@@ -29,19 +28,20 @@ from exo.rewrite.range_analysis import constant_bound
 from xdsl.backend.llvm.convert_op import _CAST_OP_NAMES
 from xdsl.builder import Builder
 from xdsl.context import Context
-from xdsl.dialects import builtin, llvm, memref
+from xdsl.dialects import arith, llvm, memref, ptr
 from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, ArrayAttr, Builtin, DictionaryAttr, FixedBitwidthType, FloatAttr, IndexType, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnitAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
-from xdsl.dialects.llvm import GEP_USE_SSA_VAL, BrOp, FNegOp, GenericCastOp, LLVMPointerType
+from xdsl.dialects.llvm import BrOp, FNegOp, GenericCastOp, LLVMPointerType
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
-from xdsl.ir import Attribute, Block, BlockArgument, Operation, OpResult, Region, SSAValue
+from xdsl.ir import Attribute, Block, BlockArgument, Operation, Region, SSAValue
 from xdsl.irdl import irdl_op_definition
 from xdsl.jit.llvm.backend import LLVMJITBackend
-from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
 from xdsl.rewriter import InsertPoint
 from xdsl.transforms.canonicalize import CanonicalizePass
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
-from xdsl.transforms.convert_memref_to_ptr import ConvertCastOp
+from xdsl.transforms.convert_memref_to_ptr import ConvertMemRefToPtr
+from xdsl.transforms.convert_ptr_to_llvm import ConvertPtrToLLVMPass
+from xdsl.transforms.convert_ptr_type_offsets import ConvertPtrTypeOffsetsPass
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
 from xdsl.utils.hints import isa
 from xdsl.utils.scoped_dict import ScopedDict
@@ -105,151 +105,66 @@ class FPTruncOp(GenericCastOp):
 _CAST_OP_NAMES[FPTruncOp] = "fptrunc"
 
 
-# `memref` -> `llvm.ptr` lowering: replace structured memory ops with raw pointer arithmetic
-#
-# standard mlir lowers memref through a "descriptor" struct (base ptr, offset, sizes, strides).
-# we skip that and go straight to flat pointer math because exo only emits statically-shaped,
-# row-major memrefs with no affine maps. the descriptor is unnecessary overhead.
-#
-# pipeline order matters:
-# ----------------------
-#     1. extendedconvertmemreftoptr   — rewrite load/store/subview while shape info is still on the memreftype
-#     2. rewritememreftypes           — erase memreftype -> llvm.ptr everywhere
-#     3. reconcile-unrealized-casts   — clean up identity casts left behind
-#
-# example (convertloadstorepattern):
-# ----------------------------------
-#     memref.store %v, %buf[%i, %j] : memref<4x4xf32>
-#     =>
-#     %c1     = llvm.mlir.constant(1)   ; stride[1] = 1
-#     %c4     = llvm.mlir.constant(4)   ; dim[1] = 4
-#     %stride = llvm.mul %c1, %c4       ; stride[0] = dim[1] = 4
-#     %off0   = llvm.mul %i, %stride    ; i * 4
-#     %off1   = llvm.mul %j, %c1        ; j * 1
-#     %flat   = llvm.add %off0, %off1   ; i*4 + j
-#     %ptr    = llvm.getelementptr inbounds %buf[%flat] : f32
-#     llvm.store %v, %ptr : f32
-
-
-def _loop_upper_bound_as_i64(index: SSAValue) -> SSAValue | None:
-    # for dynamic dims: walk index -> block_arg#0 -> find llvm.icmp in the loop header -> extract the bound
-    # e.g. `icmp slt %iv, %n` => return %n as the dim size
-    if isinstance(index, OpResult) and isinstance(index.op, UnrealizedConversionCastOp):
-        inputs = list(index.op.operands)
-        iv = inputs[0] if len(inputs) == 1 else index
-    else:
-        iv = index
-    if not isinstance(iv, BlockArgument) or iv.index != 0:
-        return None
-    for op in iv.block.ops:
-        if isinstance(op, llvm.ICmpOp):
-            if op.lhs == iv:
-                return op.rhs if op.rhs.type == i64 else None
-            if op.rhs == iv:
-                return op.lhs if op.lhs.type == i64 else None
-    return None
-
-
-def _iconst(ins, n: int) -> SSAValue:
-    return ins(llvm.ConstantOp(IntegerAttr(n, i64), i64)).result
-
-
-def _base_and_offset(base: SSAValue, indices: Sequence[SSAValue], shape: tuple[int, ...], ins) -> tuple[SSAValue, SSAValue | None]:
-    def dim_size(i: int) -> SSAValue:
-        # static constant, or the dynamic loop bound the index is derived from
-        if shape[i] != DYNAMIC_INDEX:
-            return _iconst(ins, shape[i])
-        ub = _loop_upper_bound_as_i64(indices[i])
-        assert ub is not None
-        return ub
-
-    # row-major strides: stride[last]=1, stride[i]=stride[i+1]*dim[i+1]
-    strides: list[SSAValue] = [_iconst(ins, 1)] * len(shape)
-    for i in range(len(shape) - 2, -1, -1):
-        strides[i] = ins(llvm.MulOp(strides[i + 1], dim_size(i + 1))).res
-
-    # flat element offset = sum(index_i * stride_i)
-    flat: SSAValue | None = None
-    for idx, stride in zip(indices, strides):
-        # peek through unrealized_cast(x:i64 -> index) to recover the original i64
-        if isinstance(idx, OpResult) and isinstance(idx.op, UnrealizedConversionCastOp) and len(idx.op.operands) == 1 and idx.op.operands[0].type == i64:
-            idx = idx.op.operands[0]
-        term = ins(llvm.MulOp(idx, stride)).res
-        flat = term if flat is None else ins(llvm.AddOp(flat, term)).res
-
-    return ins(UnrealizedConversionCastOp.get([base], [LLVMPointerType()])).results[0], flat
-
-
-class ConvertLoadStorePattern(RewritePattern):
-    # memref.load/store %buf[%i, %j] => ptr arithmetic + llvm.load/store
+# replace memref.dim on function args with the corresponding i64 size arg.
+# IRGenerator annotates each memref arg with `exojit.dim.<k> = <size_arg_index>`
+# attributes, mapping the k-th dimension to the function arg that carries its size.
+class ResolveDimOp(RewritePattern):
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: memref.LoadOp | memref.StoreOp, rewriter: PatternRewriter, /):
-        memref_type = op.memref.type
-        assert isa(memref_type, builtin.MemRefType)
-        if not isa(memref_type.layout, builtin.NoneAttr):
-            return  # skip affine map layouts
-        ins = rewriter.insert_op
-        ptr, flat = _base_and_offset(op.memref, list(op.indices), memref_type.get_shape(), ins)
-        if flat is not None:
-            # gep with element type (rather than raw byte math) enables llvm auto-vectorization
-            ptr = ins(llvm.GEPOp(ptr, [GEP_USE_SSA_VAL], memref_type.element_type, ssa_indices=[flat], inbounds=True)).result
-        rewriter.replace_op(op, llvm.LoadOp(ptr, op.res.type) if isinstance(op, memref.LoadOp) else llvm.StoreOp(op.value, ptr))
+    def match_and_rewrite(self, op: memref.DimOp, rewriter: PatternRewriter, /):
+        source = op.source
+        if not isinstance(source, BlockArgument):
+            return
+        if not isa(source.type, MemRefType):
+            return
+        # the dim index must be a constant
+        idx_op = op.index.owner
+        assert isinstance(idx_op, arith.ConstantOp) and isinstance(idx_op.value, IntegerAttr)
+        dim_idx = idx_op.value.value.data
+
+        # look up the exojit.dim.<k> attribute on this arg
+        func_op = source.block.parent_op()
+        assert isinstance(func_op, llvm.FuncOp) and func_op.arg_attrs is not None
+        arg_dict = func_op.arg_attrs.data[source.index]
+        assert isinstance(arg_dict, DictionaryAttr)
+        size_arg_idx_attr = arg_dict.data.get(f"exojit.dim.{dim_idx}")
+        assert size_arg_idx_attr is not None and isinstance(size_arg_idx_attr, IntegerAttr)
+        size_arg_idx = size_arg_idx_attr.value.data
+
+        size_val = source.block.args[size_arg_idx]
+        rewriter.replace_matched_op(UnrealizedConversionCastOp.get([size_val], [IndexType()]))
 
 
-class ConvertSubviewPattern(RewritePattern):
-    # memref.subview %buf[offsets] => ptr to the start of the slice
-    #
-    # subview carries both static offsets (baked into the op) and dynamic offsets (ssa values).
-    # mlir encodes "this offset is dynamic" by setting the static value to dynamic_index (-1);
-    # the actual ssa value then comes from the op.offsets list in order.
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: memref.SubviewOp, rewriter: PatternRewriter, /):
-        src_type = op.source.type
-        assert isa(src_type, builtin.MemRefType)
-        if not isa(src_type.layout, builtin.NoneAttr):
-            return  # skip affine map layouts
-        src_shape = src_type.get_shape()
-        assert all(d != DYNAMIC_INDEX for d in src_shape), "dynamic source dims in subview not supported"
-        assert isinstance(src_type.element_type, builtin.FixedBitwidthType)
-
-        ins = rewriter.insert_op
-
-        # merge static_offsets (constants) and dynamic offsets (ssa values) into one list
-        dyn_iter = iter(op.offsets)
-        all_offsets = [next(dyn_iter) if soff == DYNAMIC_INDEX else _iconst(ins, soff) for soff in op.static_offsets.iter_values()]
-
-        # ptrtoint/inttoptr rather than gep, so the result stays type-agnostic
-        ptr, flat = _base_and_offset(op.source, all_offsets, src_shape, ins)
-        if flat is not None:
-            byte_offset = ins(llvm.MulOp(flat, _iconst(ins, src_type.element_type.size))).res
-            ptr_int = ins(llvm.PtrToIntOp(ptr)).output
-            ptr = ins(llvm.IntToPtrOp(ins(llvm.AddOp(ptr_int, byte_offset)).res)).output
-
-        # wrap result as memreftype so downstream load/store patterns still see the right shape for stride computation
-        rewriter.replace_op(op, UnrealizedConversionCastOp.get([ptr], [op.result.type]))
+# index -> i64 everywhere (index and i64 are the same width on our target)
+class RewriteIndexTypes(TypeConversionPattern):
+    @attr_type_rewrite_pattern
+    def convert_type(self, type: IndexType) -> IntegerType:
+        return i64
 
 
-@dataclass(frozen=True)
-class ExtendedConvertMemRefToPtr(ModulePass):
-    name = "extended-convert-memref-to-ptr"
-
-    def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
-        PatternRewriteWalker(GreedyRewritePatternApplier([ConvertCastOp(), ConvertLoadStorePattern(), ConvertSubviewPattern()])).rewrite_module(op)
-
-
-#
-# erase memreftype on all remaining values
-# (runs after the patterns above consumed shape info)
-#
-# before:  %x : memref<4x8xf32>
-# after:   %x : !llvm.ptr
-#
-
-
+# memref<...> -> !llvm.ptr on all remaining values
 class RewriteMemRefTypes(TypeConversionPattern):
     @attr_type_rewrite_pattern
-    def convert_type(self, type: MemRefType) -> llvm.LLVMPointerType:
-        return llvm.LLVMPointerType()
+    def convert_type(self, type: MemRefType) -> LLVMPointerType:
+        return LLVMPointerType()
+
+
+# the upstream memref -> ptr -> llvm pipeline leaves behind arith ops (arith.constant,
+# arith.addi, arith.muli, arith.index_cast) because xdsl has no arith-to-llvm pass.
+# lower them here so the module is pure llvm dialect before the llvmlite backend.
+class LowerArithToLLVM(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: arith.ConstantOp | arith.AddiOp | arith.MuliOp | arith.IndexCastOp, rewriter: PatternRewriter, /):
+        match op:
+            case arith.ConstantOp():
+                assert isinstance(op.value, IntegerAttr)
+                rewriter.replace_matched_op(llvm.ConstantOp(IntegerAttr(op.value.value.data, i64), i64))
+            case arith.AddiOp():
+                rewriter.replace_matched_op(llvm.AddOp(op.lhs, op.rhs))
+            case arith.MuliOp():
+                rewriter.replace_matched_op(llvm.MulOp(op.lhs, op.rhs))
+            case arith.IndexCastOp():
+                # after RewriteIndexTypes, both sides are i64 — this is identity
+                rewriter.replace_op(op, [], new_results=list(op.operands))
 
 
 # ===----------------------------------------------------------------------=== #
@@ -333,21 +248,28 @@ class IRGenerator:
 
     @staticmethod
     def _static_dim(expr: LoopIR.expr) -> int:
-        # variable/computed dims -> dynamic_index (-1), for memreftype declarations
+        # resolve dim to a static int when possible, otherwise dynamic_index (-1)
         match expr:
             case LoopIR.Const():
-                # literal (e.g. `f32[16, 16]`)
                 assert isinstance(expr.val, int)
                 return expr.val
-            case LoopIR.Read() | LoopIR.BinOp():
-                # variable (e.g. `f32[m, k]`) or computed (e.g. `f32[m+1, k*2]`)
+            case LoopIR.BinOp():
+                # try to fold constant BinOps like `4 * 16`
+                lhs = IRGenerator._static_dim(expr.lhs)
+                rhs = IRGenerator._static_dim(expr.rhs)
+                if lhs != DYNAMIC_INDEX and rhs != DYNAMIC_INDEX:
+                    ops = {"+": int.__add__, "-": int.__sub__, "*": int.__mul__, "/": int.__floordiv__, "%": int.__mod__}
+                    return ops[expr.op](lhs, rhs)
+                return DYNAMIC_INDEX
+            case LoopIR.Read():
+                # variable dim (e.g. `f32[m, k]`)
                 return DYNAMIC_INDEX
             case _:
                 assert False
 
     def _emit_shape(self, tensor: T.Tensor) -> list[int | SSAValue]:
         # variable/computed dims -> live ssa values, for stride/offset arithmetic
-        return [self._expr(dim) if isinstance(dim, (LoopIR.Read, LoopIR.BinOp)) else self._static_dim(dim) for dim in tensor.shape()]
+        return [dim_val if (dim_val := self._static_dim(dim)) != DYNAMIC_INDEX else self._expr(dim) for dim in tensor.shape()]
 
     def _memref_load(self, memref_val: SSAValue, idx: list[SSAValue]) -> SSAValue:
         if len(idx) == 0:
@@ -687,6 +609,29 @@ class IRGenerator:
             case _:
                 assert False
 
+    @staticmethod
+    def _dim_arg_attrs(procedure: LoopIR.proc, arg_types: list[Attribute]) -> list[dict[str, Attribute]]:
+        # build per-arg attrs mapping (dim_index -> size_arg_index) for dynamic memref dims
+        # e.g. matmul(M, N, K, out: f64[M,N], x: f64[M,K]) => out gets {dim.0: arg0, dim.1: arg1}, x gets {dim.0: arg0, dim.1: arg2}
+        size_name_to_idx: dict[str, int] = {}
+        for i, exo_arg in enumerate(procedure.args):
+            if isinstance(exo_arg.type, (T.Size, T.Index, T.Int)):
+                size_name_to_idx[repr(exo_arg.name)] = i
+
+        result: list[dict[str, Attribute]] = [{} for _ in procedure.args]
+        for i, (exo_arg, mlir_type) in enumerate(zip(procedure.args, arg_types)):
+            if not isinstance(mlir_type, MemRefType):
+                continue
+            tensor_type = exo_arg.type.as_tensor if isinstance(exo_arg.type, T.Window) else exo_arg.type
+            if not isinstance(tensor_type, T.Tensor):
+                continue
+            for d, dim_expr in enumerate(tensor_type.shape()):
+                if IRGenerator._static_dim(dim_expr) == DYNAMIC_INDEX and isinstance(dim_expr, LoopIR.Read):
+                    idx = size_name_to_idx.get(repr(dim_expr.name))
+                    if idx is not None:
+                        result[i][f"exojit.dim.{d}"] = IntegerAttr(idx, i64)
+        return result
+
     def _generate_procedure(self, procedure: LoopIR.proc) -> None:
         # lower loopir proc to llvm.func
         if procedure.name in self.seen_proc_names:
@@ -708,8 +653,9 @@ class IRGenerator:
 
             self.builder.insert(llvm.ReturnOp())
 
-        noalias_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(t, LLVMPointerType) else {}) for t in input_types])
-        self._insert_at_module(llvm.FuncOp(procedure.name, func_type, linkage=llvm.LinkageAttr("external"), body=func_region, other_props={"arg_attrs": noalias_attrs}))
+        dim_attrs = self._dim_arg_attrs(procedure, input_types)
+        merged_attrs = ArrayAttr([DictionaryAttr({**({"llvm.noalias": UnitAttr()} if isinstance(t, LLVMPointerType) else {}), **da}) for t, da in zip(input_types, dim_attrs)])
+        self._insert_at_module(llvm.FuncOp(procedure.name, func_type, linkage=llvm.LinkageAttr("external"), body=func_region, other_props={"arg_attrs": merged_attrs}))
 
     def generate(self, procs: list[LoopIR.proc]) -> ModuleOp:
         for proc in procs:
@@ -726,8 +672,10 @@ class LLVMBackend:
     def _context() -> Context:
         ctx = Context()
         ctx.load_dialect(Builtin)
+        ctx.load_dialect(arith.Arith)
         ctx.load_dialect(llvm.LLVM)
         ctx.load_dialect(memref.MemRef)
+        ctx.load_dialect(ptr.Ptr)
         return ctx
 
     @staticmethod
@@ -738,8 +686,15 @@ class LLVMBackend:
 
         _simplify()
 
-        ExtendedConvertMemRefToPtr().apply(ctx, module)
-        PatternRewriteWalker(GreedyRewritePatternApplier([RewriteMemRefTypes()])).rewrite_module(module)
+        # memref -> ptr -> llvm.ptr (upstream xdsl passes)
+        ConvertMemRefToPtr().apply(ctx, module)
+        PatternRewriteWalker(ResolveDimOp()).rewrite_module(module)
+        ConvertPtrTypeOffsetsPass().apply(ctx, module)
+        ConvertPtrToLLVMPass().apply(ctx, module)
+        # the ptr->llvm pipeline leaves arith ops, index types, and memref types;
+        # rewrite types first (index->i64, memref->ptr), then lower arith to llvm
+        PatternRewriteWalker(GreedyRewritePatternApplier([RewriteIndexTypes(), RewriteMemRefTypes()])).rewrite_module(module)
+        PatternRewriteWalker(LowerArithToLLVM()).rewrite_module(module)
         ReconcileUnrealizedCastsPass().apply(ctx, module)
         module.verify()
 
