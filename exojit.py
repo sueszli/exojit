@@ -890,26 +890,19 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
     return JITRuntime.compile(proc, raw=raw)
 
 
-def _dedup_proc_names(user_module: object) -> list[Procedure]:
-    exported = getattr(user_module, "__all__", None)
-    symbols = user_module.__dict__.items() if exported is None else ((name, getattr(user_module, name)) for name in exported)
-    return list({proc.name(): proc for name, proc in symbols if not name.startswith("_") and isinstance(proc, Procedure) and not proc.is_instr()}.values())
-
-
 @click.command()
 @click.argument("source", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--c", "fmt", flag_value="c", help="Output C source")
 @click.option("--mlir", "fmt", flag_value="mlir", help="Output MLIR")
 def cli(source: Path, fmt: Literal["c", "mlir"] | None):
     assert fmt, "choose --c or --mlir"
-    procs = _dedup_proc_names(load_user_code(source))
+    mod = load_user_code(source)
+    procs = list({v.name(): v for v in mod.__dict__.values() if isinstance(v, Procedure) and not v.is_instr()}.values())
 
     match fmt:
         case "c":
             tmpdir = Path(tempfile.mkdtemp())
             exo_compile_procs(procs, tmpdir, "o.c", "o.h")
-            text = (tmpdir / "o.c").read_text()
+            print((tmpdir / "o.c").read_text())
         case "mlir":
-            text = str(to_mlir(procs))
-
-    click.echo(text)
+            print(to_mlir(procs))
