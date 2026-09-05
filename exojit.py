@@ -26,7 +26,6 @@ from exo.core.prelude import Sym
 from exo.frontend.pyparser import DummyScope, Parser, get_ast_from_python
 from exo.main import load_user_code
 from exo.rewrite.range_analysis import constant_bound
-from xdsl.backend.llvm.convert import convert_module
 from xdsl.backend.llvm.convert_op import _CAST_OP_NAMES
 from xdsl.builder import Builder
 from xdsl.context import Context
@@ -36,13 +35,10 @@ from xdsl.dialects.llvm import GEP_USE_SSA_VAL, BrOp, FNegOp, GenericCastOp, LLV
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
 from xdsl.ir import Attribute, Block, BlockArgument, Operation, OpResult, Region, SSAValue
 from xdsl.irdl import irdl_op_definition
-from xdsl.jit.c_type_context import CTypeContext, register_builtin_types
-from xdsl.jit.llvm.backend import _compile_module, _create_target_machine
-from xdsl.jit.llvm.c_type_context import register_llvm_types, to_c_func_type
+from xdsl.jit.llvm.backend import LLVMJITBackend
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
 from xdsl.rewriter import InsertPoint
-from xdsl.traits import SymbolTable
 from xdsl.transforms.canonicalize import CanonicalizePass
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
 from xdsl.transforms.convert_memref_to_ptr import ConvertCastOp
@@ -50,9 +46,11 @@ from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsP
 from xdsl.utils.hints import isa
 from xdsl.utils.scoped_dict import ScopedDict
 
+
 # ===----------------------------------------------------------------------=== #
 # exo patches
 # ===----------------------------------------------------------------------=== #
+
 
 _pyparser._prim_types["size"] = UAST.Size()
 _pyparser._prim_types["index"] = UAST.Index()
@@ -91,6 +89,7 @@ def patched_lift_expr(e):
 
 
 _boundscheck.lift_expr = patched_lift_expr
+
 
 # ===----------------------------------------------------------------------=== #
 # xdsl patches
@@ -709,7 +708,8 @@ class IRGenerator:
 
             self.builder.insert(llvm.ReturnOp())
 
-        self._insert_at_module(llvm.FuncOp(procedure.name, func_type, linkage=llvm.LinkageAttr("external"), body=func_region))
+        noalias_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(t, LLVMPointerType) else {}) for t in input_types])
+        self._insert_at_module(llvm.FuncOp(procedure.name, func_type, linkage=llvm.LinkageAttr("external"), body=func_region, other_props={"arg_attrs": noalias_attrs}))
 
     def generate(self, procs: list[LoopIR.proc]) -> ModuleOp:
         for proc in procs:
@@ -746,22 +746,7 @@ class LLVMBackend:
         _simplify()
         return module
 
-    @staticmethod
-    @cache
-    def _c_type_context() -> CTypeContext:
-        ctx = CTypeContext()
-        register_builtin_types(ctx)
-        register_llvm_types(ctx)
-        return ctx
-
-    @staticmethod
-    def _annotate_noalias(module: ModuleOp) -> ModuleOp:
-        # noalias lets llvm's loop vectorizer assume buffers do not overlap
-        module = module.clone()
-        for func_op in module.ops:
-            assert isinstance(func_op, llvm.FuncOp)
-            func_op.arg_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(input_type, llvm.LLVMPointerType) else {}) for input_type in func_op.function_type.inputs])
-        return module
+    _jit_backend = LLVMJITBackend(lowering=(), opt_level=3)
 
 
 class JITRuntime:
@@ -824,15 +809,7 @@ class JITRuntime:
     @staticmethod
     def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
         mlir_module = to_mlir(proc)
-        mlir_module = LLVMBackend._annotate_noalias(mlir_module)
-
-        func_op = SymbolTable.lookup_symbol(mlir_module, proc.name())
-        assert isinstance(func_op, llvm.FuncOp)
-        c_func_type = to_c_func_type(LLVMBackend._c_type_context(), func_op.function_type)
-
-        target, tm = _create_target_machine(opt_level=3)
-        llvm_module = convert_module(mlir_module, fallback_target_triple=tm.triple, data_layout=str(tm.target_data))
-        raw_jit = _compile_module(llvm_module, proc.name(), c_func_type, target=target, target_machine=tm, opt_level=3)
+        raw_jit = LLVMBackend._jit_backend.jit(mlir_module, proc.name(), LLVMBackend._context())
         fn = raw_jit.c_func
 
         ir_args = proc._loopir_proc.args
@@ -908,26 +885,19 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
     return JITRuntime.compile(proc, raw=raw)
 
 
-def _dedup_proc_names(user_module: object) -> list[Procedure]:
-    exported = getattr(user_module, "__all__", None)
-    symbols = user_module.__dict__.items() if exported is None else ((name, getattr(user_module, name)) for name in exported)
-    return list({proc.name(): proc for name, proc in symbols if not name.startswith("_") and isinstance(proc, Procedure) and not proc.is_instr()}.values())
-
-
 @click.command()
 @click.argument("source", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--c", "fmt", flag_value="c", help="Output C source")
 @click.option("--mlir", "fmt", flag_value="mlir", help="Output MLIR")
 def cli(source: Path, fmt: Literal["c", "mlir"] | None):
     assert fmt, "choose --c or --mlir"
-    procs = _dedup_proc_names(load_user_code(source))
+    mod = load_user_code(source)
+    procs = list({v.name(): v for v in mod.__dict__.values() if isinstance(v, Procedure) and not v.is_instr()}.values())
 
     match fmt:
         case "c":
             tmpdir = Path(tempfile.mkdtemp())
             exo_compile_procs(procs, tmpdir, "o.c", "o.h")
-            text = (tmpdir / "o.c").read_text()
+            print((tmpdir / "o.c").read_text())
         case "mlir":
-            text = str(to_mlir(procs))
-
-    click.echo(text)
+            print(to_mlir(procs))

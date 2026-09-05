@@ -16,10 +16,13 @@
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣇
 
 
-a just in time compiler for the exo language.
+a just-in-time compiler for the exo language.
 
-// currently being ported to xDSL:
-// https://github.com/xdslproject/xdsl/tree/main/xdsl/jit
+// served as a prototype for:
+// https://github.com/xdslproject/xdsl/tree/main/tests/filecheck/projects/pyjit
+
+we take the Exo IR and map it to the LLVM dialect
+in xDSL, which is hooked to the llvmlite MCJIT backend.
 
 
 usage:
@@ -29,20 +32,8 @@ usage:
     $ uv run example.py
 
 
-how it works:
+references:
 
-      Exo Python source
-          v
-      Exo LoopIR
-          v
-    - - - - - - - - - - - - - xDSL
-      MLIR module
-          v
-      MLIR LLVM dialect
-          v
-    - - - - - - - - - - - - - xDSL JIT backend (llvmlite MCJIT)
-      Native code
-
-
-to learn more about the exo language, check out:
-https://github.com/exo-lang/exo/blob/main/docs/README.md
+- Exo language: https://github.com/xdslproject/xdsl/commits/main/?author=sueszli
+- xDSL: https://github.com/exo-lang/exo/commits/main/?author=sueszli
+- llvmlite: https://github.com/numba/llvmlite
