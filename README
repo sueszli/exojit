@@ -19,15 +19,10 @@
 a just-in-time compiler for the exo language.
 
 
-(1) Exo's default backend emits C, requiring an offline
+Exo's default backend emits C, requiring an offline
 compile step. exojit lowers Exo IR through xDSL to
 LLVM and compiles it at import time via llvmlite MCJIT.
 
-(2) this prototyped the upstream xDSL PyJIT project:
-https://github.com/xdslproject/xdsl/tree/main/tests/filecheck/projects/pyjit
-
-
-usage:
 
     $ uv run exojit example.py --mlir
     $ uv run exojit example.py --c
@@ -53,5 +48,7 @@ references:
 
 - Exo: https://github.com/exo-lang/exo/commits/main/?author=sueszli
 - xDSL: https://github.com/xdslproject/xdsl/commits/main/?author=sueszli
+  this project serves as a prototype for pyjit:
+  https://github.com/xdslproject/xdsl/tree/main/tests/filecheck/projects/pyjit
 - llvmlite: https://github.com/numba/llvmlite
 - microGPT: https://karpathy.github.io/2026/02/12/microgpt/
