@@ -46,7 +46,6 @@ from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsP
 from xdsl.utils.hints import isa
 from xdsl.utils.scoped_dict import ScopedDict
 
-
 # ===----------------------------------------------------------------------=== #
 # exo patches
 # ===----------------------------------------------------------------------=== #

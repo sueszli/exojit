@@ -34,6 +34,10 @@ precommit:
 	$(MAKE) microgpt
 	$(MAKE) tests
 
+.PHONY: leaderboard
+leaderboard:
+	uv run python microgpt/utils.py
+
 .PHONY: benchmark
 benchmark:
 	uv sync
