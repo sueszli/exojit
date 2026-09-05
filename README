@@ -21,8 +21,8 @@ a just in time compiler for the exo language.
 we take the Exo IR and map it to the LLVM dialect
 in xDSL, which is hooked to the llvmlite MCJIT backend.
 
-// currently being ported to xDSL:
-// https://github.com/xdslproject/xdsl/tree/main/xdsl/jit
+this project is the spiritual predecessor to pyjit:
+https://github.com/xdslproject/xdsl/blob/fd605c2d61528d705f1a225188ff6e68b17df7cc/tests/filecheck/projects/pyjit/arithmetic.py#L4
 
 
 usage:
