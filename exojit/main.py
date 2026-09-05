@@ -704,7 +704,7 @@ def _load_libomp() -> None:
     def brew_prefix(pkg: str) -> str | None:
         try:
             return subprocess.run(["brew", "--prefix", pkg], capture_output=True, text=True, check=True).stdout.strip()
-        except subprocess.CalledProcessError, FileNotFoundError:
+        except (subprocess.CalledProcessError, FileNotFoundError):
             return None
 
     def load_first(paths: list[str]) -> bool:

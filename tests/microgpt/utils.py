@@ -15,10 +15,6 @@ WEIGHTS_PATH = ROOT / "weights.json"
 TIMES_DIR = ROOT / "times"
 
 
-def dump_weights(state_dict) -> None:
-    WEIGHTS_PATH.write_text(json.dumps({k: [[v.data for v in row] for row in mat] for k, mat in state_dict.items()}))
-
-
 def assert_weights_match(state_dict, atol: float = 1e-5) -> None:
     assert WEIGHTS_PATH.exists(), f"weights file not found: {WEIGHTS_PATH}"
 

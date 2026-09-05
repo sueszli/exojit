@@ -33,7 +33,6 @@ from exojit.main import jit
 random.seed(42)
 
 
-N_LAYER = 1
 N_EMBED = 16
 BLOCK_SIZE = 16
 N_HEAD = 4
