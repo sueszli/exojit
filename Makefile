@@ -18,7 +18,7 @@ lint:
 
 .PHONY: microgpt
 microgpt:
-	uv run python microgpt/parity.py
+	uv run python microgpt/impl_exojit.py
 
 .PHONY: tests
 tests:

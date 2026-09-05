@@ -14,7 +14,7 @@ uvx ruff check --fix --ignore F403,F405,F821,E731,E402 .
 
 # benchmark
 for file in *.py; do
-  [[ "$file" == "utils.py" || "$file" == "original.py" ]] || uv run "$file"
+  [[ "$file" == "utils.py" || "$file" == "original.py" || "$file" == "impl_exojit.py" ]] || uv run "$file"
 done
 
 # plot

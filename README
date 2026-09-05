@@ -95,21 +95,21 @@ see microgpt/ for all implementations.
 
 # speedup over original version
 
-  sueszli_exojit  ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇ 1903x
-  sueszli_numpy   ▇▇▇▇▇▇▇▇▇▇▇▇ 378x
-  sueszli_torch   ▇▇▇▇▇▇▇▇▇▇▇ 360x
-  sueszli_jax     ▇▇▇▇ 132x
-  sueszli_plain   ▏ 9x
-  original        ▏ 1x
+  impl_exojit  ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇ 1903x
+  impl_numpy   ▇▇▇▇▇▇▇▇▇▇▇▇ 378x
+  impl_torch   ▇▇▇▇▇▇▇▇▇▇▇ 360x
+  impl_jax     ▇▇▇▇ 132x
+  impl_plain   ▏ 9x
+  original     ▏ 1x
 
 
 # leaderboard
 
-  name            mean μs  ±σ     min    max   
-  ──────────────  ───────  ─────  ─────  ──────
-  sueszli_exojit       35      0     35      35
-  sueszli_numpy       176    133    140    3011
-  sueszli_torch       185     25    165     391
-  sueszli_jax         503      0    503     503
-  sueszli_plain      7042    720   6670   18530
-  original          66601  20604  20522  179583
+  name          mean μs  ±σ     min    max   
+  ────────────  ───────  ─────  ─────  ──────
+  impl_exojit        35      0     35      35
+  impl_numpy        176    133    140    3011
+  impl_torch        185     25    165     391
+  impl_jax          503      0    503     503
+  impl_plain       7042    720   6670   18530
+  original        66601  20604  20522  179583
