@@ -10,7 +10,7 @@ import polars as pl
 from plotnine import aes, annotate, element_line, element_rect, element_text, expand_limits, facet_wrap, geom_hline, geom_line, geom_point, ggplot, labs, scale_color_manual, scale_linetype_manual, scale_shape_manual, theme, theme_minimal
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from kernels.adam_exo import adam_exo
 from kernels.adam_jax import adam_jax
@@ -722,7 +722,7 @@ def _plot(df: pl.DataFrame) -> None:
     variant_order = ["Auto-vectorized", "Numba JIT", "JAX JIT", "torch.compile"]
     pdf["variant"] = pd.Categorical(pdf["variant"], categories=variant_order, ordered=True)
 
-    out = Path(__file__).parent
+    out = Path(__file__).parent.parent
     n_kernels = len(kernel_order)
     # fmt: off
     p = (
@@ -773,5 +773,5 @@ if __name__ == "__main__":
     )
     with pl.Config(tbl_rows=-1):
         print(df)
-    df.write_csv(Path(__file__).parent / "results.csv")
+    df.write_csv(Path(__file__).parent.parent / "results.csv")
     _plot(df)
