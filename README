@@ -25,7 +25,6 @@ a just in time compiler for the exo language.
 usage:
 
     $ uv run exojit example.py --mlir
-    $ uv run exojit example.py --asm
     $ uv run exojit example.py --c
     $ uv run example.py
 
@@ -41,7 +40,7 @@ how it works:
           v
       MLIR LLVM dialect
           v
-    - - - - - - - - - - - - - llvmlite MCJIT
+    - - - - - - - - - - - - - xDSL JIT backend (llvmlite MCJIT)
       Native code
 
 
