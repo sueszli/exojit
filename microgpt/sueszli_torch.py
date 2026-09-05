@@ -9,7 +9,6 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-
 from utils import assert_weights_match, save_times
 
 random.seed(42)
@@ -120,7 +119,7 @@ for step in range(NUM_STEPS):
     t0 = time.perf_counter()
     loss, state_dict, opt_state = step_fn(state_dict, opt_state, train_inputs[step], train_targets[step], train_masks[step], torch.tensor(step, dtype=torch.float64))
     step_times.append(time.perf_counter() - t0)
-    print(f"step {step+1:4d} / {NUM_STEPS:4d} | loss {loss.item():.4f}", end="\r")
+    print(f"step {step + 1:4d} / {NUM_STEPS:4d} | loss {loss.item():.4f}", end="\r")
 
 save_times(step_times)
 assert_weights_match(state_dict)

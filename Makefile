@@ -8,7 +8,7 @@ precommit-hook:
 
 .PHONY: fmt
 fmt:
-	uvx ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016 exojit.py microgpt tests example.py
+	uvx ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016,PLC0206,SIM115 exojit.py microgpt tests example.py
 	uvx ruff format --line-length 5000 --target-version py314 exojit.py microgpt tests example.py
 
 .PHONY: lint

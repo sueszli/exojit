@@ -11,7 +11,6 @@ from operator import mul
 from pathlib import Path
 
 from tqdm import tqdm
-
 from utils import assert_weights_match, save_times
 
 random.seed(42)
@@ -194,7 +193,7 @@ def attn_bwd(dx: list[list[float]], wq, wk, wv, wo, c: AttnCache, li: int) -> tu
 def mlp_fwd(x: list[list[float]], fc1, fc2) -> tuple[list[list[float]], MlpCache]:
     xn, rms = rmsnorm_fwd(x)
     h_pre = linear_fwd(xn, fc1)
-    h = [[v if v > 0.0 else 0.0 for v in row] for row in h_pre]
+    h = [[max(0.0, v) for v in row] for row in h_pre]
     return madd(linear_fwd(h, fc2), x), MlpCache(x, xn, rms, h_pre, h)
 
 

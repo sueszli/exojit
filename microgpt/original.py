@@ -40,60 +40,60 @@ print(f"vocab size: {vocab_size}")
 class Value:
     # autograd
 
-    __slots__ = ("data", "grad", "_children", "_local_grads")  # perf optimization
+    __slots__ = ("_children", "_local_grads", "data", "grad")  # perf optimization
 
-    def __init__(self, data: float, children: tuple["Value", ...] = (), local_grads: tuple[float, ...] = ()) -> None:
+    def __init__(self, data: float, children: tuple[Value, ...] = (), local_grads: tuple[float, ...] = ()) -> None:
         self.data = data  # scalar value of this node (calculated during forward pass)
         self.grad = 0  # derivative of the loss w.r.t. this node (calculated in backward pass)
         self._children = children  # children of this node in graph
         self._local_grads = local_grads  # local derivative of this node w.r.t. its children
 
-    def __add__(self, other: "Value | float") -> "Value":
+    def __add__(self, other: Value | float) -> Value:
         other = other if isinstance(other, Value) else Value(other)
         return Value(self.data + other.data, (self, other), (1, 1))
 
-    def __mul__(self, other: "Value | float") -> "Value":
+    def __mul__(self, other: Value | float) -> Value:
         other = other if isinstance(other, Value) else Value(other)
         return Value(self.data * other.data, (self, other), (other.data, self.data))
 
-    def __pow__(self, other: float) -> "Value":
+    def __pow__(self, other: float) -> Value:
         return Value(self.data**other, (self,), (other * self.data ** (other - 1),))
 
-    def log(self) -> "Value":
+    def log(self) -> Value:
         return Value(math.log(self.data), (self,), (1 / self.data,))
 
-    def exp(self) -> "Value":
+    def exp(self) -> Value:
         return Value(math.exp(self.data), (self,), (math.exp(self.data),))
 
-    def relu(self) -> "Value":
+    def relu(self) -> Value:
         return Value(max(0, self.data), (self,), (float(self.data > 0),))
 
-    def __neg__(self) -> "Value":
+    def __neg__(self) -> Value:
         return self * -1
 
-    def __radd__(self, other: "Value | float") -> "Value":
+    def __radd__(self, other: Value | float) -> Value:
         return self + other
 
-    def __sub__(self, other: "Value | float") -> "Value":
+    def __sub__(self, other: Value | float) -> Value:
         return self + (-other)
 
-    def __rsub__(self, other: "Value | float") -> "Value":
+    def __rsub__(self, other: Value | float) -> Value:
         return other + (-self)
 
-    def __rmul__(self, other: "Value | float") -> "Value":
+    def __rmul__(self, other: Value | float) -> Value:
         return self * other
 
-    def __truediv__(self, other: "Value | float") -> "Value":
+    def __truediv__(self, other: Value | float) -> Value:
         return self * other**-1
 
-    def __rtruediv__(self, other: "Value | float") -> "Value":
+    def __rtruediv__(self, other: Value | float) -> Value:
         return other * self**-1
 
     def backward(self) -> None:
         topo: list[Value] = []
         visited: set[Value] = set()
 
-        def build_topo(v: "Value") -> None:
+        def build_topo(v: Value) -> None:
             if v not in visited:
                 visited.add(v)
                 for child in v._children:
@@ -272,7 +272,7 @@ for step in range(NUM_STEPS):
         p.grad = 0  # reset gradients
 
     step_times.append(time.perf_counter() - t0)
-    print(f"step {step+1:4d} / {NUM_STEPS:4d} | loss {loss.data:.4f}", end="\r")
+    print(f"step {step + 1:4d} / {NUM_STEPS:4d} | loss {loss.data:.4f}", end="\r")
 
 save_times(step_times)
 dump_weights(state_dict)
@@ -298,4 +298,4 @@ for sample_idx in range(20):
         if token_id == BOS:
             break
         sample.append(uchars[token_id])
-    print(f"sample {sample_idx+1:2d}: {''.join(sample)}")
+    print(f"sample {sample_idx + 1:2d}: {''.join(sample)}")
