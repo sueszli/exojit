@@ -26,7 +26,6 @@ from exo.core.prelude import Sym
 from exo.frontend.pyparser import DummyScope, Parser, get_ast_from_python
 from exo.main import load_user_code
 from exo.rewrite.range_analysis import constant_bound
-from xdsl.backend.llvm.convert import convert_module
 from xdsl.backend.llvm.convert_op import _CAST_OP_NAMES
 from xdsl.builder import Builder
 from xdsl.context import Context
@@ -36,13 +35,10 @@ from xdsl.dialects.llvm import GEP_USE_SSA_VAL, BrOp, FNegOp, GenericCastOp, LLV
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
 from xdsl.ir import Attribute, Block, BlockArgument, Operation, OpResult, Region, SSAValue
 from xdsl.irdl import irdl_op_definition
-from xdsl.jit.c_type_context import CTypeContext, register_builtin_types
-from xdsl.jit.llvm.backend import _compile_module, _create_target_machine
-from xdsl.jit.llvm.c_type_context import register_llvm_types, to_c_func_type
+from xdsl.jit.llvm.backend import LLVMJITBackend
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, TypeConversionPattern, attr_type_rewrite_pattern, op_type_rewrite_pattern
 from xdsl.rewriter import InsertPoint
-from xdsl.traits import SymbolTable
 from xdsl.transforms.canonicalize import CanonicalizePass
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
 from xdsl.transforms.convert_memref_to_ptr import ConvertCastOp
@@ -251,6 +247,7 @@ class RewriteMemRefTypes(TypeConversionPattern):
     @attr_type_rewrite_pattern
     def convert_type(self, type: MemRefType) -> llvm.LLVMPointerType:
         return llvm.LLVMPointerType()
+
 
 # ===----------------------------------------------------------------------=== #
 # exojit
@@ -708,7 +705,8 @@ class IRGenerator:
 
             self.builder.insert(llvm.ReturnOp())
 
-        self._insert_at_module(llvm.FuncOp(procedure.name, func_type, linkage=llvm.LinkageAttr("external"), body=func_region))
+        noalias_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(t, LLVMPointerType) else {}) for t in input_types])
+        self._insert_at_module(llvm.FuncOp(procedure.name, func_type, linkage=llvm.LinkageAttr("external"), body=func_region, other_props={"arg_attrs": noalias_attrs}))
 
     def generate(self, procs: list[LoopIR.proc]) -> ModuleOp:
         for proc in procs:
@@ -745,22 +743,7 @@ class LLVMBackend:
         _simplify()
         return module
 
-    @staticmethod
-    @cache
-    def _c_type_context() -> CTypeContext:
-        ctx = CTypeContext()
-        register_builtin_types(ctx)
-        register_llvm_types(ctx)
-        return ctx
-
-    @staticmethod
-    def _annotate_noalias(module: ModuleOp) -> ModuleOp:
-        # noalias lets llvm's loop vectorizer assume buffers do not overlap
-        module = module.clone()
-        for func_op in module.ops:
-            assert isinstance(func_op, llvm.FuncOp)
-            func_op.arg_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(input_type, llvm.LLVMPointerType) else {}) for input_type in func_op.function_type.inputs])
-        return module
+    _jit_backend = LLVMJITBackend(lowering=(), opt_level=3)
 
 
 class JITRuntime:
@@ -823,15 +806,7 @@ class JITRuntime:
     @staticmethod
     def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
         mlir_module = to_mlir(proc)
-        mlir_module = LLVMBackend._annotate_noalias(mlir_module)
-
-        func_op = SymbolTable.lookup_symbol(mlir_module, proc.name())
-        assert isinstance(func_op, llvm.FuncOp)
-        c_func_type = to_c_func_type(LLVMBackend._c_type_context(), func_op.function_type)
-
-        target, tm = _create_target_machine(opt_level=3)
-        llvm_module = convert_module(mlir_module, fallback_target_triple=tm.triple, data_layout=str(tm.target_data))
-        raw_jit = _compile_module(llvm_module, proc.name(), c_func_type, target=target, target_machine=tm, opt_level=3)
+        raw_jit = LLVMBackend._jit_backend.jit(mlir_module, proc.name(), LLVMBackend._context())
         fn = raw_jit.c_func
 
         ir_args = proc._loopir_proc.args
