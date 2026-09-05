@@ -4,8 +4,6 @@ import hashlib
 import math
 import numbers
 import re
-import subprocess
-import sys
 import tempfile
 from collections.abc import Callable, MutableSequence, Sequence
 from contextlib import contextmanager
@@ -20,10 +18,10 @@ from exo import compile_procs as exo_compile_procs
 from exo.API import Procedure
 from exo.backend.LoopIR_compiler import find_all_subprocs
 from exo.backend.mem_analysis import MemoryAnalysis
-from exo.backend.parallel_analysis import ParallelAnalysis
 from exo.backend.prec_analysis import PrecisionAnalysis
 from exo.backend.win_analysis import WindowAnalysis
 from exo.core.LoopIR import LoopIR, T, get_writes_of_stmts
+from exo.frontend.pyparser import DummyScope, Parser, get_ast_from_python
 from exo.main import load_user_code
 from exo.rewrite.range_analysis import constant_bound
 from xdsl.backend.llvm.convert import convert_module
@@ -45,7 +43,6 @@ from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsP
 from xdsl.utils.scoped_dict import ScopedDict
 
 import exojit.patches_exo  # noqa: F401
-from exojit.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from exojit.patches_xdsl_llvm import ExtendedConvertMemRefToPtr, FPTruncOp, RewriteMemRefTypes
 
 
@@ -62,7 +59,6 @@ class IRGenerator:
         self.symbol_table = None
         self.seen_proc_names = set()
         self.seen_extern_decls = set()
-        self._par_counter = 0  # for naming
 
     @property
     def _syms(self) -> ScopedDict[str, SSAValue]:
@@ -385,79 +381,7 @@ class IRGenerator:
         region.add_block(exit_block)
         self.builder = Builder(insertion_point=InsertPoint.at_end(exit_block))
 
-    def _stmt_for_par(self, s: LoopIR.For) -> None:
-        # par() loop -> __kmpc_fork_call(@outlined, lo, hi, ...shared)
-        # outlined fn: static_init_8 -> loop [adj_lo, adj_hi] -> static_fini
-        lo = self._expr(s.lo)
-        hi = self._expr(s.hi)
-        ptr = llvm.LLVMPointerType()
-
-        st = lambda v, p: self.builder.insert(llvm.StoreOp(v, p))
-        ext = lambda v: v if v.type == i64 else self._emit(llvm.SExtOp(v, i64))
-        alloc = lambda t: self._emit(llvm.AllocaOp(self._int_const(1), t))
-
-        flat = lambda sd: {**(flat(sd.parent) if sd.parent else {}), **sd.local_scope}  # flatten ScopedDict parent chain
-        syms = flat(self._syms)  # shared captures: all live vars passed to outlined fn
-        names = list(syms.keys())
-
-        # bounds passed by pointer
-        lo_p = alloc(lo.type)
-        st(lo, lo_p)
-        hi_p = alloc(hi.type)
-        st(hi, hi_p)
-
-        # outlined fn: void @__omp_outlined_N(i32* gtid, i32* tid, T* lo, T* hi, ...shared)
-        oname = f"__omp_outlined_{self._par_counter}"
-        self._par_counter += 1
-        atypes = [ptr] * 4 + [syms[n].type for n in names]
-        ftype = self._void_fn_type(atypes)
-        with self._scoped_state():
-            blk = Block(arg_types=atypes)
-            region = Region(blk)
-            self.builder = Builder(insertion_point=InsertPoint.at_end(blk))
-            self.symbol_table = ScopedDict()
-            for i, n in enumerate(names):  # bind shared captures (args[4:])
-                self._syms[n] = blk.args[4 + i]
-            gtid = self._emit(llvm.LoadOp(blk.args[0], i32))
-            lo_v = self._emit(llvm.LoadOp(blk.args[2], lo.type))
-            hi_v = self._emit(llvm.LoadOp(blk.args[3], hi.type))
-
-            # static_init_8 out-params: is_last, lower, upper, stride
-            is_last_p = alloc(i32)
-            lower_p = alloc(i64)
-            upper_p = alloc(i64)
-            stride_p = alloc(i64)
-            st(self._int_const(0, i32), is_last_p)
-            lo64 = ext(lo_v)
-            hi_incl = self._emit(llvm.SubOp(ext(hi_v), self._int_const(1)))  # [lo, hi) -> [lo, hi-1]
-            st(lo64, lower_p)
-            st(hi_incl, upper_p)
-            st(self._int_const(1), stride_p)
-
-            # partition [lo, hi-1] across threads (schedule 34 = static)
-            null = self._emit(llvm.ZeroOp(result_types=[ptr]))
-            self.builder.insert(llvm.CallOp("__kmpc_for_static_init_8", null, gtid, self._int_const(34, i32), is_last_p, lower_p, upper_p, stride_p, self._int_const(1), self._int_const(1)))
-
-            # this thread's chunk; clamp upper to original hi-1
-            adj_lo = self._emit(llvm.LoadOp(lower_p, i64))
-            adj_hi_raw = self._emit(llvm.LoadOp(upper_p, i64))
-            adj_hi = self._emit(llvm.SelectOp(self._emit(llvm.ICmpOp(adj_hi_raw, hi_incl, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64))), adj_hi_raw, hi_incl))
-
-            # loop over [adj_lo, adj_hi], then static_fini + ret
-            self._counted_loop(adj_lo, adj_hi, llvm.ICmpPredicateFlag.SLE, repr(s.iter), lo.type, s.body, lambda: self._int_const(1))
-            self.builder.insert(llvm.CallOp("__kmpc_for_static_fini", self._emit(llvm.ZeroOp(result_types=[ptr])), self._emit(llvm.LoadOp(blk.args[0], i32))))
-            self.builder.insert(llvm.ReturnOp())
-        self._insert_at_module(llvm.FuncOp(oname, ftype, linkage=llvm.LinkageAttr("external"), body=region))
-
-        # caller: fork_call(loc=null, argc, @outlined, lo*, hi*, ...shared_as_ptr)
-        args = [self._emit(llvm.ZeroOp(result_types=[ptr])), self._int_const(len(names) + 2, i32), self._emit(llvm.AddressOfOp(oname, ptr)), lo_p, hi_p]
-        args += [self._emit(UnrealizedConversionCastOp.get([syms[n]], [ptr])) if syms[n].type != ptr else syms[n] for n in names]
-        self.builder.insert(llvm.CallOp("__kmpc_fork_call", *args))
-
     def _stmt_for(self, for_stmt: LoopIR.For) -> None:
-        if isinstance(for_stmt.loop_mode, LoopIR.Par):
-            return self._stmt_for_par(for_stmt)
-
         lo = self._expr(for_stmt.lo)
         hi = self._expr(for_stmt.hi)
         assert lo.type == hi.type
@@ -595,11 +519,6 @@ class IRGenerator:
         # declare external malloc/free for dram alloc/free lowering
         self._insert_at_module(llvm.FuncOp("malloc", llvm.LLVMFunctionType([i64], llvm.LLVMPointerType()), llvm.LinkageAttr("external")))
         self._insert_at_module(llvm.FuncOp("free", llvm.LLVMFunctionType([llvm.LLVMPointerType()]), llvm.LinkageAttr("external")))
-        if self._par_counter:
-            ptr = llvm.LLVMPointerType()
-            self._insert_at_module(llvm.FuncOp("__kmpc_fork_call", llvm.LLVMFunctionType([ptr, i32, ptr], is_variadic=True), llvm.LinkageAttr("external")))
-            self._insert_at_module(llvm.FuncOp("__kmpc_for_static_init_8", llvm.LLVMFunctionType([ptr, i32, i32, ptr, ptr, ptr, ptr, i64, i64]), llvm.LinkageAttr("external")))
-            self._insert_at_module(llvm.FuncOp("__kmpc_for_static_fini", llvm.LLVMFunctionType([ptr, i32]), llvm.LinkageAttr("external")))
         return self.module
 
 
@@ -623,7 +542,6 @@ def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
     # full lowering to llvm dialect
     ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
     _rewrite([RewriteMemRefTypes()])  # memreftype -> llvm.ptr on all values
-    _rewrite([ConvertVecIntrinsic()])  # vec_*/neon_* calls -> llvm ops
     ReconcileUnrealizedCastsPass().apply(ctx, module)  # fold paired unrealized casts
     module.verify()
 
@@ -640,7 +558,6 @@ def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
     unique_procs = list({proc.name: proc for proc in all_procs if proc.instr is None}.values())
 
     def exo_analyze(proc: LoopIR.proc) -> LoopIR.proc:
-        proc = ParallelAnalysis().run(proc)
         proc = PrecisionAnalysis().run(proc)
         proc = WindowAnalysis().apply_proc(proc)
         return MemoryAnalysis().run(proc)
@@ -679,12 +596,6 @@ def _to_llvmlite_moduleref(ir: str) -> tuple[llvmlite.binding.ModuleRef, llvmlit
     return mod_ref, tm
 
 
-def to_asm(module: ModuleOp) -> str:
-    # xdsl mlir -> native assembly text
-    mod_ref, tm = _to_llvmlite_moduleref(_to_llvm_ir(module))
-    return tm.emit_assembly(mod_ref)
-
-
 def _disk_cache(name: object, generate: Callable[[], str]) -> str:
     # hash all compiler sources -> .cache/exojit/{hash}/. auto-invalidates when compiler code changes.
     src_dir = Path(__file__).resolve().parent
@@ -694,33 +605,6 @@ def _disk_cache(name: object, generate: Callable[[], str]) -> str:
     if not path.exists():
         path.write_text(generate())
     return path.read_text()
-
-
-@cache
-def _load_libomp() -> None:
-    if sys.platform != "darwin":
-        return llvmlite.binding.load_library_permanently("libgomp.so.1")
-
-    def brew_prefix(pkg: str) -> str | None:
-        try:
-            return subprocess.run(["brew", "--prefix", pkg], capture_output=True, text=True, check=True).stdout.strip()
-        except subprocess.CalledProcessError, FileNotFoundError:
-            return None
-
-    def load_first(paths: list[str]) -> bool:
-        for lib in paths:
-            try:
-                llvmlite.binding.load_library_permanently(lib)
-                return True
-            except RuntimeError:  # missing, or built for another architecture
-                continue
-        return False
-
-    candidates = [f"{prefix}/opt/{pkg}/lib/libomp.dylib" for prefix in ("/opt/homebrew", "/usr/local") for pkg in ("libomp", "llvm")]
-    if load_first(candidates):
-        return
-    brewed = [f"{prefix}/lib/libomp.dylib" for pkg in ("libomp", "llvm") if (prefix := brew_prefix(pkg))]
-    assert load_first(brewed), f"libomp not found; tried {candidates + brewed}"
 
 
 @cache
@@ -798,12 +682,7 @@ def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writab
 def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
     mlir_module = to_mlir(proc)
     ir_text = _disk_cache(hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16], lambda: _to_llvm_ir(mlir_module))
-    if "__kmpc_fork_call" in ir_text:  # see https://openmp.llvm.org/doxygen/group__THREADPRIVATE.html
-        _load_libomp()
-
     mod_ref, tm = _to_llvmlite_moduleref(ir_text)
-    unlowered = [f.name for f in mod_ref.functions if f.is_declaration and re.fullmatch(r"(vec|neon)_\w+", f.name) and llvmlite.binding.address_of_symbol(f.name) is None]
-    assert not unlowered, f"{proc.name()}: no lowering for intrinsics {unlowered}"
 
     engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
     engine.finalize_object()
@@ -861,8 +740,6 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
     if proc is None:
         return lambda fn: jit(fn, raw=raw, optimize=optimize)
     if callable(proc) and not isinstance(proc, Procedure):
-        from exo.frontend.pyparser import DummyScope, Parser, get_ast_from_python
-
         body, src_info = get_ast_from_python(proc)
         parser = Parser(body, src_info, parent_scope=DummyScope(proc.__globals__, {}), as_func=True)
         proc = Procedure(parser.result())
@@ -894,6 +771,8 @@ def cli(source: Path, fmt: Literal["c", "mlir", "asm"] | None):
         case "mlir":
             text = str(to_mlir(procs))
         case "asm":
-            text = to_asm(to_mlir(procs))
+            # xdsl mlir -> native assembly text
+            mod_ref, tm = _to_llvmlite_moduleref(_to_llvm_ir(to_mlir(procs)))
+            text = tm.emit_assembly(mod_ref)
 
     click.echo(text)

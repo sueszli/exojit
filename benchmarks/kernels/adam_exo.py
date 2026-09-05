@@ -21,7 +21,7 @@ def _adam(N: size, param: f32[N] @ DRAM, grad: f32[N] @ DRAM, m: f32[N] @ DRAM, 
     inv_beta1_t = 1.0 / beta1_t[0]
     inv_beta2_t = 1.0 / beta2_t[0]
 
-    for i in par(0, N):
+    for i in seq(0, N):
         g: f32 @ DRAM
         g = grad[i]
 

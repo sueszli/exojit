@@ -5,7 +5,7 @@ license-files = ["LICENSE"]
 requires-python = "==3.14.*"
 dependencies = [
     "exo-lang @ git+https://github.com/exo-lang/exo.git@ec75d3c5b229b1519890f836e7badcd46b04c007",
-    "xdsl @ git+https://github.com/xdslproject/xdsl.git@9845a80f3545057435c2e226bc2da4a20968cb5c",
+    "xdsl @ git+https://github.com/xdslproject/xdsl.git@ee09066d4aa634ef84d962c9766ca4e95c9ad93a",
     "click",
     "cffi",
     "lit",
