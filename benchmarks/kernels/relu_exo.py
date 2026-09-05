@@ -7,7 +7,7 @@ from exo import *
 from exo.libs.externs import select
 from exo.stdlib.scheduling import simplify
 
-from exojit.main import jit
+from exojit import jit
 
 
 @proc

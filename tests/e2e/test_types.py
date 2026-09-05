@@ -5,7 +5,7 @@ from _utils import compile_mlir
 from conftest import assert_match
 from exo import *
 
-from exojit.main import jit, to_mlir
+from exojit import jit, to_mlir
 
 
 @proc

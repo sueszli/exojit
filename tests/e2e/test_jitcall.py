@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from exo import *
 
-from exojit.main import jit
+from exojit import jit
 
 
 @proc

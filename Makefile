@@ -8,13 +8,13 @@ precommit-hook:
 
 .PHONY: fmt
 fmt:
-	uvx ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016 exojit microgpt tests benchmarks example.py
-	uvx ruff format --line-length 5000 --target-version py314 exojit microgpt tests benchmarks example.py
+	uvx ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016 exojit.py microgpt tests benchmarks example.py
+	uvx ruff format --line-length 5000 --target-version py314 exojit.py microgpt tests benchmarks example.py
 
 .PHONY: lint
 lint:
-	uv run --with vulture vulture --min-confidence 80 exojit microgpt tests benchmarks example.py
-	uv run --with pyright pyright exojit
+	uv run --with vulture vulture --min-confidence 80 exojit.py microgpt tests benchmarks example.py
+	uv run --with pyright pyright exojit.py
 
 .PHONY: microgpt
 microgpt:
