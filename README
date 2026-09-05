@@ -16,7 +16,7 @@
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣇
 
 
-a just-in-time compiler for the exo language.
+A Just-In-Time compiler for the Exo language.
 
 
 Exo's default backend emits C, requiring an offline
