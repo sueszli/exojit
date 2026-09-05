@@ -679,12 +679,6 @@ def _to_llvmlite_moduleref(ir: str) -> tuple[llvmlite.binding.ModuleRef, llvmlit
     return mod_ref, tm
 
 
-def to_asm(module: ModuleOp) -> str:
-    # xdsl mlir -> native assembly text
-    mod_ref, tm = _to_llvmlite_moduleref(_to_llvm_ir(module))
-    return tm.emit_assembly(mod_ref)
-
-
 def _disk_cache(name: object, generate: Callable[[], str]) -> str:
     # hash all compiler sources -> .cache/exojit/{hash}/. auto-invalidates when compiler code changes.
     src_dir = Path(__file__).resolve().parent
@@ -894,6 +888,8 @@ def cli(source: Path, fmt: Literal["c", "mlir", "asm"] | None):
         case "mlir":
             text = str(to_mlir(procs))
         case "asm":
-            text = to_asm(to_mlir(procs))
+            # xdsl mlir -> native assembly text
+            mod_ref, tm = _to_llvmlite_moduleref(_to_llvm_ir(to_mlir(procs)))
+            text = tm.emit_assembly(mod_ref)
 
     click.echo(text)
