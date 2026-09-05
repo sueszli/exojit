@@ -34,7 +34,7 @@ precommit:
 	$(MAKE) microgpt
 	$(MAKE) tests
 
-.PHONY: benchmark
-benchmark:
+.PHONY: kernels
+kernels:
 	uv sync
 	uv run python microgpt/kernel-benchmarks/kernels/run.py
