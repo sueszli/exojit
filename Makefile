@@ -18,7 +18,7 @@ lint:
 
 .PHONY: microgpt
 microgpt:
-	uv run pytest -W ignore -x -n0 microgpt/
+	uv run python microgpt/parity.py
 
 .PHONY: tests
 tests:
