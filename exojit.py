@@ -46,9 +46,11 @@ from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsP
 from xdsl.utils.hints import isa
 from xdsl.utils.scoped_dict import ScopedDict
 
+
 # ===----------------------------------------------------------------------=== #
 # exo patches
 # ===----------------------------------------------------------------------=== #
+
 
 _pyparser._prim_types["size"] = UAST.Size()
 _pyparser._prim_types["index"] = UAST.Index()
@@ -87,6 +89,7 @@ def patched_lift_expr(e):
 
 
 _boundscheck.lift_expr = patched_lift_expr
+
 
 # ===----------------------------------------------------------------------=== #
 # xdsl patches
