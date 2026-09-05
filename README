@@ -16,7 +16,7 @@
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣇
 
 
-a just in time compiler for the exo language.
+a just-in-time compiler for the exo language.
 
 // served as a prototype for:
 // https://github.com/xdslproject/xdsl/tree/main/tests/filecheck/projects/pyjit
