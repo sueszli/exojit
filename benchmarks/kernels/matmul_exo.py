@@ -8,6 +8,7 @@ from exo.stdlib.scheduling import divide_loop, fission, reorder_loops, simplify
 
 from exojit.main import jit
 
+
 @proc
 def _matmul(M: size, K: size, N: size, C: f32[M, N] @ DRAM, A: f32[M, K] @ DRAM, B: f32[K, N] @ DRAM):
     for i in seq(0, M):

@@ -8,6 +8,7 @@ from exo.stdlib.scheduling import simplify
 
 from exojit.main import jit
 
+
 @proc
 def _saxpy(N: size, y: f32[N] @ DRAM, x: f32[N] @ DRAM, a: f32[1] @ DRAM):
     for i in seq(0, N):

@@ -8,6 +8,7 @@ from exo.stdlib.scheduling import simplify
 
 from exojit.main import jit
 
+
 @proc
 def _add(N: size, z: f32[N], x: f32[N], y: f32[N]):
     for i in seq(0, N):
