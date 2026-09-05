@@ -6,7 +6,7 @@ from functools import cache
 from exo import *
 from exo.stdlib.scheduling import divide_loop, fission, reorder_loops, simplify
 
-from exojit.main import jit
+from exojit import jit
 
 
 @proc

@@ -4,7 +4,7 @@ from textwrap import dedent
 
 from click.testing import CliRunner
 
-from exojit.main import cli
+from exojit import cli
 
 
 def test_cli_deduplicates_exported_proc_names(tmp_path):

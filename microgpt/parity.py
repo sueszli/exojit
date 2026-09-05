@@ -23,7 +23,7 @@ from exo.libs.externs import expf, select, sqrt
 from exo.libs.memories import DRAM_STACK
 from exo.stdlib.scheduling import simplify
 
-from exojit.main import jit
+from exojit import jit
 
 random.seed(42)
 

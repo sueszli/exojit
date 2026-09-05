@@ -35,4 +35,4 @@ build-backend = { module-root = "", namespace = true }
 addopts = "-n auto --forked -v"
 
 [project.scripts]
-exojit = "exojit.main:cli"
+exojit = "exojit:cli"

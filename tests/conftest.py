@@ -9,7 +9,7 @@ import numpy as np
 from _utils import compile_exo, compile_mlir
 from exo.API import Procedure
 
-from exojit.main import jit, to_mlir
+from exojit import jit, to_mlir
 
 # xdsl irdl holds raw ctypes pointers. gc finalizer ordering -> dangling ptr -> segfault
 _gc.disable()

@@ -12,7 +12,7 @@ from exo import *
 from exo.API import Procedure
 from exo.stdlib.scheduling import divide_loop, fission, reorder_loops, simplify, unroll_loop
 
-from exojit.main import jit
+from exojit import jit
 
 
 def optimize_matmul(p: Procedure) -> Procedure:
