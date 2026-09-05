@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import math
 import numbers
 import re
@@ -15,7 +14,6 @@ from typing import Any, Literal, SupportsInt, TypeGuard, cast
 
 import click
 import llvmlite.binding
-import llvmlite.ir
 from cffi import FFI
 from exo import compile_procs as exo_compile_procs
 from exo.API import Procedure
@@ -24,21 +22,21 @@ from exo.backend.mem_analysis import MemoryAnalysis
 from exo.backend.parallel_analysis import ParallelAnalysis
 from exo.backend.prec_analysis import PrecisionAnalysis
 from exo.backend.win_analysis import WindowAnalysis
-from exo.core.LoopIR import LoopIR, T
-from exo.core.prelude import Sym
+from exo.core.LoopIR import LoopIR, T, get_writes_of_stmts
 from exo.main import load_user_code
-from exojit.jitcall import JitFunc
-from xdsl.backend.llvm.convert_op import convert_op as _xdsl_convert_op
-from xdsl.backend.llvm.convert_type import convert_type
+from xdsl.backend.llvm.convert import convert_module
 from xdsl.builder import Builder
 from xdsl.context import Context
 from xdsl.dialects import llvm, memref
-from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, BoolAttr, Builtin, FloatAttr, IndexType, IntAttr, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
+from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, ArrayAttr, BoolAttr, Builtin, DictionaryAttr, FloatAttr, IndexType, IntAttr, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnitAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
 from xdsl.dialects.llvm import BrOp, FNegOp
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
 from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
+from xdsl.jit.c_type_context import CTypeContext, register_builtin_types
+from xdsl.jit.llvm.c_type_context import register_llvm_types, to_c_func_type
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriteWalker
 from xdsl.rewriter import InsertPoint
+from xdsl.traits import SymbolTable
 from xdsl.transforms.canonicalize import CanonicalizePass
 from xdsl.transforms.common_subexpression_elimination import CommonSubexpressionElimination
 from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsPass
@@ -431,7 +429,7 @@ class IRGenerator:
         oname = f"__omp_outlined_{self._par_counter}"
         self._par_counter += 1
         atypes = [ptr] * 4 + [syms[n].type for n in names]
-        ftype = llvm.LLVMFunctionType(atypes, llvm.LLVMVoidType())
+        ftype = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in atypes], llvm.LLVMVoidType())
         with self._scoped_state(inherit=False):
             blk = Block(arg_types=atypes)
             region = Region(blk)
@@ -629,7 +627,7 @@ class IRGenerator:
         elif call.f.name not in self.seen_extern_decls:
             self.seen_extern_decls.add(call.f.name)
             input_types = [SSAValue.get(arg).type for arg in args]
-            self._insert_at_module(llvm.FuncOp(call.f.name, llvm.LLVMFunctionType(input_types, llvm.LLVMVoidType()), llvm.LinkageAttr("external")))
+            self._insert_at_module(llvm.FuncOp(call.f.name, llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType()), llvm.LinkageAttr("external")))
 
         self.builder.insert(llvm.CallOp(call.f.name, *args))
 
@@ -673,7 +671,7 @@ class IRGenerator:
             if not isinstance(mlir_type, MemRefType) and self._is_mutated(repr(arg.name), procedure.body):
                 mlir_type = MemRefType(mlir_type, [1], NoneAttr())
             input_types.append(mlir_type)
-        func_type = llvm.LLVMFunctionType(input_types, llvm.LLVMVoidType())
+        func_type = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType())
 
         with self._scoped_state(inherit=False):
             block = Block(arg_types=input_types)
@@ -754,80 +752,6 @@ def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
     return _lower([exo_analyze(proc) for proc in unique_procs])
 
 
-class LLVMLiteGenerator:
-    @staticmethod
-    def _convert_op(op: Operation, builder: llvmlite.ir.IRBuilder, block_map: dict[Block, llvmlite.ir.Block], phi_map: dict[SSAValue, llvmlite.ir.PhiInstr], val_map: dict[SSAValue, llvmlite.ir.Value]) -> None:
-        # translate one xdsl op to llvmlite ir. unmatched ops fall back to xdsl's convert_op
-        match op:
-            case llvm.CallOp() if op.callee and op.callee.string_value().startswith("__kmpc_"):
-                fn = builder.module.get_global(op.callee.string_value())
-                args = [val_map[a] for a in op.args]
-                builder.call(fn, [builder.bitcast(a, fn.ftype.args[i]) if i < len(fn.ftype.args) and a.type != fn.ftype.args[i] else a for i, a in enumerate(args)])
-            case FPTruncOp():
-                val_map[op.results[0]] = builder.fptrunc(val_map[op.arg], convert_type(op.results[0].type))
-            case _:
-                _xdsl_convert_op(op, builder, val_map, block_map)
-
-    @staticmethod
-    def _generate_func(func_op: llvm.FuncOp, llvm_module: llvmlite.ir.Module) -> None:
-        # generate one xdsl func: create blocks, insert phis, translate ops
-        ir_func = llvm_module.get_global(func_op.sym_name.data)
-        mlir_blocks = list(func_op.body.blocks)
-
-        block_map: dict[Block, llvmlite.ir.Block] = {block: ir_func.append_basic_block() for block in mlir_blocks}
-        phi_map: dict[SSAValue, llvmlite.ir.PhiInstr] = {arg: llvmlite.ir.IRBuilder(block_map[blk]).phi(convert_type(arg.type)) for blk in mlir_blocks[1:] for arg in blk.args}
-        val_map: dict[SSAValue, llvmlite.ir.Value] = {**dict(zip(mlir_blocks[0].args, ir_func.args)), **phi_map}
-
-        for mlir_block in mlir_blocks:
-            builder = llvmlite.ir.IRBuilder(block_map[mlir_block])
-            for op in mlir_block.ops:
-                LLVMLiteGenerator._convert_op(op, builder, block_map, phi_map, val_map)
-
-    @staticmethod
-    def generate(module: ModuleOp) -> llvmlite.ir.Module:
-        llvm_module = llvmlite.ir.Module()
-        # enable loop vectorizer
-        tm = _target_machine()
-        llvm_module.triple = tm.triple
-        llvm_module.data_layout = str(tm.target_data)
-        func_ops: list[llvm.FuncOp] = []
-
-        for op in module.ops:
-            assert isinstance(op, llvm.FuncOp)
-            func_ops.append(op)
-            ftype = llvmlite.ir.FunctionType(convert_type(op.function_type.output), [convert_type(t) for t in op.function_type.inputs], var_arg=op.function_type.is_variadic)
-            fn = llvmlite.ir.Function(llvm_module, ftype, name=op.sym_name.data)
-
-            # mark all pointer args as noalias for vectorization
-            for arg in fn.args:
-                if isinstance(arg.type, llvmlite.ir.PointerType):
-                    arg.add_attribute("noalias")
-
-        # declare external functions referenced by CallOps but not defined in the module
-        defined_names = {op.sym_name.data for op in func_ops}
-        extern_calls = {op.callee.string_value(): op for func_op in func_ops for block in func_op.body.blocks for op in block.ops if isinstance(op, llvm.CallOp) and op.callee is not None and op.callee.string_value() not in defined_names}
-        pt, i32t, i64t = llvmlite.ir.PointerType(llvmlite.ir.IntType(8)), llvmlite.ir.IntType(32), llvmlite.ir.IntType(64)
-        i32p, i64p, vt = llvmlite.ir.PointerType(i32t), llvmlite.ir.PointerType(i64t), llvmlite.ir.VoidType()
-        omp_decls = {
-            "__kmpc_fork_call": llvmlite.ir.FunctionType(vt, [pt, i32t, pt], var_arg=True),
-            "__kmpc_for_static_init_8": llvmlite.ir.FunctionType(vt, [pt, i32t, i32t, i32p, i64p, i64p, i64p, i64t, i64t]),
-            "__kmpc_for_static_fini": llvmlite.ir.FunctionType(vt, [pt, i32t]),
-        }
-        for name, op in extern_calls.items():
-            if name in omp_decls:
-                llvmlite.ir.Function(llvm_module, omp_decls[name], name=name)
-            else:
-                ret_type = convert_type(op.results[0].type) if op.results else llvmlite.ir.VoidType()
-                arg_types = [convert_type(a.type) for a in op.args]
-                llvmlite.ir.Function(llvm_module, llvmlite.ir.FunctionType(ret_type, arg_types), name=name)
-
-        for func_op in func_ops:
-            if func_op.body.blocks:
-                LLVMLiteGenerator._generate_func(func_op, llvm_module)
-
-        return llvm_module
-
-
 llvmlite.binding.initialize_native_target()
 llvmlite.binding.initialize_native_asmprinter()
 
@@ -835,21 +759,29 @@ llvmlite.binding.initialize_native_asmprinter()
 def _target_machine() -> llvmlite.binding.TargetMachine:
     # llvmlite target machines are not safe to reuse after MCJIT compilation.
     # do not cache to avoid stale target-data pointers during later `--asm` runs.
-    target = llvmlite.binding.Target.from_default_triple()
-    cpu = llvmlite.binding.get_host_cpu_name()
-    features = llvmlite.binding.get_host_cpu_features().flatten()
-    return target.create_target_machine(cpu=cpu, features=features, opt=3)
+    return llvmlite.binding.Target.from_default_triple().create_target_machine(
+        cpu=llvmlite.binding.get_host_cpu_name(),
+        features=llvmlite.binding.get_host_cpu_features().flatten(),
+        opt=3,
+    )
 
 
-def _to_llvmlite_moduleref(ir: llvmlite.ir.Module | str) -> tuple[llvmlite.binding.ModuleRef, llvmlite.binding.TargetMachine]:
-    mod_ref = llvmlite.binding.parse_assembly(str(ir))
+def _to_llvm_ir(module: ModuleOp) -> str:
+    # xdsl mlir (llvm dialect) -> llvm ir text, pinned to the host target
+    module = module.clone()
+    for func_op in module.ops:
+        # noalias lets llvm's loop vectorizer assume buffers do not overlap
+        assert isinstance(func_op, llvm.FuncOp)
+        func_op.arg_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(input_type, llvm.LLVMPointerType) else {}) for input_type in func_op.function_type.inputs])
     tm = _target_machine()
-    pto = llvmlite.binding.PipelineTuningOptions()
-    pto.speed_level = 3
-    pto.loop_vectorization = True
+    return str(convert_module(module, fallback_target_triple=tm.triple, data_layout=str(tm.target_data)))
+
+
+def _to_llvmlite_moduleref(ir: str) -> tuple[llvmlite.binding.ModuleRef, llvmlite.binding.TargetMachine]:
+    mod_ref = llvmlite.binding.parse_assembly(ir)
+    tm = _target_machine()
+    pto = llvmlite.binding.PipelineTuningOptions(speed_level=3)
     pto.slp_vectorization = True
-    pto.loop_interleaving = True
-    pto.loop_unrolling = True
     pb = llvmlite.binding.create_pass_builder(tm, pto)
     pb.getModulePassManager().run(mod_ref, pb)
     return mod_ref, tm
@@ -857,98 +789,51 @@ def _to_llvmlite_moduleref(ir: llvmlite.ir.Module | str) -> tuple[llvmlite.bindi
 
 def to_asm(module: ModuleOp) -> str:
     # xdsl mlir -> native assembly text
-    mod_ref, tm = _to_llvmlite_moduleref(LLVMLiteGenerator.generate(module))
+    mod_ref, tm = _to_llvmlite_moduleref(_to_llvm_ir(module))
     return tm.emit_assembly(mod_ref)
-
-
-@cache
-def _ir_cache_dir() -> Path:
-    # hash all compiler sources -> .cache/exojit/{hash}/. auto-invalidates when compiler code changes.
-    src_dir = Path(__file__).resolve().parent
-    hasher = hashlib.sha256()
-    for py_file in sorted(src_dir.glob("*.py")):
-        hasher.update(py_file.read_bytes())
-    cache_dir = src_dir.parent / ".cache" / "exojit" / hasher.hexdigest()[:12]
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir
-
-
-def _disk_cache(name: object, generate: Callable[[], str]) -> str:
-    path = _ir_cache_dir() / f"{name}.ll"
-    if path.exists():
-        return path.read_text()
-    ir_text = generate()
-    path.write_text(ir_text)
-    return ir_text
 
 
 @cache
 def _load_libomp() -> None:
     if sys.platform != "darwin":
         return llvmlite.binding.load_library_permanently("libgomp.so.1")
-    candidates = ["/opt/homebrew/opt/libomp/lib/libomp.dylib"]
-    for pkg in ("libomp", "llvm"):
+
+    def brew_prefix(pkg: str) -> str | None:
         try:
-            prefix = subprocess.run(["brew", "--prefix", pkg], capture_output=True, text=True, check=True).stdout.strip()
-            candidates.append(f"{prefix}/lib/libomp.dylib")
+            return subprocess.run(["brew", "--prefix", pkg], capture_output=True, text=True, check=True).stdout.strip()
         except subprocess.CalledProcessError, FileNotFoundError:
-            pass
-    for lib in candidates:
-        if Path(lib).exists():
-            llvmlite.binding.load_library_permanently(lib)
-            return
-    assert False, f"libomp not found; tried {candidates}"
+            return None
+
+    def load_first(paths: list[str]) -> bool:
+        for lib in paths:
+            try:
+                llvmlite.binding.load_library_permanently(lib)
+                return True
+            except RuntimeError:
+                continue
+        return False
+
+    candidates = [f"{prefix}/opt/{pkg}/lib/libomp.dylib" for prefix in ("/opt/homebrew", "/usr/local") for pkg in ("libomp", "llvm")]
+    if load_first(candidates):
+        return
+    brewed = [f"{prefix}/lib/libomp.dylib" for pkg in ("libomp", "llvm") if (prefix := brew_prefix(pkg))]
+    assert load_first(brewed), f"libomp not found; tried {candidates + brewed}"
 
 
-def _jit_arg_kinds(proc: LoopIR.proc) -> bytes:
-    # classify each argument once so the C wrapper can take the cheapest safe path
-    write_cache: dict[int, frozenset[int]] = {}
-    visiting: set[int] = set()
+@cache
+def _c_type_context() -> CTypeContext:
+    ctx = CTypeContext()
+    register_builtin_types(ctx)
+    register_llvm_types(ctx)
+    return ctx
 
-    def _aliases(expr: LoopIR.expr, alias_map: dict[Sym, frozenset[int]]) -> frozenset[int]:
-        return alias_map.get(expr.name, frozenset()) if isinstance(expr, (LoopIR.Read, LoopIR.WindowExpr)) else frozenset()
 
-    def _written_tensor_args(proc_ir: LoopIR.proc) -> frozenset[int]:
-        proc_id = id(proc_ir)
-        if proc_id in write_cache or proc_id in visiting:
-            return write_cache.get(proc_id, frozenset())
-        visiting.add(proc_id)
-        try:
-            arg_aliases = {arg.name: frozenset({i}) for i, arg in enumerate(proc_ir.args) if arg.type.is_tensor_or_window()}
-            write_cache[proc_id] = _walk(proc_ir.body, arg_aliases)
-            return write_cache[proc_id]
-        finally:
-            visiting.remove(proc_id)
-
-    def _walk(stmts: list[LoopIR.stmt], alias_map: dict[Sym, frozenset[int]]) -> frozenset[int]:
-        alias_map = dict(alias_map)
-        written: set[int] = set()
-        for stmt in stmts:
-            match stmt:
-                case LoopIR.Assign() | LoopIR.Reduce():
-                    written.update(alias_map.get(stmt.name, ()))
-                case LoopIR.WindowStmt():
-                    alias_map[stmt.name] = _aliases(stmt.rhs, alias_map)
-                case LoopIR.If() | LoopIR.For():
-                    for body in (stmt.body, stmt.orelse) if isinstance(stmt, LoopIR.If) else (stmt.body,):
-                        written.update(_walk(body, alias_map))
-                case LoopIR.Call():
-                    for i in _written_tensor_args(stmt.f):
-                        written.update(_aliases(stmt.args[i], alias_map))
-        return frozenset(written)
-
-    written = _written_tensor_args(proc)
-
-    def _kind(i: int, arg: LoopIR.fnarg) -> int:
-        match arg.type:
-            case _ if arg.type.is_tensor_or_window():
-                return 2 if i in written else 1
-            case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
-                return 0
-            case _:
-                assert False, f"unsupported JIT argument type for {arg.name}: {arg.type}"
-
-    return bytes(_kind(i, arg) for i, arg in enumerate(proc.args))
+def _c_signature(module: ModuleOp, name: str) -> str:
+    # cffi abi declaration for the entry point, derived from its llvm function type
+    func_op = SymbolTable.lookup_symbol(module, name)
+    assert isinstance(func_op, llvm.FuncOp)
+    signature = to_c_func_type(_c_type_context(), func_op.function_type)
+    return f"{signature.output}(*)({', '.join(signature.inputs) or 'void'})"
 
 
 def _jit_eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
@@ -1053,74 +938,66 @@ def _jit_tensor_converter(*, ffi: FFI, index: int, tensor_type: T.Tensor, writab
     return convert
 
 
-_strip_arg_name = lambda name: re.sub(r"_\d+$", "", str(name))
-_resolve_jit_args = lambda names, args, kw: tuple(kw[n] for n in names) if kw else args
-
-
-def _jit_wrap(raw_fn: JitFunc, proc: Procedure, arg_kinds: bytes) -> Callable[..., None]:
-    ffi = FFI()
-    ffi.cdef("typedef unsigned long uintptr_t;")
-    converters = []
-    arg_names = [_strip_arg_name(arg.name) for arg in proc._loopir_proc.args]
-    for i, arg in enumerate(proc._loopir_proc.args):
-        match arg.type:
-            case T.Tensor() | T.Window():
-                tensor_type = arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type
-                converters.append(_jit_tensor_converter(ffi=ffi, index=i, tensor_type=tensor_type, writable=arg_kinds[i] == 2))
-            case _ if isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)):
-                name = arg.name
-
-                def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=name) -> int:
-                    converted = int(value)
-                    shape_env[repr(name)] = converted
-                    return converted
-
-                converters.append(convert)
-            case _:
-                assert False, f"unsupported JIT argument type for {arg.name}: {arg.type}"
-
-    def wrapped(*args, **kwargs):
-        args = _resolve_jit_args(arg_names, args, kwargs)
-        assert len(args) == len(converters), f"jit expected {len(converters)} arguments, got {len(args)}"
-
-        shape_env: dict[object, int] = {}
-        keepalive: list[object] = []
-        syncbacks: list[Callable[[], None]] = []
-        raw_fn(*[conv(arg, shape_env, keepalive, syncbacks) for conv, arg in zip(converters, args, strict=True)])
-        for sync in syncbacks:
-            sync()
-
-    cast(Any, wrapped)._raw = raw_fn
-    return wrapped
-
-
 def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
     mlir_module = to_mlir(proc)
-    cache_key = hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16]
-    ir_text = _disk_cache(cache_key, lambda: str(LLVMLiteGenerator.generate(mlir_module)))
+    ir_text = _to_llvm_ir(mlir_module)
 
     # see https://openmp.llvm.org/doxygen/group__THREADPRIVATE.html
     if "__kmpc_fork_call" in ir_text:
         _load_libomp()
 
     mod_ref, tm = _to_llvmlite_moduleref(ir_text)
+    unlowered = [f.name for f in mod_ref.functions if f.is_declaration and re.fullmatch(r"(vec|neon)_\w+", f.name) and llvmlite.binding.address_of_symbol(f.name) is None]
+    assert not unlowered, f"{proc.name()}: no lowering for intrinsics {unlowered}"
 
     engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
     engine.finalize_object()
     engine.run_static_constructors()
 
-    assert re.search(rf'define void @"?{re.escape(proc.name())}"?\(', ir_text) is not None, f"missing JIT entrypoint for {proc.name()}"
+    ir_args = proc._loopir_proc.args
+    for arg in ir_args:
+        assert arg.type.is_tensor_or_window() or isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)), f"unsupported JIT argument type for {arg.name}: {arg.type}"
+    written = {sym for sym, _ in get_writes_of_stmts(proc._loopir_proc.body)}
+    kinds = [arg.name in written if arg.type.is_tensor_or_window() else None for arg in ir_args]
 
-    arg_kinds = _jit_arg_kinds(proc._loopir_proc)
-    raw_fn = JitFunc(engine.get_function_address(proc.name()), engine, arg_kinds)
+    ffi = FFI()
+    address = engine.get_function_address(proc.name())
+    assert address, f"no address for symbol after compilation: {proc.name()}"
+    fn = ffi.cast(_c_signature(mlir_module, proc.name()), address)
 
+    def call(*args) -> None:
+        fn(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
+
+    # mcjit owns the jitted code, so the engine has to outlive every call into it
+    cast(Any, call)._engine = engine
+
+    names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in ir_args]
     if raw:
-        arg_names = [_strip_arg_name(arg.name) for arg in proc._loopir_proc.args]
-        raw_wrapped = lambda *args, **kwargs: raw_fn(*_resolve_jit_args(arg_names, args, kwargs))
-        cast(Any, raw_wrapped)._raw = raw_fn
-        return raw_wrapped
+        wrapped = lambda *args, **kwargs: call(*(tuple(kwargs[name] for name in names) if kwargs else args))
+        cast(Any, wrapped)._raw = call
+        return wrapped
 
-    return _jit_wrap(raw_fn, proc, arg_kinds)
+    converters = []
+    for i, (arg, kind) in enumerate(zip(ir_args, kinds, strict=True)):
+        if kind is None:
+
+            def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=arg.name) -> int:
+                shape_env[repr(name)] = converted = int(value)
+                return converted
+
+            converters.append(convert)
+        else:
+            converters.append(_jit_tensor_converter(ffi=ffi, index=i, tensor_type=arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type, writable=kind))
+
+    def wrapped(*args, **kwargs):
+        args = tuple(kwargs[name] for name in names) if kwargs else args
+        shape_env, keepalive, syncbacks = {}, [], []
+        call(*[conv(arg, shape_env, keepalive, syncbacks) for conv, arg in zip(converters, args, strict=True)])
+        for sync in syncbacks:
+            sync()
+
+    cast(Any, wrapped)._raw = call
+    return wrapped
 
 
 def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedure] | None = None):

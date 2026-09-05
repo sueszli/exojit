@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = "==3.14.*"
 dependencies = [
     "exo-lang @ git+https://github.com/exo-lang/exo.git@ec75d3c5b229b1519890f836e7badcd46b04c007",
-    "xdsl @ git+https://github.com/xdslproject/xdsl.git@e596f41c99e7c20478240b8f386e9e5de6a4ee14",
+    "xdsl @ git+https://github.com/xdslproject/xdsl.git@ee09066d4aa634ef84d962c9766ca4e95c9ad93a",
     "click",
     "cffi",
     "lit",
@@ -26,12 +26,11 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"
 
-[tool.setuptools.packages.find]
-include = ["exojit*"]
-namespaces = true
+[tool.uv]
+build-backend = { module-root = "", namespace = true }
 
 [tool.pytest.ini_options]
 addopts = "-n auto --forked -v"
