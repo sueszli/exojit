@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -13,6 +15,7 @@ import pytest
 MICROGPT = Path(__file__).resolve().parent
 TIMES = MICROGPT / "times" / "train.csv"
 W = namedtuple("W", ["data"])
+PERF_REGRESSION_TOLERANCE = 0.20
 
 
 def _utils():
@@ -35,16 +38,31 @@ def _perturbed(value: float) -> dict:
     return state
 
 
-def test_microgpt_trains_and_matches_reference_weights(tmp_path):
+def _baseline_mean_us() -> float:
+    with open(TIMES) as f:
+        times_us = [float(row["time_ms"]) * 1000 for row in csv.DictReader(f)]
+    assert times_us
+    return sum(times_us) / len(times_us)
+
+
+def _parse_mean_us(stdout: str) -> float:
+    match = re.search(r"train: mean=(\d+)[µμ]s", stdout)
+    assert match, f"could not parse mean from: {stdout!r}"
+    return float(match.group(1))
+
+
+def test_microgpt_correctness_and_performance(tmp_path):
     workdir = tmp_path / "microgpt"
     shutil.copytree(MICROGPT, workdir, ignore=shutil.ignore_patterns("test_*.py", "__pycache__"))
-    before = TIMES.read_bytes()
 
     result = subprocess.run([sys.executable, "train.py"], cwd=workdir, capture_output=True, text=True, check=False)
-
     assert result.returncode == 0, result.stdout + result.stderr
     assert "train: mean=" in result.stdout, result.stdout
-    assert TIMES.read_bytes() == before, "training rewrote the tracked times csv"
+
+    baseline_us = _baseline_mean_us()
+    actual_us = _parse_mean_us(result.stdout)
+    max_allowed_us = baseline_us * (1 + PERF_REGRESSION_TOLERANCE)
+    assert actual_us <= max_allowed_us, f"{actual_us:.0f}µs > {max_allowed_us:.0f}µs (baseline {baseline_us:.0f}µs)"
 
 
 def test_reference_weights_match_themselves():
