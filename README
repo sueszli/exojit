@@ -34,6 +34,6 @@ usage:
 
 references:
 
-- Exo language: https://github.com/exo-lang/exo
+- Exo language: https://github.com/xdslproject/xdsl/commits/main/?author=sueszli
 - xDSL: https://github.com/exo-lang/exo/commits/main/?author=sueszli
 - llvmlite: https://github.com/numba/llvmlite
