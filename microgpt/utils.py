@@ -1,8 +1,3 @@
-# /// script
-# requires-python = "==3.14.*"
-# dependencies = ["polars"]
-# ///
-
 import csv
 import inspect
 import itertools
@@ -17,15 +12,12 @@ TIMES_DIR = ROOT / "times"
 
 def assert_weights_match(state_dict, atol: float = 1e-5) -> None:
     assert WEIGHTS_PATH.exists(), f"weights file not found: {WEIGHTS_PATH}"
-
     with WEIGHTS_PATH.open() as f:
         ref = json.load(f)
     cur = {k: [[v.data for v in row] for row in mat] for k, mat in state_dict.items()}
     assert set(ref) == set(cur), f"key mismatch: ref={set(ref) - set(cur)} cur={set(cur) - set(ref)}"
-
     for k in ref:
         assert len(ref[k]) == len(cur[k]) and len(ref[k][0]) == len(cur[k][0]), f"shape mismatch '{k}': {len(ref[k])}x{len(ref[k][0])} vs {len(cur[k])}x{len(cur[k][0])}"
-
     max_diff = 0.0
     max_loc = ""
     violations = 0
@@ -55,10 +47,6 @@ def save_times(step_times: list[float]) -> None:
         writer = csv.writer(f)
         writer.writerow(["step", "time_ms"])
         writer.writerows([[i + 1, f"{t * 1000:.3f}"] for i, t in enumerate(step_times)])
-    print_times(path)
-
-
-def print_times(path: Path) -> None:
     if not path.exists():
         return
     with open(path, "r") as f:
@@ -70,47 +58,3 @@ def print_times(path: Path) -> None:
     variance = sum((x - mean) ** 2 for x in times) / (n - 1) if n > 1 else 0
     stddev = math.sqrt(variance)
     print(f"  {path.stem}: mean={mean:.0f}\u03bcs \u00b1{stddev:.0f} min={min(times):.0f} max={max(times):.0f} ({n} runs)")
-
-
-def print_times_all() -> None:
-    import polars as pl
-
-    if not TIMES_DIR.exists():
-        return
-
-    rows = []
-    for path in sorted(TIMES_DIR.glob("*.csv")):
-        t: list[float] = (pl.read_csv(path)["time_ms"].cast(pl.Float64) * 1000).to_list()
-        if not t:
-            continue
-        n, mean = len(t), sum(t) / len(t)
-        sigma = math.sqrt(sum((x - mean) ** 2 for x in t) / (n - 1)) if n > 1 else 0
-        rows.append({"name": path.stem, "mean": int(mean), "sigma": int(sigma), "min": int(min(t)), "max": int(max(t))})
-    if not rows:
-        return
-
-    rows.sort(key=lambda r: r["mean"])
-
-    original_mean = next((r["mean"] for r in rows if r["name"] == "original"), max(r["mean"] for r in rows))
-    speedups = {r["name"]: original_mean / r["mean"] for r in rows}
-    max_speedup = max(speedups.values())
-    name_width = max(len(r["name"]) for r in rows)
-
-    print("\n# speedup over original version\n")
-    for r in sorted(rows, key=lambda r: -speedups[r["name"]]):
-        bar = "▇" * round(speedups[r["name"]] / max_speedup * 60) or "▏"
-        print(f"  {r['name']:<{name_width}}  {bar} {speedups[r['name']]:.0f}x")
-
-    cols = ["name", "mean \u03bcs", "\u00b1\u03c3", "min", "max"]
-    table_rows = [[r["name"], r["mean"], r["sigma"], r["min"], r["max"]] for r in rows]
-    col_w = [max(len(str(cols[i])), max(len(str(row[i])) for row in table_rows)) for i in range(len(cols))]
-
-    print("\n\n# leaderboard\n")
-    print("  " + "  ".join(f"{cols[i]:<{col_w[i]}}" for i in range(len(cols))))
-    print("  " + "  ".join("\u2500" * col_w[i] for i in range(len(cols))))
-    for row in table_rows:
-        print("  " + "  ".join(f"{row[i]!s:>{col_w[i]}}" if i > 0 else f"{row[i]:<{col_w[i]}}" for i in range(len(cols))))
-
-
-if __name__ == "__main__":
-    print_times_all()
