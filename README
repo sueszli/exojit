@@ -18,7 +18,7 @@
 
 a just in time compiler for the exo language.
 
-// also PyJIT's spiritual predecessor:
+// a prototype for PyJIT in xDSL:
 // https://github.com/xdslproject/xdsl/tree/main/tests/filecheck/projects/pyjit
 
 we take the Exo IR and map it to the LLVM dialect
