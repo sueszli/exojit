@@ -13,18 +13,10 @@ import itertools
 import json
 import math
 import random
-import sys
 import time
-from collections import namedtuple
 from itertools import accumulate
 from math import prod
 from pathlib import Path
-
-HERE = Path(__file__).resolve().parent
-if (HERE / "exojit").is_dir():
-    sys.path.insert(0, str(HERE))
-elif (HERE.parent / "exojit").is_dir():
-    sys.path.insert(0, str(HERE.parent))
 
 from exo import *
 from exo.libs.externs import expf, select, sqrt
@@ -46,69 +38,8 @@ CAUSAL_MASK_VALUE = -1e10
 ATTN_SCALE = 1.0 / HEAD_DIM**0.5
 INV_N = 1.0 / N_EMBED
 
-PERF_REGRESSION_TOLERANCE = 0.20
-WEIGHTS_PATH = HERE / "weights.json"
-TIMES_PATH = HERE / "times.csv"
-
-
-#
-# weight checking
-#
-
-
-def assert_weights_match(state_dict, atol: float = 1e-5) -> None:
-    assert WEIGHTS_PATH.exists(), f"weights file not found: {WEIGHTS_PATH}"
-
-    with WEIGHTS_PATH.open() as f:
-        ref = json.load(f)
-    cur = {k: [[v.data for v in row] for row in mat] for k, mat in state_dict.items()}
-    assert set(ref) == set(cur), f"key mismatch: ref={set(ref) - set(cur)} cur={set(cur) - set(ref)}"
-
-    for k in ref:
-        assert len(ref[k]) == len(cur[k]) and len(ref[k][0]) == len(cur[k][0]), f"shape mismatch '{k}': {len(ref[k])}x{len(ref[k][0])} vs {len(cur[k])}x{len(cur[k][0])}"
-
-    max_diff = 0.0
-    max_loc = ""
-    violations = 0
-    total = 0
-    rows = ((k, i, rr, cr) for k in ref for i, (rr, cr) in enumerate(zip(ref[k], cur[k])))
-    all_cells = itertools.chain.from_iterable(((k, i, j, r, c) for j, (r, c) in enumerate(zip(rr, cr))) for k, i, rr, cr in rows)
-    nan_loc = ""
-    for k, i, j, r, c in all_cells:
-        d = abs(r - c)
-        total += 1
-        if d <= atol:
-            continue
-        violations += 1
-        if math.isnan(d):
-            nan_loc = nan_loc or f"{k}[{i}][{j}]"
-        elif d > max_diff:
-            max_diff, max_loc = d, f"{k}[{i}][{j}]"
-    detail = f"first nan at {nan_loc}" if nan_loc else f"max diff={max_diff:.2e} at {max_loc}"
-    assert violations == 0, f"weights mismatch (atol={atol}): {violations}/{total} params exceed tolerance, {detail}"
-
-
-#
-# timing
-#
-
-
-def baseline_mean_us() -> float | None:
-    if not TIMES_PATH.exists():
-        return None
-    with open(TIMES_PATH) as f:
-        times_us = [float(row["time_ms"]) * 1000 for row in csv.DictReader(f)]
-    if not times_us:
-        return None
-    return sum(times_us) / len(times_us)
-
-
-def check_perf_regression(actual_us: float) -> None:
-    baseline_us = baseline_mean_us()
-    if baseline_us is None:
-        return
-    max_allowed_us = baseline_us * (1 + PERF_REGRESSION_TOLERANCE)
-    assert actual_us <= max_allowed_us, f"perf regression: {actual_us:.0f}µs > {max_allowed_us:.0f}µs (baseline {baseline_us:.0f}µs, tolerance {PERF_REGRESSION_TOLERANCE:.0%})"
+WEIGHTS_PATH = Path(__file__).resolve().parent / "weights.json"
+TIMES_PATH = Path(__file__).resolve().parent / "times.csv"
 
 
 #
@@ -488,6 +419,55 @@ def train_loop(vocab_size: size, total_params: size, emb: f64[BLOCK_SIZE, N_EMBE
 
 
 #
+# assertions
+#
+
+
+def assert_weights_match(state_dict, atol: float = 1e-5) -> None:
+    assert WEIGHTS_PATH.exists(), f"weights file not found: {WEIGHTS_PATH}"
+
+    with WEIGHTS_PATH.open() as f:
+        ref = json.load(f)
+    cur = {k: [[v for v in row] for row in mat] for k, mat in state_dict.items()}
+    assert set(ref) == set(cur), f"key mismatch: ref={set(ref) - set(cur)} cur={set(cur) - set(ref)}"
+
+    for k in ref:
+        assert len(ref[k]) == len(cur[k]) and len(ref[k][0]) == len(cur[k][0]), f"shape mismatch '{k}': {len(ref[k])}x{len(ref[k][0])} vs {len(cur[k])}x{len(cur[k][0])}"
+
+    max_diff = 0.0
+    max_loc = ""
+    violations = 0
+    total = 0
+    rows = ((k, i, rr, cr) for k in ref for i, (rr, cr) in enumerate(zip(ref[k], cur[k])))
+    all_cells = itertools.chain.from_iterable(((k, i, j, r, c) for j, (r, c) in enumerate(zip(rr, cr))) for k, i, rr, cr in rows)
+    nan_loc = ""
+    for k, i, j, r, c in all_cells:
+        d = abs(r - c)
+        total += 1
+        if d <= atol:
+            continue
+        violations += 1
+        if math.isnan(d):
+            nan_loc = nan_loc or f"{k}[{i}][{j}]"
+        elif d > max_diff:
+            max_diff, max_loc = d, f"{k}[{i}][{j}]"
+    detail = f"first nan at {nan_loc}" if nan_loc else f"max diff={max_diff:.2e} at {max_loc}"
+    assert violations == 0, f"weights mismatch (atol={atol}): {violations}/{total} params exceed tolerance, {detail}"
+
+
+def assert_no_perf_regression(actual_us: float, tolerance: float = 0.20) -> None:
+    if not TIMES_PATH.exists():
+        return
+    with open(TIMES_PATH) as f:
+        times_us = [float(row["time_ms"]) * 1000 for row in csv.DictReader(f)]
+    if not times_us:
+        return
+    baseline_us = sum(times_us) / len(times_us)
+    max_allowed_us = baseline_us * (1 + tolerance)
+    assert actual_us <= max_allowed_us, f"perf regression: {actual_us:.0f}µs > {max_allowed_us:.0f}µs (baseline {baseline_us:.0f}µs, tolerance {tolerance:.0%})"
+
+
+#
 # main
 #
 
@@ -511,7 +491,7 @@ def tokenize(docs: list[str], uchars: list[str]) -> list[dict]:
     return result
 
 
-docs = (HERE / "input.txt").read_text().splitlines()
+docs = (Path(__file__).resolve().parent / "input.txt").read_text().splitlines()
 random.shuffle(docs)
 uchars = sorted(set("".join(docs)))
 vocab_size = len(uchars) + 1
@@ -609,10 +589,6 @@ train_loop(**static_args)
 total_time = time.perf_counter() - t0
 mean_us = total_time / NUM_STEPS * 1e6
 
-W = namedtuple("W", ["data"])
 display = lambda k: ("layer0." + k) if k.startswith(("attn", "mlp")) else k
-assert_weights_match({display(k): [[W(float(params[k][i * s[1] + j])) for j in range(s[1])] for i in range(len(params[k]) // s[1])] for k, s in PARAMS_SHAPES.items()})
-check_perf_regression(mean_us)
-
-print(f"  train: mean={mean_us:.0f}µs ({NUM_STEPS} steps, {total_time:.3f}s total)")
-print("parity check passed ✓")
+assert_weights_match({display(k): [[float(params[k][i * s[1] + j]) for j in range(s[1])] for i in range(len(params[k]) // s[1])] for k, s in PARAMS_SHAPES.items()})
+assert_no_perf_regression(mean_us)
