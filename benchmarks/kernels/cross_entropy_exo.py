@@ -53,7 +53,6 @@ def _jit_sum_exp(n: int) -> Callable[..., None]:
 
 @cache
 def cross_entropy_exo(n: int) -> tuple[Callable[..., None], Callable[..., None]]:
-    from kernels.softmax_exo import _jit_max, _jit_max_neon
+    from kernels.softmax_exo import _jit_max
 
-    max_fn = _jit_max_neon(n) if n % 8 == 0 else _jit_max(n)
-    return max_fn, _jit_sum_exp(n)
+    return _jit_max(n), _jit_sum_exp(n)

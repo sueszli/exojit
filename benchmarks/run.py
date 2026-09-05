@@ -14,73 +14,61 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from kernels.adam_exo import adam_exo
 from kernels.adam_jax import adam_jax
-from kernels.adam_neon import adam_neon
 from kernels.adam_numba import adam_numba
 from kernels.adam_numpy import adam_numpy
 from kernels.adam_torch import adam_torch
 from kernels.add_exo import add_exo
 from kernels.add_jax import add_jax
-from kernels.add_neon import add_neon
 from kernels.add_numba import add_numba
 from kernels.add_numpy import add_numpy
 from kernels.add_torch import add_torch
 from kernels.cross_entropy_exo import cross_entropy_exo
 from kernels.cross_entropy_jax import cross_entropy_jax
-from kernels.cross_entropy_neon import cross_entropy_neon
 from kernels.cross_entropy_numba import cross_entropy_numba
 from kernels.cross_entropy_numpy import cross_entropy_numpy
 from kernels.cross_entropy_torch import cross_entropy_torch
 from kernels.dot_exo import dot_exo
 from kernels.dot_jax import dot_jax
-from kernels.dot_neon import dot_neon
 from kernels.dot_numba import dot_numba
 from kernels.dot_numpy import dot_numpy
 from kernels.dot_torch import dot_torch
 from kernels.embedding_exo import embedding_exo
 from kernels.embedding_jax import embedding_jax
-from kernels.embedding_neon import embedding_neon
 from kernels.embedding_numba import embedding_numba
 from kernels.embedding_numpy import embedding_numpy
 from kernels.embedding_torch import embedding_torch
 from kernels.matmul_exo import matmul_exo
 from kernels.matmul_jax import matmul_jax
-from kernels.matmul_neon import matmul_neon
 from kernels.matmul_numba import matmul_numba
 from kernels.matmul_numpy import matmul_numpy
 from kernels.matmul_torch import matmul_torch
 from kernels.matvec_exo import matvec_exo
 from kernels.matvec_jax import matvec_jax
-from kernels.matvec_neon import matvec_neon
 from kernels.matvec_numba import matvec_numba
 from kernels.matvec_numpy import matvec_numpy
 from kernels.matvec_torch import matvec_torch
 from kernels.relu_exo import relu_exo
 from kernels.relu_jax import relu_jax
-from kernels.relu_neon import relu_neon
 from kernels.relu_numba import relu_numba
 from kernels.relu_numpy import relu_numpy
 from kernels.relu_torch import relu_torch
 from kernels.rmsnorm_exo import rmsnorm_exo
 from kernels.rmsnorm_jax import rmsnorm_jax
-from kernels.rmsnorm_neon import rmsnorm_neon
 from kernels.rmsnorm_numba import rmsnorm_numba
 from kernels.rmsnorm_numpy import rmsnorm_numpy
 from kernels.rmsnorm_torch import rmsnorm_torch
 from kernels.saxpy_exo import saxpy_exo
 from kernels.saxpy_jax import saxpy_jax
-from kernels.saxpy_neon import saxpy_neon
 from kernels.saxpy_numba import saxpy_numba
 from kernels.saxpy_numpy import saxpy_numpy
 from kernels.saxpy_torch import saxpy_torch
-from kernels.softmax_exo import _jit_max_neon, softmax_exo
+from kernels.softmax_exo import softmax_exo
 from kernels.softmax_jax import softmax_jax
-from kernels.softmax_neon import softmax_neon
 from kernels.softmax_numba import softmax_numba
 from kernels.softmax_numpy import softmax_numpy
 from kernels.softmax_torch import softmax_torch
 from kernels.weighted_sum_exo import weighted_sum_exo
 from kernels.weighted_sum_jax import weighted_sum_jax
-from kernels.weighted_sum_neon import weighted_sum_neon
 from kernels.weighted_sum_numba import weighted_sum_numba
 from kernels.weighted_sum_numpy import weighted_sum_numpy
 from kernels.weighted_sum_torch import weighted_sum_torch
@@ -100,14 +88,13 @@ def _gflops(flops: int, t: float, precision: int = 2) -> float:
 
 def run_kernel(name: str, sizes: list, bench_one, precision: int = 2) -> None:
     for size in tqdm(sizes, desc=name):
-        n_label, flops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch = bench_one(size)
+        n_label, flops, t_np, t_exo, t_numba, t_jax, t_torch = bench_one(size)
         rows.append(
             {
                 "kernel": name,
                 "n": n_label,
                 "numpy_gflops": _gflops(flops, t_np, precision),
                 "exo_gflops": _gflops(flops, t_exo, precision),
-                "neon_gflops": _gflops(flops, t_neon, precision),
                 "numba_gflops": _gflops(flops, t_numba, precision),
                 "jax_gflops": _gflops(flops, t_jax, precision),
                 "torch_gflops": _gflops(flops, t_torch, precision),
@@ -131,12 +118,6 @@ def bench_matmul(n):
     assert np.allclose(C_exo, expected, atol=1e-3)
     t_exo = bench(lambda C=C_exo, A=A, B=B: fn_exo(C, A, B))
 
-    fn_neon = matmul_neon(n, n, n)
-    C_neon = np.zeros((n, n), dtype=np.float32)
-    fn_neon(C_neon, A, B)
-    assert np.allclose(C_neon, expected, atol=1e-3)
-    t_neon = bench(lambda C=C_neon, A=A, B=B: fn_neon(C, A, B))
-
     fn_numba = matmul_numba(n, n, n)
     C_numba = np.zeros((n, n), dtype=np.float32)
     fn_numba(C_numba, A, B)
@@ -155,7 +136,7 @@ def bench_matmul(n):
     assert np.allclose(C_torch, expected, atol=1e-3), f"matmul torch wrong: max_diff={np.max(np.abs(C_torch - expected))}"
     t_torch = bench(lambda C=C_torch, A=A, B=B: fn_torch(C, A, B))
 
-    return n, flops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch
+    return n, flops, t_np, t_exo, t_numba, t_jax, t_torch
 
 
 run_kernel("matmul", [1 << 4, 1 << 5, 1 << 6, 1 << 7, 1 << 8], bench_matmul, precision=1)
@@ -177,13 +158,6 @@ def bench_matvec(n):
     assert np.allclose(y_exo, expected, atol=1e-3), f"matvec exo wrong: max_diff={np.max(np.abs(y_exo - expected))}"
     t_exo = bench(lambda fn=fn_exo, y=y_exo, W=W, x=x: fn(y, W, x))
 
-    WT = np.ascontiguousarray(W.T)
-    fn_neon = matvec_neon(n, n)
-    y_neon = np.zeros(n, dtype=np.float32)
-    fn_neon(y_neon, WT, x)
-    assert np.allclose(y_neon, expected, atol=1e-3), f"matvec neon wrong: max_diff={np.max(np.abs(y_neon - expected))}"
-    t_neon = bench(lambda fn=fn_neon, y=y_neon, WT=WT, x=x: fn(y, WT, x))
-
     fn_numba = matvec_numba(n, n)
     y_numba = np.zeros(n, dtype=np.float32)
     fn_numba(y_numba, W, x)
@@ -202,7 +176,7 @@ def bench_matvec(n):
     assert np.allclose(y_torch, expected, atol=1e-3), f"matvec torch wrong: max_diff={np.max(np.abs(y_torch - expected))}"
     t_torch = bench(lambda fn=fn_torch, y=y_torch, W=W, x=x: fn(y, W, x))
 
-    return n, flops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch
+    return n, flops, t_np, t_exo, t_numba, t_jax, t_torch
 
 
 run_kernel("matvec", [1 << 5, 1 << 7, 1 << 9, 1 << 11], bench_matvec, precision=1)
@@ -225,12 +199,6 @@ def bench_saxpy(n):
     assert np.allclose(y_test, expected, atol=1e-4), "saxpy exo wrong"
     t_exo = bench(lambda fn=fn_exo, y=y_orig.copy(), x=x, a=a_arr: fn(y, x, a))
 
-    fn_neon = saxpy_neon(n)
-    y_test = y_orig.copy()
-    fn_neon(y_test, x, a_arr)
-    assert np.allclose(y_test, expected, atol=1e-4), "saxpy neon wrong"
-    t_neon = bench(lambda fn=fn_neon, y=y_orig.copy(), x=x, a=a_arr: fn(y, x, a))
-
     fn_numba = saxpy_numba(n)
     y_test = y_orig.copy()
     fn_numba(y_test, x, a_arr)
@@ -249,7 +217,7 @@ def bench_saxpy(n):
     assert np.allclose(y_test, expected, atol=1e-4), "saxpy torch wrong"
     t_torch = bench(lambda fn=fn_torch, y=y_orig.copy(), x=x, a=a_arr: fn(y, x, a))
 
-    return n, flops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch
+    return n, flops, t_np, t_exo, t_numba, t_jax, t_torch
 
 
 run_kernel("saxpy", [1 << 8, 1 << 12, 1 << 16, 1 << 18, 1 << 20], bench_saxpy)
@@ -277,19 +245,6 @@ def bench_softmax(n):
 
     t_exo = bench(_bench_exo)
 
-    fn_neon = softmax_neon(n)
-    fn_max_neon = _jit_max_neon(n)
-    out_neon = np.zeros(n, dtype=np.float32)
-    fn_max_neon(mx, inp)
-    fn_neon(out_neon, inp, mx)
-    assert np.allclose(out_neon, expected, atol=1e-3), f"softmax neon wrong: max_diff={np.max(np.abs(out_neon - expected))}"
-
-    def _bench_neon(fn_m=fn_max_neon, fn=fn_neon, out=out_neon, x=inp, mx=mx):
-        fn_m(mx, x)
-        fn(out, x, mx)
-
-    t_neon = bench(_bench_neon)
-
     fn_numba = softmax_numba(n)
     out_numba = np.zeros(n, dtype=np.float32)
     fn_numba(out_numba, inp)
@@ -308,7 +263,7 @@ def bench_softmax(n):
     assert np.allclose(out_torch, expected, atol=1e-3), f"softmax torch wrong: max_diff={np.max(np.abs(out_torch - expected))}"
     t_torch = bench(lambda fn=fn_torch, out=out_torch, x=inp: fn(out, x))
 
-    return n, flops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch
+    return n, flops, t_np, t_exo, t_numba, t_jax, t_torch
 
 
 run_kernel("softmax", [1 << 8, 1 << 12, 1 << 16, 1 << 18, 1 << 20], bench_softmax)
@@ -329,12 +284,6 @@ def bench_relu(n):
     assert np.allclose(out_exo, expected, atol=1e-6), f"relu exo wrong: max_diff={np.max(np.abs(out_exo - expected))}"
     t_exo = bench(lambda fn=fn_exo, out=out_exo, x=inp: fn(out, x))
 
-    fn_neon = relu_neon(n)
-    out_neon = np.empty(n, dtype=np.float32)
-    fn_neon(out_neon, inp)
-    assert np.allclose(out_neon, expected, atol=1e-6), f"relu neon wrong: max_diff={np.max(np.abs(out_neon - expected))}"
-    t_neon = bench(lambda fn=fn_neon, out=out_neon, x=inp: fn(out, x))
-
     fn_numba = relu_numba(n)
     out_numba = np.empty(n, dtype=np.float32)
     fn_numba(out_numba, inp)
@@ -353,7 +302,7 @@ def bench_relu(n):
     assert np.allclose(out_torch, expected, atol=1e-6), f"relu torch wrong: max_diff={np.max(np.abs(out_torch - expected))}"
     t_torch = bench(lambda fn=fn_torch, out=out_torch, x=inp: fn(out, x))
 
-    return n, flops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch
+    return n, flops, t_np, t_exo, t_numba, t_jax, t_torch
 
 
 run_kernel("relu", [1 << 8, 1 << 12, 1 << 16, 1 << 18, 1 << 20], bench_relu)
@@ -375,12 +324,6 @@ def bench_add(n):
     assert np.allclose(z_exo, expected, atol=1e-6), f"add exo wrong: max_diff={np.max(np.abs(z_exo - expected))}"
     t_exo = bench(lambda fn=fn_exo, z=z_exo, x=x, y=y: fn(z, x, y))
 
-    fn_neon = add_neon(n)
-    z_neon = np.empty(n, dtype=np.float32)
-    fn_neon(z_neon, x, y)
-    assert np.allclose(z_neon, expected, atol=1e-6), f"add neon wrong: max_diff={np.max(np.abs(z_neon - expected))}"
-    t_neon = bench(lambda fn=fn_neon, z=z_neon, x=x, y=y: fn(z, x, y))
-
     fn_numba = add_numba(n)
     z_numba = np.empty(n, dtype=np.float32)
     fn_numba(z_numba, x, y)
@@ -399,7 +342,7 @@ def bench_add(n):
     assert np.allclose(z_torch, expected, atol=1e-6), f"add torch wrong: max_diff={np.max(np.abs(z_torch - expected))}"
     t_torch = bench(lambda fn=fn_torch, z=z_torch, x=x, y=y: fn(z, x, y))
 
-    return n, flops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch
+    return n, flops, t_np, t_exo, t_numba, t_jax, t_torch
 
 
 run_kernel("add", [1 << 8, 1 << 12, 1 << 16, 1 << 18, 1 << 20], bench_add)
@@ -438,20 +381,6 @@ def bench_cross_entropy(n):
         return -x[t] + mx[0] + np.log(se[0])
 
     t_exo = bench(_bench_exo)
-
-    fn_max_neon = _jit_max_neon(n)
-    fn_sum_exp_neon = cross_entropy_neon(n)
-    fn_max_neon(mx, logits)
-    fn_sum_exp_neon(sum_exp, logits, mx)
-    loss_neon = -logits[target] + mx[0] + np.log(sum_exp[0])
-    assert np.allclose(loss_neon, expected, atol=1e-3), f"cross_entropy neon wrong: {loss_neon} vs {expected}"
-
-    def _bench_neon(fn_m=fn_max_neon, fn=fn_sum_exp_neon, x=logits, mx=mx, se=sum_exp, t=target):
-        fn_m(mx, x)
-        fn(se, x, mx)
-        return -x[t] + mx[0] + np.log(se[0])
-
-    t_neon = bench(_bench_neon)
 
     fn_max_numba, fn_sum_exp_numba = cross_entropy_numba(n)
     fn_max_numba(mx, logits)
@@ -492,7 +421,7 @@ def bench_cross_entropy(n):
 
     t_torch = bench(_bench_torch)
 
-    return n, flops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch
+    return n, flops, t_np, t_exo, t_numba, t_jax, t_torch
 
 
 run_kernel("cross_entropy", [1 << 8, 1 << 12, 1 << 16, 1 << 18, 1 << 20], bench_cross_entropy)
@@ -534,18 +463,6 @@ def bench_rmsnorm(n):
     assert np.allclose(out_exo, expected, atol=1e-3), f"rmsnorm exo wrong: max_diff={np.max(np.abs(out_exo - expected))}"
     t_exo = bench(_run_exo)
 
-    fn_sumsq_neon, fn_scale_neon = rmsnorm_neon(n)
-    out_neon = np.empty(n, dtype=np.float32)
-
-    def _run_neon(fn_sq=fn_sumsq_neon, fn_sc=fn_scale_neon, sq=sumsq, sc=scale_arr, out=out_neon, x=inp, nn=n, eps=EPS):
-        fn_sq(sq, x)
-        sc[0] = np.float32(1.0 / np.sqrt(sq[0] / nn + eps))
-        fn_sc(out, x, sc)
-
-    _run_neon()
-    assert np.allclose(out_neon, expected, atol=1e-3), f"rmsnorm neon wrong: max_diff={np.max(np.abs(out_neon - expected))}"
-    t_neon = bench(_run_neon)
-
     fn_sumsq_numba, fn_scale_numba = rmsnorm_numba(n)
     out_numba = np.empty(n, dtype=np.float32)
 
@@ -582,7 +499,7 @@ def bench_rmsnorm(n):
     assert np.allclose(out_torch, expected, atol=2e-3), f"rmsnorm torch wrong: max_diff={np.max(np.abs(out_torch - expected))}"
     t_torch = bench(_run_torch)
 
-    return n, flops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch
+    return n, flops, t_np, t_exo, t_numba, t_jax, t_torch
 
 
 run_kernel("rmsnorm", [1 << 8, 1 << 12, 1 << 16, 1 << 18, 1 << 20], bench_rmsnorm)
@@ -607,12 +524,6 @@ def bench_embedding(d):
     assert np.allclose(out_exo, expected, atol=1e-6), "embedding exo wrong"
     t_exo = bench(lambda fn=fn_exo, out=out_exo, row=table[index]: fn(out, row))
 
-    fn_neon = embedding_neon(d)
-    out_neon = np.empty(d, dtype=np.float32)
-    fn_neon(out_neon, table[index])
-    assert np.allclose(out_neon, expected, atol=1e-6), "embedding neon wrong"
-    t_neon = bench(lambda fn=fn_neon, out=out_neon, row=table[index]: fn(out, row))
-
     fn_numba = embedding_numba(d)
     out_numba = np.empty(d, dtype=np.float32)
     fn_numba(out_numba, table[index])
@@ -631,7 +542,7 @@ def bench_embedding(d):
     assert np.allclose(out_torch, expected, atol=1e-6), "embedding torch wrong"
     t_torch = bench(lambda fn=fn_torch, out=out_torch, row=table[index]: fn(out, row))
 
-    return d, ops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch
+    return d, ops, t_np, t_exo, t_numba, t_jax, t_torch
 
 
 run_kernel("embedding", [1 << 8, 1 << 12, 1 << 16, 1 << 18, 1 << 20], bench_embedding)
@@ -656,13 +567,6 @@ def bench_dot(n):
     assert np.allclose(score_exo, expected, atol=1e-2), f"dot exo wrong: {score_exo} vs {expected}"
     t_exo = bench(lambda fn=fn_exo, r=result_exo, q=q, k=k, s=inv_sqrt_d: fn(r, q, k))
 
-    fn_neon = dot_neon(n)
-    result_neon = np.array([0.0], dtype=np.float32)
-    fn_neon(result_neon, q, k)
-    score_neon = result_neon[0] * inv_sqrt_d
-    assert np.allclose(score_neon, expected, atol=1e-2), f"dot neon wrong: {score_neon} vs {expected}"
-    t_neon = bench(lambda fn=fn_neon, r=result_neon, q=q, k=k, s=inv_sqrt_d: fn(r, q, k))
-
     fn_numba = dot_numba(n)
     result_numba = np.array([0.0], dtype=np.float32)
     fn_numba(result_numba, q, k)
@@ -684,7 +588,7 @@ def bench_dot(n):
     assert np.allclose(score_torch, expected, atol=1e-2), f"dot torch wrong: {score_torch} vs {expected}"
     t_torch = bench(lambda fn=fn_torch, r=result_torch, q=q, k=k: fn(r, q, k))
 
-    return n, flops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch
+    return n, flops, t_np, t_exo, t_numba, t_jax, t_torch
 
 
 run_kernel("dot", [1 << 8, 1 << 12, 1 << 16, 1 << 18, 1 << 20], bench_dot)
@@ -707,12 +611,6 @@ def bench_weighted_sum(size):
     assert np.allclose(out_exo, expected, atol=1e-3), f"weighted_sum exo wrong: max_diff={np.max(np.abs(out_exo - expected))}"
     t_exo = bench(lambda fn=fn_exo, out=out_exo, w=weights, v=V: fn(out, w, v))
 
-    fn_neon = weighted_sum_neon(t_size, d_size)
-    out_neon = np.zeros(d_size, dtype=np.float32)
-    fn_neon(out_neon, weights, V)
-    assert np.allclose(out_neon, expected, atol=1e-3), f"weighted_sum neon wrong: max_diff={np.max(np.abs(out_neon - expected))}"
-    t_neon = bench(lambda fn=fn_neon, out=out_neon, w=weights, v=V: fn(out, w, v))
-
     fn_numba = weighted_sum_numba(t_size, d_size)
     out_numba = np.zeros(d_size, dtype=np.float32)
     fn_numba(out_numba, weights, V)
@@ -731,7 +629,7 @@ def bench_weighted_sum(size):
     assert np.allclose(out_torch, expected, atol=1e-3), f"weighted_sum torch wrong: max_diff={np.max(np.abs(out_torch - expected))}"
     t_torch = bench(lambda fn=fn_torch, out=out_torch, w=weights, v=V: fn(out, w, v))
 
-    return f"{t_size}x{d_size}", flops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch
+    return f"{t_size}x{d_size}", flops, t_np, t_exo, t_numba, t_jax, t_torch
 
 
 run_kernel("weighted_sum", [(32, 64), (64, 128), (128, 256), (256, 512)], bench_weighted_sum)
@@ -776,14 +674,6 @@ def bench_adam(n):
     assert np.allclose(p_exo, expected, atol=1e-3), f"adam exo wrong: max_diff={np.max(np.abs(p_exo - expected))}"
     t_exo = bench(lambda fn=fn_exo, p=param_orig.copy(), g=grad, mm=m_orig.copy(), vv=v_orig.copy(): fn(p, g, mm, vv, b1_arr, b2_arr, eps_arr, lr_arr, beta1_t_arr, beta2_t_arr))
 
-    fn_neon = adam_neon(n)
-    p_neon = param_orig.copy()
-    m_neon = m_orig.copy()
-    v_neon = v_orig.copy()
-    fn_neon(p_neon, grad, m_neon, v_neon, b1_arr, b2_arr, eps_arr, lr_arr, beta1_t_arr, beta2_t_arr)
-    assert np.allclose(p_neon, expected, atol=1e-3), f"adam neon wrong: max_diff={np.max(np.abs(p_neon - expected))}"
-    t_neon = bench(lambda fn=fn_neon, p=param_orig.copy(), g=grad, mm=m_orig.copy(), vv=v_orig.copy(): fn(p, g, mm, vv, b1_arr, b2_arr, eps_arr, lr_arr, beta1_t_arr, beta2_t_arr))
-
     fn_numba = adam_numba(n)
     p_numba = param_orig.copy()
     m_numba = m_orig.copy()
@@ -808,17 +698,17 @@ def bench_adam(n):
     assert np.allclose(p_torch, expected, atol=1e-3), f"adam torch wrong: max_diff={np.max(np.abs(p_torch - expected))}"
     t_torch = bench(lambda fn=fn_torch, p=param_orig.copy(), g=grad, mm=m_orig.copy(), vv=v_orig.copy(): fn(p, g, mm, vv, b1_arr, b2_arr, eps_arr, lr_arr, beta1_t_arr, beta2_t_arr))
 
-    return n, flops, t_np, t_exo, t_neon, t_numba, t_jax, t_torch
+    return n, flops, t_np, t_exo, t_numba, t_jax, t_torch
 
 
 run_kernel("adam", [1 << 8, 1 << 12, 1 << 16, 1 << 18, 1 << 20], bench_adam)
 
 
 def _plot(df: pl.DataFrame) -> None:
-    long = df.unpivot(on=["exo_speedup", "neon_speedup", "numba_speedup", "jax_speedup", "torch_speedup"], index=["kernel", "n"], variable_name="variant", value_name="speedup").with_columns(pl.col("variant").replace({"exo_speedup": "Auto-vectorized", "neon_speedup": "NEON intrinsics", "numba_speedup": "Numba JIT", "jax_speedup": "JAX JIT", "torch_speedup": "torch.compile"}))
+    long = df.unpivot(on=["exo_speedup", "numba_speedup", "jax_speedup", "torch_speedup"], index=["kernel", "n"], variable_name="variant", value_name="speedup").with_columns(pl.col("variant").replace({"exo_speedup": "Auto-vectorized", "numba_speedup": "Numba JIT", "jax_speedup": "JAX JIT", "torch_speedup": "torch.compile"}))
 
     last_n = df.group_by("kernel").agg(pl.col("n").last().alias("last_n"))
-    best = df.join(last_n, on="kernel").filter(pl.col("n") == pl.col("last_n")).with_columns(pl.max_horizontal("exo_speedup", "neon_speedup", "numba_speedup", "jax_speedup", "torch_speedup").alias("best")).sort("best", descending=True)
+    best = df.join(last_n, on="kernel").filter(pl.col("n") == pl.col("last_n")).with_columns(pl.max_horizontal("exo_speedup", "numba_speedup", "jax_speedup", "torch_speedup").alias("best")).sort("best", descending=True)
     kernel_order = best["kernel"].to_list()
 
     pdf = long.to_pandas()
@@ -829,7 +719,7 @@ def _plot(df: pl.DataFrame) -> None:
             seen.append(v)
     pdf["n"] = pd.Categorical(pdf["n"], categories=seen, ordered=True)
     pdf["kernel"] = pd.Categorical(pdf["kernel"], categories=kernel_order, ordered=True)
-    variant_order = ["Auto-vectorized", "NEON intrinsics", "Numba JIT", "JAX JIT", "torch.compile"]
+    variant_order = ["Auto-vectorized", "Numba JIT", "JAX JIT", "torch.compile"]
     pdf["variant"] = pd.Categorical(pdf["variant"], categories=variant_order, ordered=True)
 
     out = Path(__file__).parent
@@ -842,9 +732,9 @@ def _plot(df: pl.DataFrame) -> None:
         + geom_line(size=1.4)
         + geom_point(aes(shape="variant"), size=2.8)
         + facet_wrap("~kernel", scales="free", ncol=1)
-        + scale_color_manual(values=["#4C72B0", "#C44E52", "#55A868", "#DD8452", "#8172B3"])
-        + scale_linetype_manual(values=["solid", "solid", "dotted", "dotted", "dotted"])
-        + scale_shape_manual(values=["o", "D", "s", "^", "v"])
+        + scale_color_manual(values=["#4C72B0", "#55A868", "#DD8452", "#8172B3"])
+        + scale_linetype_manual(values=["solid", "dotted", "dotted", "dotted"])
+        + scale_shape_manual(values=["o", "s", "^", "v"])
         + expand_limits(y=1)
         + theme_minimal()
         + theme(
@@ -877,7 +767,6 @@ if __name__ == "__main__":
     df = pl.DataFrame(rows)
     df = df.with_columns(
         (pl.col("exo_gflops") / pl.col("numpy_gflops")).round(2).alias("exo_speedup"),
-        (pl.col("neon_gflops") / pl.col("numpy_gflops")).round(2).alias("neon_speedup"),
         (pl.col("numba_gflops") / pl.col("numpy_gflops")).round(2).alias("numba_speedup"),
         (pl.col("jax_gflops") / pl.col("numpy_gflops")).round(2).alias("jax_speedup"),
         (pl.col("torch_gflops") / pl.col("numpy_gflops")).round(2).alias("torch_speedup"),
