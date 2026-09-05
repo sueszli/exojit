@@ -5,52 +5,9 @@ from functools import cache
 
 from exo import *
 from exo.libs.externs import select
-from exo.platforms.neon import Neon
 from exo.stdlib.scheduling import simplify
-from kernels.softmax_neon import neon_loadu_f32x4, neon_storeu_f32x4
 
 from exojit.main import jit
-
-
-@instr("neon_fmax_acc_f32x4({acc_data}, {src_data});")
-def neon_fmax_acc_f32x4(acc: [f32][4] @ Neon, src: [f32][4] @ Neon):
-    assert stride(acc, 0) == 1
-    assert stride(src, 0) == 1
-    for i in seq(0, 4):
-        acc[i] = select(acc[i], src[i], src[i], acc[i])
-
-
-@cache
-def _jit_max_neon(n: int) -> Callable[..., None]:
-    assert n % 8 == 0
-    n8 = n // 8
-
-    @proc
-    def _find_max_neon(result: f32[1] @ DRAM, inp: f32[n] @ DRAM):
-        acc0: f32[4] @ Neon
-        acc1: f32[4] @ Neon
-        neon_loadu_f32x4(acc0, inp[0:4])
-        neon_loadu_f32x4(acc1, inp[4:8])
-
-        for i in seq(0, n8):
-            c0: f32[4] @ Neon
-            c1: f32[4] @ Neon
-            neon_loadu_f32x4(c0, inp[8 * i : 8 * i + 4])
-            neon_loadu_f32x4(c1, inp[8 * i + 4 : 8 * i + 8])
-            neon_fmax_acc_f32x4(acc0, c0)
-            neon_fmax_acc_f32x4(acc1, c1)
-
-        neon_fmax_acc_f32x4(acc0, acc1)
-
-        buf: f32[4] @ DRAM
-        neon_storeu_f32x4(buf[0:4], acc0)
-        m0: f32 @ DRAM
-        m1: f32 @ DRAM
-        m0 = select(buf[0], buf[1], buf[1], buf[0])
-        m1 = select(buf[2], buf[3], buf[3], buf[2])
-        result[0] = select(m0, m1, m1, m0)
-
-    return jit(_find_max_neon, raw=True)
 
 
 @proc
@@ -115,5 +72,4 @@ def _jit_core(n: int) -> Callable[..., None]:
 
 @cache
 def softmax_exo(n: int) -> tuple[Callable[..., None], Callable[..., None]]:
-    max_fn = _jit_max_neon(n) if n % 4 == 0 else _jit_max(n)
-    return max_fn, _jit_core(n)
+    return _jit_max(n), _jit_core(n)

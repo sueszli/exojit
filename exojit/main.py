@@ -46,7 +46,6 @@ from xdsl.transforms.reconcile_unrealized_casts import ReconcileUnrealizedCastsP
 from xdsl.utils.scoped_dict import ScopedDict
 
 import exojit.patches_exo  # noqa: F401
-from exojit.patches_xdsl_intrinsics import ConvertVecIntrinsic
 from exojit.patches_xdsl_llvm import ExtendedConvertMemRefToPtr, FPTruncOp, RewriteMemRefTypes
 
 
@@ -624,7 +623,6 @@ def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
     # full lowering to llvm dialect
     ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
     _rewrite([RewriteMemRefTypes()])  # memreftype -> llvm.ptr on all values
-    _rewrite([ConvertVecIntrinsic()])  # vec_*/neon_* calls -> llvm ops
     ReconcileUnrealizedCastsPass().apply(ctx, module)  # fold paired unrealized casts
     module.verify()
 
@@ -797,8 +795,6 @@ def _jit_compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
         _load_libomp()
 
     mod_ref, tm = _to_llvmlite_moduleref(ir_text)
-    unlowered = [f.name for f in mod_ref.functions if f.is_declaration and re.fullmatch(r"(vec|neon)_\w+", f.name) and llvmlite.binding.address_of_symbol(f.name) is None]
-    assert not unlowered, f"{proc.name()}: no lowering for intrinsics {unlowered}"
 
     engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
     engine.finalize_object()
