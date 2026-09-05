@@ -19,8 +19,8 @@ from pathlib import Path
 repo = Path(__file__).resolve().parent
 if (repo / "exojit").is_dir():
     sys.path.insert(0, str(repo))
-elif (repo.parent.parent / "exojit").is_dir():
-    sys.path.insert(0, str(repo.parent.parent))
+elif (repo.parent / "exojit").is_dir():
+    sys.path.insert(0, str(repo.parent))
 
 from exo import *
 from exo.libs.externs import expf, select, sqrt
