@@ -16,6 +16,10 @@ lint:
 	uv run --with vulture vulture --min-confidence 80 exojit.py microgpt tests example.py
 	uv run --with pyright pyright exojit.py
 
+.PHONY: microgpt
+microgpt:
+	uv run python microgpt/parity.py
+
 .PHONY: tests
 tests:
 	uv run pytest -W ignore tests/
@@ -27,10 +31,10 @@ precommit:
 	$(MAKE) precommit-hook
 	$(MAKE) fmt
 	$(MAKE) lint
+	$(MAKE) microgpt
 	$(MAKE) tests
 
 .PHONY: benchmark
 benchmark:
 	uv sync
-	uv run python microgpt/parity.py
 	uv run python microgpt/kernel-benchmarks/kernels/run.py
