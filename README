@@ -29,7 +29,7 @@ LLVM and compiles it at import time via llvmlite MCJIT.
     $ uv run example.py
 
 
-we also reimplemented microGPT with every kernel written
+I also reimplemented microGPT with every kernel written
 in Exo and benchmarked it against NumPy, PyTorch, JAX,
 and karpathy's original scalar autograd.
 
@@ -44,7 +44,7 @@ and karpathy's original scalar autograd.
      original  66601    20604  20522  179583  1       
 
 
-references:
+References:
 
 - Exo: https://github.com/exo-lang/exo/commits/main/?author=sueszli
 - xDSL: https://github.com/xdslproject/xdsl/commits/main/?author=sueszli
