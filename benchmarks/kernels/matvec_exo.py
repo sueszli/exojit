@@ -8,6 +8,7 @@ from exo.stdlib.scheduling import fission, simplify
 
 from exojit.main import jit
 
+
 @proc
 def _matvec(M: size, K: size, y: f32[M] @ DRAM, W: f32[M, K] @ DRAM, x: f32[K] @ DRAM):
     for j in seq(0, M):

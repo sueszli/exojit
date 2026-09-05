@@ -18,11 +18,10 @@ lint:
 
 .PHONY: microgpt
 microgpt:
-	uv run pytest -W ignore -x -s --override-ini="addopts=" microgpt/
+	uv run pytest -W ignore -x -n0 microgpt/
 
 .PHONY: tests
 tests:
-	uv run pytest -W ignore microgpt/
 	uv run pytest -W ignore tests/
 	uv run lit -j $$(nproc 2>/dev/null || sysctl -n hw.logicalcpu) tests/filecheck/
 
@@ -32,6 +31,7 @@ precommit:
 	$(MAKE) precommit-hook
 	$(MAKE) fmt
 	$(MAKE) lint
+	$(MAKE) microgpt
 	$(MAKE) tests
 
 .PHONY: benchmark
