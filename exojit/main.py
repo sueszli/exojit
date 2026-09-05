@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import math
 import numbers
 import re
@@ -28,7 +27,7 @@ from xdsl.backend.llvm.convert import convert_module
 from xdsl.builder import Builder
 from xdsl.context import Context
 from xdsl.dialects import llvm, memref
-from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, ArrayAttr, Builtin, DictionaryAttr, FloatAttr, IndexType, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnitAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
+from xdsl.dialects.builtin import DYNAMIC_INDEX, AnyFloat, ArrayAttr, Builtin, DictionaryAttr, FixedBitwidthType, FloatAttr, IndexType, IntegerAttr, IntegerType, MemRefType, ModuleOp, NoneAttr, StringAttr, UnitAttr, UnrealizedConversionCastOp, f16, f32, f64, i1, i8, i16, i32, i64
 from xdsl.dialects.llvm import BrOp, FNegOp
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
 from xdsl.ir import Attribute, Block, Operation, Region, SSAValue
@@ -182,17 +181,10 @@ class IRGenerator:
     def _expr_usub(self, usub: LoopIR.USub) -> SSAValue:
         # lower unary negation to llvm.fneg (float) or 0-x llvm.sub (int)
         expr = self._expr(usub.arg)
-        is_num_type = isinstance(usub.type, T.Num)
-        mlir_type = expr.type if is_num_type else self._to_mlir_type(usub.type)
-
-        if mlir_type in [f16, f32, f64]:
+        if isinstance(expr.type, AnyFloat):
             return self._emit(FNegOp(expr, fast_math=llvm.FastMathAttr("fast")))
-        elif mlir_type in [i8, i16, i32, i64]:
-            assert isinstance(mlir_type, IntegerType)
-            zero = self._int_const(0, mlir_type)
-            return self._emit(llvm.SubOp(zero, expr))
-        else:
-            assert False
+        assert isinstance(expr.type, IntegerType) and expr.type != i1
+        return self._emit(llvm.SubOp(self._int_const(0, expr.type), expr))
 
     def _cmp_binop(self, lhs: SSAValue, rhs: SSAValue, op: str) -> SSAValue:
         P = llvm.ICmpPredicateFlag
@@ -202,7 +194,7 @@ class IRGenerator:
         if lhs.type == i1:
             bool_ops = {"and": llvm.AndOp, "or": llvm.OrOp}
             return self._emit(bool_ops[op](lhs, rhs))
-        if lhs.type in [i8, i16, i32, i64]:
+        if isinstance(lhs.type, IntegerType):
             return self._emit(llvm.ICmpOp(lhs, rhs, IntegerAttr(integer_cmp_table[op], i64)))
         return self._emit(llvm.FCmpOp(lhs, rhs, float_cmp_table[op]))
 
@@ -225,11 +217,10 @@ class IRGenerator:
 
         float_ops = {"+": llvm.FAddOp, "-": llvm.FSubOp, "*": llvm.FMulOp, "/": llvm.FDivOp}
         int_ops = {"+": llvm.AddOp, "-": llvm.SubOp, "*": llvm.MulOp, "/": llvm.SDivOp, "%": llvm.SRemOp}
-        if mlir_type in [f16, f32, f64]:
+        if isinstance(mlir_type, AnyFloat):
             return self._emit(float_ops[binop.op](lhs, rhs, fast_math=llvm.FastMathAttr("fast")))
-        if mlir_type in [i8, i16, i32, i64]:
-            return self._emit(int_ops[binop.op](lhs, rhs))
-        assert False
+        assert isinstance(mlir_type, IntegerType)
+        return self._emit(int_ops[binop.op](lhs, rhs))
 
     def _window_access(self, access: object) -> SSAValue:
         match access:
@@ -318,10 +309,7 @@ class IRGenerator:
         value = self._expr(stmt.rhs, expected_type)
 
         current = self._memref_load(memref_val, idx)
-        if value.type in [f16, f32, f64]:
-            result = self._emit(llvm.FAddOp(current, value, fast_math=llvm.FastMathAttr("fast")))
-        else:
-            result = self._emit(llvm.AddOp(current, value))
+        result = self._emit(llvm.FAddOp(current, value, fast_math=llvm.FastMathAttr("fast")) if isinstance(value.type, AnyFloat) else llvm.AddOp(current, value))
         self._memref_store(result, memref_val, idx)
 
     def _stmt_if(self, if_stmt: LoopIR.If) -> None:
@@ -354,8 +342,13 @@ class IRGenerator:
         region.add_block(merge_block)
         self.builder = Builder(insertion_point=InsertPoint.at_end(merge_block))
 
-    def _counted_loop(self, lo: SSAValue, hi: SSAValue, predicate: llvm.ICmpPredicateFlag, iter_name: str, iter_type: Attribute, body: list[LoopIR.stmt], step: Callable[[], SSAValue]) -> None:
-        # counted loop as header/body/exit blocks, carrying the induction variable as a header argument
+    def _stmt_for(self, for_stmt: LoopIR.For) -> None:
+        lo = self._expr(for_stmt.lo)
+        hi = self._expr(for_stmt.hi)
+        assert lo.type == hi.type
+        assert isinstance(lo.type, IntegerType)
+        step = self._int_const(1, lo.type)
+
         region = self.builder.insertion_point.block.parent_region()
         assert region is not None
         header_block = Block(arg_types=[lo.type])
@@ -367,27 +360,19 @@ class IRGenerator:
 
         self.builder = Builder(insertion_point=InsertPoint.at_end(header_block))
         iv = header_block.args[0]
-        cond = self._emit(llvm.ICmpOp(iv, hi, IntegerAttr(predicate.to_int(), i64)))
+        cond = self._emit(llvm.ICmpOp(iv, hi, IntegerAttr(llvm.ICmpPredicateFlag.SLT.to_int(), i64)))
         self.builder.insert(llvm.CondBrOp(cond, body_block, [], exit_block, []))
 
         with self._scoped_state():
             self.builder = Builder(insertion_point=InsertPoint.at_end(body_block))
             self.symbol_table = ScopedDict(self._syms)
-            self._syms[iter_name] = iv if iv.type == iter_type else self._emit(llvm.TruncOp(iv, iter_type))
-            for stmt in body:
+            self._syms[repr(for_stmt.iter)] = iv
+            for stmt in for_stmt.body:
                 self._stmt(stmt)
-            self.builder.insert(BrOp(header_block, self._emit(llvm.AddOp(iv, step()))))
+            self.builder.insert(BrOp(header_block, self._emit(llvm.AddOp(iv, step))))
 
         region.add_block(exit_block)
         self.builder = Builder(insertion_point=InsertPoint.at_end(exit_block))
-
-    def _stmt_for(self, for_stmt: LoopIR.For) -> None:
-        lo = self._expr(for_stmt.lo)
-        hi = self._expr(for_stmt.hi)
-        assert lo.type == hi.type
-        assert isinstance(lo.type, IntegerType)
-        step = self._int_const(1, lo.type)
-        self._counted_loop(lo, hi, llvm.ICmpPredicateFlag.SLT, repr(for_stmt.iter), lo.type, for_stmt.body, lambda: step)
 
     def _stmt_alloc(self, alloc: LoopIR.Alloc) -> None:
         # lower alloc to llvm.call @malloc (dram) or llvm.alloca (stack)
@@ -404,8 +389,8 @@ class IRGenerator:
         total_elements = math.prod(shape)
 
         if mem_name == "DRAM":
-            elem_bytes = {f16: 2, f32: 4, f64: 8, i8: 1, i16: 2, i32: 4, i64: 8}[mlir_type.element_type]
-            size_val = self._int_const(total_elements * elem_bytes)  # malloc takes bytes
+            assert isinstance(mlir_type.element_type, FixedBitwidthType)
+            size_val = self._int_const(total_elements * mlir_type.element_type.size)  # malloc takes bytes
             raw_ptr = self._emit(llvm.CallOp("malloc", size_val, return_type=llvm.LLVMPointerType()))
         else:
             size_val = self._int_const(total_elements)  # alloca takes element count
@@ -536,15 +521,13 @@ class LLVMBackend:
     def _lower(procs: list[LoopIR.proc]) -> ModuleOp:
         ctx = LLVMBackend._context()
         module = IRGenerator().generate(procs)
-        _rewrite = lambda patterns: PatternRewriteWalker(GreedyRewritePatternApplier(patterns)).rewrite_module(module)
         _simplify = lambda: (CanonicalizePass().apply(ctx, module), CommonSubexpressionElimination().apply(ctx, module), module.verify())
 
         _simplify()
 
-        # full lowering to llvm dialect
-        ExtendedConvertMemRefToPtr().apply(ctx, module)  # memref.{load,store,subview,cast} -> llvm
-        _rewrite([RewriteMemRefTypes()])  # memreftype -> llvm.ptr on all values
-        ReconcileUnrealizedCastsPass().apply(ctx, module)  # fold paired unrealized casts
+        ExtendedConvertMemRefToPtr().apply(ctx, module)
+        PatternRewriteWalker(GreedyRewritePatternApplier([RewriteMemRefTypes()])).rewrite_module(module)
+        ReconcileUnrealizedCastsPass().apply(ctx, module)
         module.verify()
 
         _simplify()
@@ -576,17 +559,6 @@ class LLVMBackend:
         pb = llvmlite.binding.create_pass_builder(tm, pto)
         pb.getModulePassManager().run(mod_ref, pb)
         return mod_ref, tm
-
-    @staticmethod
-    def _disk_cache(name: object, generate: Callable[[], str]) -> str:
-        # hash all compiler sources -> .cache/exojit/{hash}/. auto-invalidates when compiler code changes.
-        src_dir = Path(__file__).resolve().parent
-        cache_dir = src_dir.parent / ".cache" / "exojit" / hashlib.sha256(b"".join(f.read_bytes() for f in sorted(src_dir.glob("*.py")))).hexdigest()[:12]
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        path = cache_dir / f"{name}.ll"
-        if not path.exists():
-            path.write_text(generate())
-        return path.read_text()
 
 
 class JITRuntime:
@@ -665,7 +637,7 @@ class JITRuntime:
     @staticmethod
     def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
         mlir_module = to_mlir(proc)
-        ir_text = LLVMBackend._disk_cache(hashlib.sha256(str(mlir_module).encode()).hexdigest()[:16], lambda: LLVMBackend._to_llvm_ir(mlir_module))
+        ir_text = LLVMBackend._to_llvm_ir(mlir_module)
         mod_ref, tm = LLVMBackend._to_llvmlite_moduleref(ir_text)
 
         engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
