@@ -29,7 +29,7 @@ LLVM and compiles it at import time via llvmlite MCJIT.
     $ uv run example.py
 
 
-(3) we also reimplemented microGPT with every kernel written
+we also reimplemented microGPT with every kernel written
 in Exo and benchmarked it against NumPy, PyTorch, JAX,
 and karpathy's original scalar autograd.
 
