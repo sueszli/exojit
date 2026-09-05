@@ -24,6 +24,7 @@ from exo.backend.parallel_analysis import ParallelAnalysis
 from exo.backend.prec_analysis import PrecisionAnalysis
 from exo.backend.win_analysis import WindowAnalysis
 from exo.core.LoopIR import LoopIR, T, get_writes_of_stmts
+from exo.frontend.pyparser import DummyScope, Parser, get_ast_from_python
 from exo.main import load_user_code
 from exo.rewrite.range_analysis import constant_bound
 from xdsl.backend.llvm.convert import convert_module
@@ -855,8 +856,6 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
     if proc is None:
         return lambda fn: jit(fn, raw=raw, optimize=optimize)
     if callable(proc) and not isinstance(proc, Procedure):
-        from exo.frontend.pyparser import DummyScope, Parser, get_ast_from_python
-
         body, src_info = get_ast_from_python(proc)
         parser = Parser(body, src_info, parent_scope=DummyScope(proc.__globals__, {}), as_func=True)
         proc = Procedure(parser.result())
