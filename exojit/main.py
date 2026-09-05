@@ -652,7 +652,6 @@ class JITRuntime:
             buf = ffi.new(f"{c_type}[{numel}]", flat)
             keepalive.append(buf)
             if writable:
-
                 def sync() -> None:
                     for offset, (target, idx) in enumerate(leaves):
                         target[idx] = buf[offset]
@@ -698,7 +697,6 @@ class JITRuntime:
         converters = []
         for i, (arg, kind) in enumerate(zip(ir_args, kinds, strict=True)):
             if kind is None:
-
                 def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=arg.name) -> int:
                     shape_env[name] = converted = int(value)
                     return converted
