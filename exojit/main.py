@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Literal, SupportsInt, TypeGuard, cast
 
 import click
-import llvmlite.binding
 from cffi import FFI
 from exo import compile_procs as exo_compile_procs
 from exo.API import Procedure
@@ -32,6 +31,7 @@ from xdsl.dialects.llvm import BrOp, FNegOp
 from xdsl.dialects.utils import get_dynamic_index_list, split_dynamic_index_list
 from xdsl.ir import Attribute, Block, Operation, Region, SSAValue
 from xdsl.jit.c_type_context import CTypeContext, register_builtin_types
+from xdsl.jit.llvm.backend import _compile_module, _create_target_machine
 from xdsl.jit.llvm.c_type_context import register_llvm_types, to_c_func_type
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriteWalker
 from xdsl.rewriter import InsertPoint
@@ -534,35 +534,6 @@ class LLVMBackend:
         return module
 
     @staticmethod
-    def _target_machine() -> llvmlite.binding.TargetMachine:
-        # llvmlite target machines are not safe to reuse after MCJIT compilation.
-        # do not cache to avoid stale target-data pointers during later `--asm` runs.
-        return llvmlite.binding.Target.from_default_triple().create_target_machine(cpu=llvmlite.binding.get_host_cpu_name(), features=llvmlite.binding.get_host_cpu_features().flatten(), opt=3)
-
-    @staticmethod
-    def _to_llvm_ir(module: ModuleOp) -> str:
-        # xdsl mlir (llvm dialect) -> llvm ir text, pinned to the host target
-        module = module.clone()
-        for func_op in module.ops:
-            # noalias lets llvm's loop vectorizer assume buffers do not overlap
-            assert isinstance(func_op, llvm.FuncOp)
-            func_op.arg_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(input_type, llvm.LLVMPointerType) else {}) for input_type in func_op.function_type.inputs])
-        tm = LLVMBackend._target_machine()
-        return str(convert_module(module, fallback_target_triple=tm.triple, data_layout=str(tm.target_data)))
-
-    @staticmethod
-    def _to_llvmlite_moduleref(ir: str) -> tuple[llvmlite.binding.ModuleRef, llvmlite.binding.TargetMachine]:
-        mod_ref = llvmlite.binding.parse_assembly(ir)
-        tm = LLVMBackend._target_machine()
-        pto = llvmlite.binding.PipelineTuningOptions(speed_level=3)
-        pto.slp_vectorization = True
-        pb = llvmlite.binding.create_pass_builder(tm, pto)
-        pb.getModulePassManager().run(mod_ref, pb)
-        return mod_ref, tm
-
-
-class JITRuntime:
-    @staticmethod
     @cache
     def _c_type_context() -> CTypeContext:
         ctx = CTypeContext()
@@ -571,12 +542,16 @@ class JITRuntime:
         return ctx
 
     @staticmethod
-    def _c_signature(module: ModuleOp, name: str) -> str:
-        # cffi abi declaration for the entry point, derived from its llvm function type
-        func_op = SymbolTable.lookup_symbol(module, name)
-        assert isinstance(func_op, llvm.FuncOp)
-        signature = to_c_func_type(JITRuntime._c_type_context(), func_op.function_type)
-        return f"{signature.output}(*)({', '.join(signature.inputs) or 'void'})"
+    def _annotate_noalias(module: ModuleOp) -> ModuleOp:
+        # noalias lets llvm's loop vectorizer assume buffers do not overlap
+        module = module.clone()
+        for func_op in module.ops:
+            assert isinstance(func_op, llvm.FuncOp)
+            func_op.arg_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(input_type, llvm.LLVMPointerType) else {}) for input_type in func_op.function_type.inputs])
+        return module
+
+
+class JITRuntime:
 
     @staticmethod
     def _eval_shape_expr(expr: LoopIR.expr, env: dict[object, int]) -> int:
@@ -637,12 +612,16 @@ class JITRuntime:
     @staticmethod
     def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
         mlir_module = to_mlir(proc)
-        ir_text = LLVMBackend._to_llvm_ir(mlir_module)
-        mod_ref, tm = LLVMBackend._to_llvmlite_moduleref(ir_text)
+        mlir_module = LLVMBackend._annotate_noalias(mlir_module)
 
-        engine = llvmlite.binding.create_mcjit_compiler(mod_ref, tm)
-        engine.finalize_object()
-        engine.run_static_constructors()
+        func_op = SymbolTable.lookup_symbol(mlir_module, proc.name())
+        assert isinstance(func_op, llvm.FuncOp)
+        c_func_type = to_c_func_type(LLVMBackend._c_type_context(), func_op.function_type)
+
+        target, tm = _create_target_machine(opt_level=3)
+        llvm_module = convert_module(mlir_module, fallback_target_triple=tm.triple, data_layout=str(tm.target_data))
+        raw_jit = _compile_module(llvm_module, proc.name(), c_func_type, target=target, target_machine=tm, opt_level=3)
+        fn = raw_jit.c_func
 
         ir_args = proc._loopir_proc.args
         for arg in ir_args:
@@ -651,15 +630,12 @@ class JITRuntime:
         kinds = [arg.name in written if arg.type.is_tensor_or_window() else None for arg in ir_args]  # None: passed by value, False/True: pointer, writable or not
 
         ffi = FFI()
-        address = engine.get_function_address(proc.name())
-        assert address, f"no address for symbol after compilation: {proc.name()}"
-        fn = ffi.cast(JITRuntime._c_signature(mlir_module, proc.name()), address)
 
         def call(*args) -> None:
             fn(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
 
-        # mcjit owns the jitted code, so the engine has to outlive every call into it
-        cast(Any, call)._engine = engine
+        # mcjit owns the jitted code, so the raw_jit (which retains the engine) must outlive every call
+        cast(Any, call)._raw_jit = raw_jit
 
         names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in ir_args]
         if raw:
@@ -706,10 +682,6 @@ def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
     return LLVMBackend._lower([exo_analyze(proc) for proc in unique_procs])
 
 
-llvmlite.binding.initialize_native_target()
-llvmlite.binding.initialize_native_asmprinter()
-
-
 def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedure] | None = None):
     # call directly: `jit(proc)(...)`
     # call as a decorator: `@jit(optimize=fn)`
@@ -734,9 +706,8 @@ def _dedup_proc_names(user_module: object) -> list[Procedure]:
 @click.argument("source", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--c", "fmt", flag_value="c", help="Output C source")
 @click.option("--mlir", "fmt", flag_value="mlir", help="Output MLIR")
-@click.option("--asm", "fmt", flag_value="asm", help="Output assembly")
-def cli(source: Path, fmt: Literal["c", "mlir", "asm"] | None):
-    assert fmt, "choose --c, --mlir, or --asm"
+def cli(source: Path, fmt: Literal["c", "mlir"] | None):
+    assert fmt, "choose --c or --mlir"
     procs = _dedup_proc_names(load_user_code(source))
 
     match fmt:
@@ -746,9 +717,5 @@ def cli(source: Path, fmt: Literal["c", "mlir", "asm"] | None):
             text = (tmpdir / "o.c").read_text()
         case "mlir":
             text = str(to_mlir(procs))
-        case "asm":
-            # xdsl mlir -> native assembly text
-            mod_ref, tm = LLVMBackend._to_llvmlite_moduleref(LLVMBackend._to_llvm_ir(to_mlir(procs)))
-            text = tm.emit_assembly(mod_ref)
 
     click.echo(text)
