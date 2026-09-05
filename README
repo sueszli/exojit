@@ -16,11 +16,14 @@
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣇
 
 
-Exo's default backend emits C, requiring an offline
+a just-in-time compiler for the exo language.
+
+
+(1) Exo's default backend emits C, requiring an offline
 compile step. exojit lowers Exo IR through xDSL to
 LLVM and compiles it at import time via llvmlite MCJIT.
 
-prototyped the upstream xDSL PyJIT project:
+(2) this prototyped the upstream xDSL PyJIT project:
 https://github.com/xdslproject/xdsl/tree/main/tests/filecheck/projects/pyjit
 
 
@@ -31,23 +34,24 @@ usage:
     $ uv run example.py
 
 
-we reimplemented microGPT with every kernel written
+(3) we also reimplemented microGPT with every kernel written
 in Exo and benchmarked it against NumPy, PyTorch, JAX,
 and karpathy's original scalar autograd.
 
- name      mean μs  ±σ     min    max     speedup 
-──────────────────────────────────────────────────
- exojit    35       0      35     35      1902    
- numpy     176      133    140    3011    378     
- torch     185      25     165    391     360     
- jax       503      0      503    503     132     
- plain     7042     720    6670   18530   9       
- original  66601    20604  20522  179583  1       
+
+     name      mean μs  ±σ     min    max     speedup 
+    ──────────────────────────────────────────────────
+     exojit    35       0      35     35      1902    
+     numpy     176      133    140    3011    378     
+     torch     185      25     165    391     360     
+     jax       503      0      503    503     132     
+     plain     7042     720    6670   18530   9       
+     original  66601    20604  20522  179583  1       
 
 
 references:
 
-Exo: https://github.com/exo-lang/exo/commits/main/?author=sueszli
-xDSL: https://github.com/xdslproject/xdsl/commits/main/?author=sueszli
-llvmlite: https://github.com/numba/llvmlite
-microGPT: https://karpathy.github.io/2026/02/12/microgpt/
+- Exo: https://github.com/exo-lang/exo/commits/main/?author=sueszli
+- xDSL: https://github.com/xdslproject/xdsl/commits/main/?author=sueszli
+- llvmlite: https://github.com/numba/llvmlite
+- microGPT: https://karpathy.github.io/2026/02/12/microgpt/
