@@ -106,7 +106,6 @@ def baseline_mean_us() -> float | None:
 def check_perf_regression(actual_us: float) -> None:
     baseline_us = baseline_mean_us()
     if baseline_us is None:
-        print(f"  no baseline found at {TIMES_PATH}, skipping perf regression check")
         return
     max_allowed_us = baseline_us * (1 + PERF_REGRESSION_TOLERANCE)
     assert actual_us <= max_allowed_us, f"perf regression: {actual_us:.0f}µs > {max_allowed_us:.0f}µs (baseline {baseline_us:.0f}µs, tolerance {PERF_REGRESSION_TOLERANCE:.0%})"
