@@ -37,4 +37,4 @@ precommit:
 .PHONY: kernels
 kernels:
 	uv sync
-	uv run python microgpt/kernel-benchmarks/kernels/run.py
+	uv run python microgpt/kernels/run.py

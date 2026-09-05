@@ -722,7 +722,7 @@ def _plot(df: pl.DataFrame) -> None:
     variant_order = ["Auto-vectorized", "Numba JIT", "JAX JIT", "torch.compile"]
     pdf["variant"] = pd.Categorical(pdf["variant"], categories=variant_order, ordered=True)
 
-    out = Path(__file__).parent.parent
+    out = Path(__file__).parent
     n_kernels = len(kernel_order)
     # fmt: off
     p = (
@@ -773,5 +773,5 @@ if __name__ == "__main__":
     )
     with pl.Config(tbl_rows=-1):
         print(df)
-    df.write_csv(Path(__file__).parent.parent / "results.csv")
+    df.write_csv(Path(__file__).parent / "results.csv")
     _plot(df)
