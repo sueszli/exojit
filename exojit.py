@@ -135,11 +135,10 @@ def _iconst(ins, n: int) -> SSAValue:
 
 
 def _base_and_offset(base: SSAValue, indices: Sequence[SSAValue], shape: tuple[int, ...], ins) -> tuple[SSAValue, SSAValue | None]:
-    dim_size = lambda i: _iconst(ins, shape[i]) if shape[i] != DYNAMIC_INDEX else _loop_upper_bound_as_i64(indices[i])  # static dim, else the loop bound
     # row-major strides: stride[last]=1, stride[i]=stride[i+1]*dim[i+1]
     strides: list[SSAValue] = [_iconst(ins, 1)] * len(shape)
     for i in range(len(shape) - 2, -1, -1):
-        dim = dim_size(i + 1)
+        dim = _iconst(ins, shape[i + 1]) if shape[i + 1] != DYNAMIC_INDEX else _loop_upper_bound_as_i64(indices[i + 1])  # static dim, else the loop bound
         assert dim is not None, f"could not resolve dynamic dimension {i + 1} of shape {shape}"
         strides[i] = ins(llvm.MulOp(strides[i + 1], dim)).res
     # flat element offset = sum(index_i * stride_i)
@@ -497,7 +496,6 @@ class IRGenerator:
 
     def _stmt_call(self, call: LoopIR.Call) -> None:
         # memrefs reach callees as bare pointers
-        fn_type = lambda types: llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in types], llvm.LLVMVoidType())
         if call.f.instr is None:
             self._generate_procedure(call.f)
             assert len(call.args) == len(call.f.args)
@@ -515,7 +513,7 @@ class IRGenerator:
             args = [self._expr(arg) for arg in call.args]
         if call.f.instr is not None and call.f.name not in self.seen_extern_decls:
             self.seen_extern_decls.add(call.f.name)
-            self.module.body.block.add_op(llvm.FuncOp(call.f.name, fn_type([SSAValue.get(arg).type for arg in args]), llvm.LinkageAttr("external")))
+            self.module.body.block.add_op(llvm.FuncOp(call.f.name, llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(SSAValue.get(arg).type, MemRefType) else SSAValue.get(arg).type for arg in args], llvm.LLVMVoidType()), llvm.LinkageAttr("external")))
         self.builder.insert(llvm.CallOp(call.f.name, *args))
 
     def _stmt(self, stmt: object) -> None:
