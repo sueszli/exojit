@@ -5,7 +5,7 @@ import numbers
 import re
 from collections.abc import Callable, MutableSequence, Sequence
 from pathlib import Path
-from typing import Any, Literal, SupportsInt, TypeGuard, cast
+from typing import Any, Literal, TypeGuard, cast
 
 import click
 import exo.frontend.boundscheck as _boundscheck
@@ -135,18 +135,12 @@ def _iconst(ins, n: int) -> SSAValue:
 
 
 def _base_and_offset(base: SSAValue, indices: Sequence[SSAValue], shape: tuple[int, ...], ins) -> tuple[SSAValue, SSAValue | None]:
-    def dim_size(i: int) -> SSAValue:
-        # static constant, or the dynamic loop bound the index is derived from
-        if shape[i] != DYNAMIC_INDEX:
-            return _iconst(ins, shape[i])
-        ub = _loop_upper_bound_as_i64(indices[i])
-        assert ub is not None
-        return ub
-
     # row-major strides: stride[last]=1, stride[i]=stride[i+1]*dim[i+1]
     strides: list[SSAValue] = [_iconst(ins, 1)] * len(shape)
     for i in range(len(shape) - 2, -1, -1):
-        strides[i] = ins(llvm.MulOp(strides[i + 1], dim_size(i + 1))).res
+        dim = _iconst(ins, shape[i + 1]) if shape[i + 1] != DYNAMIC_INDEX else _loop_upper_bound_as_i64(indices[i + 1])  # static dim, else the loop bound
+        assert dim is not None, f"could not resolve dynamic dimension {i + 1} of shape {shape}"
+        strides[i] = ins(llvm.MulOp(strides[i + 1], dim)).res
     # flat element offset = sum(index_i * stride_i)
     flat: SSAValue | None = None
     for idx, stride in zip(indices, strides):
@@ -502,7 +496,6 @@ class IRGenerator:
 
     def _stmt_call(self, call: LoopIR.Call) -> None:
         # memrefs reach callees as bare pointers
-        fn_type = lambda types: llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in types], llvm.LLVMVoidType())
         if call.f.instr is None:
             self._generate_procedure(call.f)
             assert len(call.args) == len(call.f.args)
@@ -520,7 +513,7 @@ class IRGenerator:
             args = [self._expr(arg) for arg in call.args]
         if call.f.instr is not None and call.f.name not in self.seen_extern_decls:
             self.seen_extern_decls.add(call.f.name)
-            self.module.body.block.add_op(llvm.FuncOp(call.f.name, fn_type([SSAValue.get(arg).type for arg in args]), llvm.LinkageAttr("external")))
+            self.module.body.block.add_op(llvm.FuncOp(call.f.name, llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(SSAValue.get(arg).type, MemRefType) else SSAValue.get(arg).type for arg in args], llvm.LLVMVoidType()), llvm.LinkageAttr("external")))
         self.builder.insert(llvm.CallOp(call.f.name, *args))
 
     def _stmt(self, stmt: object) -> None:
@@ -642,10 +635,7 @@ class JITRuntime:
         written = {sym for sym, _ in get_writes_of_stmts(proc._loopir_proc.body)}  # Exo resolves window and callee writes when classifying pointer mutability
         kinds = [arg.name in written if arg.type.is_tensor_or_window() else None for arg in ir_args]  # None: passed by value, False/True: pointer, writable or not
         ffi = FFI()
-
-        def call(*args) -> None:
-            raw_jit.c_func(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
-
+        call = lambda *args: raw_jit.c_func(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
         names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in ir_args]
         if raw:
             wrapped = lambda *args, **kwargs: call(*(tuple(kwargs[name] for name in names) if kwargs else args))
@@ -654,12 +644,7 @@ class JITRuntime:
         converters = []
         for i, (arg, kind) in enumerate(zip(ir_args, kinds, strict=True)):
             if kind is None:
-
-                def convert(value: SupportsInt | str, shape_env: dict[object, int], _keepalive: list[object], _syncbacks: list[Callable[[], None]], name=arg.name) -> int:
-                    shape_env[name] = converted = int(value)
-                    return converted
-
-                converters.append(convert)
+                converters.append(lambda value, shape_env, *_, name=arg.name: shape_env.setdefault(name, int(value)))  # size args resolve dynamic dims
             else:
                 converters.append(JITRuntime._tensor_converter(ffi=ffi, index=i, tensor_type=arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type, writable=kind))
 
