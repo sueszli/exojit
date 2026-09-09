@@ -36,6 +36,7 @@ from xdsl.transforms.common_subexpression_elimination import cse
 from xdsl.transforms.reconcile_unrealized_casts import reconcile_unrealized_casts
 from xdsl.utils.hints import isa
 
+
 # ===----------------------------------------------------------------------=== #
 # exo patches
 # ===----------------------------------------------------------------------=== #
@@ -82,6 +83,7 @@ _boundscheck.lift_expr = patched_lift_expr
 # ===----------------------------------------------------------------------=== #
 # memref lowering
 # ===----------------------------------------------------------------------=== #
+
 
 # `memref` -> `llvm.ptr` lowering: replace structured memory ops with raw pointer arithmetic
 #
