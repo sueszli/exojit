@@ -135,7 +135,7 @@ def _iconst(ins, n: int) -> SSAValue:
 
 
 def _base_and_offset(base: SSAValue, indices: Sequence[SSAValue], shape: tuple[int, ...], ins) -> tuple[SSAValue, SSAValue | None]:
-    dim_size = lambda i: _iconst(ins, shape[i]) if shape[i] != DYNAMIC_INDEX else _loop_upper_bound_as_i64(indices[i])  # static constant, or the dynamic loop bound the index is derived from
+    dim_size = lambda i: _iconst(ins, shape[i]) if shape[i] != DYNAMIC_INDEX else _loop_upper_bound_as_i64(indices[i])  # static dim, else the loop bound
     # row-major strides: stride[last]=1, stride[i]=stride[i+1]*dim[i+1]
     strides: list[SSAValue] = [_iconst(ins, 1)] * len(shape)
     for i in range(len(shape) - 2, -1, -1):
@@ -646,7 +646,7 @@ class JITRuntime:
         converters = []
         for i, (arg, kind) in enumerate(zip(ir_args, kinds, strict=True)):
             if kind is None:
-                converters.append(lambda value, shape_env, *_, name=arg.name: shape_env.setdefault(name, int(value)))  # size args feed the shape env that resolves dynamic tensor dims
+                converters.append(lambda value, shape_env, *_, name=arg.name: shape_env.setdefault(name, int(value)))  # size args resolve dynamic dims
             else:
                 converters.append(JITRuntime._tensor_converter(ffi=ffi, index=i, tensor_type=arg.type.as_tensor if isinstance(arg.type, T.Window) else arg.type, writable=kind))
 
