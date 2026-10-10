@@ -5,11 +5,11 @@ import numbers
 import re
 from collections.abc import Callable, MutableSequence, Sequence
 from pathlib import Path
-from typing import Any, Literal, TypeGuard, cast
+from typing import Any, TypeGuard, cast
 
-import click
 import exo.frontend.boundscheck as _boundscheck
 import exo.frontend.pyparser as _pyparser
+import tyro
 from cffi import FFI
 from exo import compile_procs_to_strings
 from exo.API import Procedure
@@ -688,16 +688,16 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
     return JITRuntime.compile(proc, raw=raw)
 
 
-@click.command()
-@click.argument("source", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--c", "fmt", flag_value="c", help="Output C source")
-@click.option("--mlir", "fmt", flag_value="mlir", help="Output MLIR")
-def cli(source: Path, fmt: Literal["c", "mlir"] | None):
-    assert fmt, "choose --c or --mlir"
+def main(source: Path, /, *, c: bool = False, mlir: bool = False) -> None:
+    assert c != mlir, "choose exactly one of --c or --mlir"
+    assert source.is_file(), f"source must be an existing file: {source}"
     mod = load_user_code(source)
     procs = list({v.name(): v for v in mod.__dict__.values() if isinstance(v, Procedure) and not v.is_instr()}.values())
-    match fmt:
-        case "c":
-            print(compile_procs_to_strings(procs, "o.h")[0])
-        case "mlir":
-            print(to_mlir(procs))
+    if c:
+        print(compile_procs_to_strings(procs, "o.h")[0])
+    else:
+        print(to_mlir(procs))
+
+
+def cli(args: Sequence[str] | None = None) -> None:
+    tyro.cli(main, args=args, prog="exojit")
