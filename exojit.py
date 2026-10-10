@@ -36,6 +36,7 @@ from xdsl.transforms.common_subexpression_elimination import cse
 from xdsl.transforms.reconcile_unrealized_casts import reconcile_unrealized_casts
 from xdsl.utils.hints import isa
 
+
 # ===----------------------------------------------------------------------=== #
 # exo patches
 # ===----------------------------------------------------------------------=== #
@@ -688,13 +689,6 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
 
 
 def _cli(source: Path, /, *, c: bool = False, mlir: bool = False) -> None:
-    """Compile Exo procedures to C source or MLIR.
-
-    Args:
-        source: Path to an existing Exo source file.
-        c: Output C source.
-        mlir: Output MLIR.
-    """
     if c == mlir:
         raise SystemExit("choose exactly one of --c or --mlir")
     if not source.is_file():
