@@ -689,10 +689,8 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
 
 
 def main(source: Path, /, *, c: bool = False, mlir: bool = False) -> None:
-    if c == mlir:
-        raise SystemExit("choose exactly one of --c or --mlir")
-    if not source.is_file():
-        raise SystemExit(f"source must be an existing file: {source}")
+    assert c != mlir, "choose exactly one of --c or --mlir"
+    assert source.is_file(), f"source must be an existing file: {source}"
     mod = load_user_code(source)
     procs = list({v.name(): v for v in mod.__dict__.values() if isinstance(v, Procedure) and not v.is_instr()}.values())
     if c:
