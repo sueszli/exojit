@@ -688,7 +688,7 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
     return JITRuntime.compile(proc, raw=raw)
 
 
-def _cli(source: Path, /, *, c: bool = False, mlir: bool = False) -> None:
+def main(source: Path, /, *, c: bool = False, mlir: bool = False) -> None:
     if c == mlir:
         raise SystemExit("choose exactly one of --c or --mlir")
     if not source.is_file():
@@ -702,4 +702,4 @@ def _cli(source: Path, /, *, c: bool = False, mlir: bool = False) -> None:
 
 
 def cli(args: Sequence[str] | None = None) -> None:
-    tyro.cli(_cli, args=args, prog="exojit")
+    tyro.cli(main, args=args, prog="exojit")
