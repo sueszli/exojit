@@ -6,7 +6,7 @@ requires-python = "==3.14.*"
 dependencies = [
     "exo-lang @ git+https://github.com/exo-lang/exo.git@ec75d3c5b229b1519890f836e7badcd46b04c007",
     "xdsl @ git+https://github.com/xdslproject/xdsl.git@ad4fb9c277a65993a1c988dfeea2b30c52b66db9",
-    "click",
+    "tyro",
     "cffi",
     "lit",
     "filecheck",
