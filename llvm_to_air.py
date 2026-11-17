@@ -8,24 +8,9 @@ import tempfile
 import time
 from collections.abc import Callable
 from functools import cache, lru_cache
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Optional
-
-# optional PyObjC bindings, only needed by the Metal runtime (create_compute_pipeline, execute_kernel)
-try:
-    import Metal
-except ModuleNotFoundError as e:
-    if e.name not in ("Metal", "objc"):
-        raise
-    Metal = None
-
-try:
-    import objc
-except ModuleNotFoundError as e:
-    if e.name != "objc":
-        raise
-    objc = None
-
 
 # ===----------------------------------------------------------------------=== #
 # toolchain probes
@@ -98,14 +83,7 @@ KernelArg = tuple[str, str, bool]  # (air type, semantic name, is output)
 GRID_POSITION_NAMES = ("id", "gid", "global_id")
 THREADGROUP_POSITION_NAMES = ("tid", "lid", "local_id")
 
-LLVM_TO_AIR_TYPES = {
-    "float": "f32",
-    "double": "f64",
-    "i32": "i32",
-    "i16": "i16",
-    "i8": "i8",
-    "i64": "i64",
-}
+LLVM_TO_AIR_TYPES = {"float": "f32", "double": "f64", "i32": "i32", "i16": "i16", "i8": "i8", "i64": "i64"}
 AIR_TO_LLVM_TYPES = {air: llvm for llvm, air in LLVM_TO_AIR_TYPES.items()}
 
 
@@ -216,12 +194,7 @@ class IntrinsicHandler:
     @staticmethod
     def handle_type_casts(line: str, used_intrinsics: set[str]) -> str:
         # the metal backend rejects raw int<->float cast opcodes, they must become air.convert calls
-        conversions = [
-            ("uitofp", "@air.convert.f.{dst}.u.{src}", "tail call fast"),
-            ("sitofp", "@air.convert.f.{dst}.s.{src}", "tail call fast"),
-            ("fptoui", "@air.convert.u.{dst}.f.{src}", "tail call"),
-            ("fptosi", "@air.convert.s.{dst}.f.{src}", "tail call"),
-        ]
+        conversions = [("uitofp", "@air.convert.f.{dst}.u.{src}", "tail call fast"), ("sitofp", "@air.convert.f.{dst}.s.{src}", "tail call fast"), ("fptoui", "@air.convert.u.{dst}.f.{src}", "tail call"), ("fptosi", "@air.convert.s.{dst}.f.{src}", "tail call")]
         for opcode, intr_template, call_attrs in conversions:
             if not (match := re.search(rf"(%\S+)\s*=\s*{opcode}\s+(\S+)\s+(%\S+)\s+to\s+(\S+)", line)):
                 continue
@@ -233,7 +206,6 @@ class IntrinsicHandler:
 
     @staticmethod
     def replace_intrinsics(line: str, used_intrinsics: set[str]) -> str:
-        # maps standard LLVM math functions to their AIR equivalents
         if "call" not in line:
             return line
         math_ops = ["exp", "log", "sin", "cos", "sqrt", "ceil", "floor", "fabs", "pow", "tanh", "fma", "trunc", "round"]
@@ -305,12 +277,7 @@ class MetadataGenerator:
             sig_str = f"void ({', '.join(arg_type for arg_type, _, _ in args_list)})*"
             kernel_nodes.append(m(f"!{{{sig_str} @{func_name}, {empty}, !{{{', '.join(arg_meta_refs)}}}}}"))
 
-        descriptors = [
-            '!"air.compile.denorms_disable"',
-            '!"air.compile.fast_math_enable"',
-            '!"air.compile.framebuffer_fetch_enable"',
-            f'!"{metal_version_str}"',
-        ]
+        descriptors = ['!"air.compile.denorms_disable"', '!"air.compile.fast_math_enable"', '!"air.compile.framebuffer_fetch_enable"', f'!"{metal_version_str}"']
         desc_refs = [m(f"!{{{d}}}") for d in descriptors]
         version = m("!{i32 2, i32 7, i32 0}")
         metal_ver = m('!{!"Metal", i32 3, i32 2, i32 0}')
@@ -324,7 +291,7 @@ class MetadataGenerator:
             f"!air.version = !{{{version}}}",
             f"!air.language_version = !{{{metal_ver}}}",
             f"!air.source_file_name = !{{{src_file}}}",
-            "",
+            ""
         ]
         return top_meta + lines
 
@@ -334,8 +301,6 @@ class MetadataGenerator:
             return ('!"air.thread_position_in_grid", !"air.arg_type_name", !"uint"', 0)
         if arg_name in THREADGROUP_POSITION_NAMES:
             return ('!"air.thread_position_in_threadgroup", !"air.arg_type_name", !"uint"', 0)
-
-        # default scalar
         if "addrspace" not in arg_type and "*" not in arg_type:
             return (f'!"air.arg_type_name", !"{arg_type.strip()}"', 0)
 
@@ -425,7 +390,6 @@ class AirTranslator:
 
     def _insert_scalar_loads(self, args_list: list[KernelArg]) -> None:
         for param_name, loaded_var in self.scalar_loads.items():
-            # find base type from args_list for the load instruction
             name_check = param_name.replace("%", "")
             base_type = next((arg.split("addrspace")[0].strip() for arg, name, _ in args_list if name == name_check), None)
             if base_type:
@@ -524,16 +488,10 @@ def compile_to_metallib(air_llvm_ir: str) -> bytes:
         return lib_data
 
 
-def _require_pyobjc(module: Any, name: str) -> Any:
-    # resolved at call time, not import time, so translation and metallib builds work without pyobjc
-    if module is None:
-        raise ModuleNotFoundError(f"the Metal runtime requires the PyObjC '{name}' module (install pyobjc-framework-Metal)", name=name)
-    return module
-
-
+# pyobjc is imported on first runtime call, so translation and metallib builds work without it
 @cache  # one pipeline per (metallib, kernel), repeated dispatches reuse it
 def create_compute_pipeline(metallib_binary: bytes, kernel_name: str):
-    device = _require_pyobjc(Metal, "Metal").MTLCreateSystemDefaultDevice()
+    device = import_module("Metal").MTLCreateSystemDefaultDevice()
     assert device, "metal not supported on this device"
 
     # newLibraryWithData_error_ takes a dispatch_data_t, built here through libdispatch via ctypes
@@ -549,7 +507,7 @@ def create_compute_pipeline(metallib_binary: bytes, kernel_name: str):
     assert dispatch_data, "failed to create dispatch_data"
 
     # bridge c_void_p to object for PyObjC
-    ns_dispatch_data = _require_pyobjc(objc, "objc").objc_object(c_void_p=dispatch_data)
+    ns_dispatch_data = import_module("objc").objc_object(c_void_p=dispatch_data)
     library, error = device.newLibraryWithData_error_(ns_dispatch_data, None)
     assert library, f"error loading library: {error}"
 
@@ -561,9 +519,8 @@ def create_compute_pipeline(metallib_binary: bytes, kernel_name: str):
 
 
 def execute_kernel(device, pso, grid_size, threadgroup_size, encode_args_fn: Callable[[Any], None]) -> float:
-    metal = _require_pyobjc(Metal, "Metal")
-
-    queue = device.newCommandQueue()
+    metal = import_module("Metal")
+    queue =device.newCommandQueue()
     assert queue, "failed to create command queue"
     cmd_buffer = queue.commandBuffer()
     assert cmd_buffer, "failed to create command buffer"

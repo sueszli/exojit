@@ -115,10 +115,11 @@ class TestAirToMetallib(unittest.TestCase):
 
         self.assertIn("generated metallib is empty", str(cm.exception))
 
-    @patch("llvm_to_air.Metal")
     @patch("llvm_to_air.ctypes")
-    @patch("llvm_to_air.objc")
-    def test_create_compute_pipeline_success(self, mock_objc, mock_ctypes, mock_metal):
+    def test_create_compute_pipeline_success(self, mock_ctypes):
+        mock_metal = MagicMock()
+        mock_objc = MagicMock()
+
         # mock metal device
         mock_device = MagicMock()
         mock_metal.MTLCreateSystemDefaultDevice.return_value = mock_device
@@ -148,7 +149,8 @@ class TestAirToMetallib(unittest.TestCase):
         mock_device.newComputePipelineStateWithFunction_error_.return_value = (mock_pso, None)
 
         # call
-        device, pso = air_to_metallib.create_compute_pipeline(b"binary", "kernel_name")
+        with patch.dict(sys.modules, {"Metal": mock_metal, "objc": mock_objc}):
+            device, pso = air_to_metallib.create_compute_pipeline(b"binary", "kernel_name")
 
         # assertions
         self.assertEqual(device, mock_device)
@@ -163,17 +165,17 @@ class TestAirToMetallib(unittest.TestCase):
         mock_library.newFunctionWithName_.assert_called_with("kernel_name")
         mock_device.newComputePipelineStateWithFunction_error_.assert_called_with(mock_fn, None)
 
-    @patch("llvm_to_air.Metal")
-    def test_create_compute_pipeline_no_device(self, mock_metal):
+    def test_create_compute_pipeline_no_device(self):
+        mock_metal = MagicMock()
         mock_metal.MTLCreateSystemDefaultDevice.return_value = None
-        with self.assertRaises(AssertionError) as cm:
+        with patch.dict(sys.modules, {"Metal": mock_metal}), self.assertRaises(AssertionError) as cm:
             air_to_metallib.create_compute_pipeline(b"bin", "name")
         self.assertIn("metal not supported", str(cm.exception))
 
-    @patch("llvm_to_air.Metal")
     @patch("llvm_to_air.ctypes")
-    @patch("llvm_to_air.objc")
-    def test_create_compute_pipeline_library_error(self, mock_objc, mock_ctypes, mock_metal):
+    def test_create_compute_pipeline_library_error(self, mock_ctypes):
+        mock_metal = MagicMock()
+        mock_objc = MagicMock()
         mock_device = MagicMock()
         mock_metal.MTLCreateSystemDefaultDevice.return_value = mock_device
 
@@ -185,14 +187,14 @@ class TestAirToMetallib(unittest.TestCase):
 
         mock_device.newLibraryWithData_error_.return_value = (None, "Some Error")
 
-        with self.assertRaises(AssertionError) as cm:
+        with patch.dict(sys.modules, {"Metal": mock_metal, "objc": mock_objc}), self.assertRaises(AssertionError) as cm:
             air_to_metallib.create_compute_pipeline(b"bin", "name")
         self.assertIn("error loading library", str(cm.exception))
 
-    @patch("llvm_to_air.Metal")
     @patch("llvm_to_air.ctypes")
-    @patch("llvm_to_air.objc")
-    def test_create_compute_pipeline_function_not_found(self, mock_objc, mock_ctypes, mock_metal):
+    def test_create_compute_pipeline_function_not_found(self, mock_ctypes):
+        mock_metal = MagicMock()
+        mock_objc = MagicMock()
         mock_device = MagicMock()
         mock_metal.MTLCreateSystemDefaultDevice.return_value = mock_device
 
@@ -207,7 +209,7 @@ class TestAirToMetallib(unittest.TestCase):
 
         mock_library.newFunctionWithName_.return_value = None
 
-        with self.assertRaises(AssertionError) as cm:
+        with patch.dict(sys.modules, {"Metal": mock_metal, "objc": mock_objc}), self.assertRaises(AssertionError) as cm:
             air_to_metallib.create_compute_pipeline(b"bin", "kernel_name")
         self.assertIn("function 'kernel_name' not found", str(cm.exception))
 
@@ -229,7 +231,8 @@ class TestAirToMetallib(unittest.TestCase):
 
         mock_buffer.status.return_value = 0
 
-        with patch("llvm_to_air.Metal") as mock_metal:
+        mock_metal = MagicMock()
+        with patch.dict(sys.modules, {"Metal": mock_metal}):
             mock_metal.MTLCommandBufferStatusCompleted = 1
             mock_buffer.status.return_value = 1
 
@@ -262,7 +265,8 @@ class TestAirToMetallib(unittest.TestCase):
         mock_buffer.computeCommandEncoder.return_value = mock_encoder
 
         # simulate failure
-        with patch("llvm_to_air.Metal") as mock_metal:
+        mock_metal = MagicMock()
+        with patch.dict(sys.modules, {"Metal": mock_metal}):
             mock_metal.MTLCommandBufferStatusCompleted = 1
             mock_buffer.status.return_value = 2
             mock_buffer.error.return_value = "GPU Fault"
