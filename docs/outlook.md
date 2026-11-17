@@ -1,5 +1,0 @@
-- https://github.com/JuliaGPU/GPUCompiler.jl/blob/d762273b0755012217124f57e875322fe6b8774f/src/metal.jl#L63
-- https://github.com/JuliaGPU/Metal.jl/blob/f7b082942ecae649a2f993724e94de41b667a7d2/src/compiler/compilation.jl#L167-L241
-- https://github.com/JuliaGPU/Metal.jl/blob/f7b082942ecae649a2f993724e94de41b667a7d2/bin/metallib-as#L8
-- https://github.com/JuliaBinaryWrappers/LLVMDowngrader_jll.jl
-- https://github.com/JuliaLLVM/llvm-downgrade
