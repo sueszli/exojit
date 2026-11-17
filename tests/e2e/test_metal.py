@@ -12,8 +12,11 @@ from textwrap import dedent
 import numpy as np
 import pytest
 from exo import *
+from xdsl.dialects import llvm
+from xdsl.dialects.builtin import i32
 
-from exojit import jit
+from exojit import JITRuntime, jit, to_mlir
+from exojit_metal import MetalIRGenerator, thread_grid
 
 ROOT = Path(__file__).resolve().parents[2]
 HAS_METAL = platform.system() == "Darwin" and platform.machine() == "arm64" and all(importlib.util.find_spec(name) is not None for name in ("Metal", "llvm_to_air"))
@@ -203,6 +206,30 @@ def test_metal_rejects_raw_and_unknown_backends():
         jit(matmul_par, raw=True, backend="metal")
     with pytest.raises(AssertionError, match="unsupported jit backend"):
         jit(matmul_par, backend="cuda")
+
+
+def test_metal_generator_reuses_cpu_lowering():
+    # the to_mlir generator seam: a single grid kernel with a trailing i32 thread id, no noalias attrs and no malloc/free
+    _, row, col, _, cols = thread_grid(matmul_par._loopir_proc)
+    funcs = [op for op in to_mlir(matmul_par, MetalIRGenerator(row, col, cols)).body.block.ops if isinstance(op, llvm.FuncOp)]
+    assert [func.sym_name.data for func in funcs] == ["matmul_par"]
+    assert funcs[0].function_type.inputs.data[-1] == i32 and funcs[0].properties.get("arg_attrs") is None
+    cpu_funcs = [op for op in to_mlir(matmul_par).body.block.ops if isinstance(op, llvm.FuncOp)]
+    assert sorted(func.sym_name.data for func in cpu_funcs) == ["free", "malloc", "matmul_par"]
+
+
+def test_jit_runtime_compiler_seam():
+    # a custom low-level compiler receives the converters' buffer addresses and the same ffi, and writes sync back
+    def compiler(_proc, ffi):
+        def run(*ptrs):
+            assert all(isinstance(ptr, int) for ptr in ptrs)
+            ffi.cast("float *", ptrs[0])[0] = 42.0
+
+        return run
+
+    C = [[0.0] * 5 for _ in range(3)]
+    JITRuntime.compile(matmul_par, compiler=compiler)(C, [[1.0] * 4] * 3, [[1.0] * 5] * 4)
+    assert C[0][0] == 42.0 and C[2][4] == 0.0
 
 
 @pytest.mark.parametrize("block_optional_deps", [False, True])

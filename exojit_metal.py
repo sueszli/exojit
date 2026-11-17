@@ -8,8 +8,13 @@ from exo.API import Procedure
 from exo.core.LoopIR import LoopIR, T, get_writes_of_stmts
 from exo.core.prelude import Sym
 from xdsl.backend.llvm.convert import convert_module
+from xdsl.builder import Builder
+from xdsl.dialects import llvm
+from xdsl.dialects.builtin import MemRefType, ModuleOp, i32, i64
+from xdsl.ir import Block, Region
+from xdsl.rewriter import InsertPoint
 
-from exojit import to_mlir
+from exojit import IRGenerator, JITRuntime, to_mlir
 
 # ===----------------------------------------------------------------------=== #
 # metal backend
@@ -79,29 +84,64 @@ def thread_grid(ir: LoopIR.proc) -> tuple[int, Sym, Sym, int, int]:
     return outs[0], rows.iter, cols.iter, shape[0], shape[1]
 
 
-def compile_kernel(proc: Procedure, ffi: FFI) -> Callable[..., None]:
-    # exo -> llvm dialect (cpu lowering + grid) -> llvm ir text (xdsl) -> air -> metallib (llvm_to_air)
+class MetalIRGenerator(IRGenerator):
+    # reuses the cpu lowering, but binds the two par loops of the grid to a trailing i32 gpu thread id
+    def __init__(self, row: Sym, col: Sym, cols: int):
+        super().__init__()
+        self.row, self.col, self.cols = row, col, cols
+
+    def _stmt_for(self, for_stmt: LoopIR.For) -> None:
+        if for_stmt.iter not in (self.row, self.col):
+            return super()._stmt_for(for_stmt)
+        for stmt in for_stmt.body:  # one thread per iteration, the iterator is already bound to the thread id
+            self._stmt(stmt)
+
+    def generate(self, procs: list[LoopIR.proc]) -> ModuleOp:
+        # the kernel has no noalias arg attrs (llvm_to_air only parses bare `ptr %x` arguments) and there is no gpu heap, so no malloc/free
+        assert len(procs) == 1, "metal backend: a thread grid maps exactly one kernel procedure"
+        proc = procs[0]
+        input_types = [self._arg_type(arg, proc.body) for arg in proc.args] + [i32]
+        region = Region(block := Block(arg_types=input_types))
+        self.builder = Builder(insertion_point=InsertPoint.at_end(block))
+        self.symbol_table = {arg.name: val for arg, val in zip(proc.args, block.args)}
+        thread_id = self._emit(llvm.ZExtOp(block.args[-1], i64))  # linear grid: row = id // cols, col = id % cols
+        self.symbol_table[self.row] = self._emit(llvm.UDivOp(thread_id, self._int_const(self.cols)))
+        self.symbol_table[self.col] = self._emit(llvm.URemOp(thread_id, self._int_const(self.cols)))
+        for stmt in proc.body:
+            self._stmt(stmt)
+        self.builder.insert(llvm.ReturnOp())
+        fn_type = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType())
+        self.module.body.block.add_op(llvm.FuncOp(proc.name, fn_type, linkage=llvm.LinkageAttr("external"), body=region))
+        return self.module
+
+
+def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
+    # exo -> llvm dialect (cpu lowering + grid) -> llvm ir text (xdsl) -> air -> metallib (llvm_to_air), wrapped by the cpu jit's argument conversion
+    assert not raw, "raw=True is not supported by the metal backend"
     ir = proc._loopir_proc
     out, row, col, rows, cols = thread_grid(ir)  # reject before compiling or importing optional deps
-    metal, air = import_module("Metal"), import_module("llvm_to_air")  # optional deps, only loaded on the metal path
 
-    llvm_module = convert_module(to_mlir(proc, grid=(row, col, cols)), fallback_target_triple="air64-apple-macosx")  # to_air replaces the triple and datalayout
-    kernel_args = llvm_module.get_global(proc.name()).args
-    overrides = {proc.name(): {kernel_args[out].name: "out", kernel_args[-1].name: "id"}}  # llvm_to_air derives read_write access and thread_position_in_grid from these names
-    device, pso = air.create_compute_pipeline(air.compile_to_metallib(air.to_air(str(llvm_module), kernel_overrides=overrides)), proc.name())
-    sizes = [4 * math.prod(dim.val for dim in arg.type.shape()) for arg in ir.args]
-    threads = rows * cols
+    def compile_kernel(proc: Procedure, ffi: FFI) -> Callable[..., None]:
+        metal, air = import_module("Metal"), import_module("llvm_to_air")  # optional deps, only loaded on the metal path
+        llvm_module = convert_module(to_mlir(proc, MetalIRGenerator(row, col, cols)), fallback_target_triple="air64-apple-macosx")  # to_air replaces the triple and datalayout
+        kernel_args = llvm_module.get_global(proc.name()).args
+        overrides = {proc.name(): {kernel_args[out].name: "out", kernel_args[-1].name: "id"}}  # llvm_to_air derives read_write access and thread_position_in_grid from these names
+        device, pso = air.create_compute_pipeline(air.compile_to_metallib(air.to_air(str(llvm_module), kernel_overrides=overrides)), proc.name())
+        sizes = [4 * math.prod(dim.val for dim in arg.type.shape()) for arg in ir.args]
+        threads = rows * cols
 
-    def run(*ptrs: int) -> None:
-        # buffer index i is kernel argument i, the trailing thread id is not a buffer
-        buffers = [device.newBufferWithBytes_length_options_(ffi.buffer(ffi.cast("char *", ptr), size)[:], size, metal.MTLResourceStorageModeShared) for ptr, size in zip(ptrs, sizes, strict=True)]
-        assert all(buffer is not None for buffer in buffers), "metal backend: buffer allocation failed"
+        def run(*ptrs: int) -> None:
+            # buffer index i is kernel argument i, the trailing thread id is not a buffer
+            buffers = [device.newBufferWithBytes_length_options_(ffi.buffer(ffi.cast("char *", ptr), size)[:], size, metal.MTLResourceStorageModeShared) for ptr, size in zip(ptrs, sizes, strict=True)]
+            assert all(buffer is not None for buffer in buffers), "metal backend: buffer allocation failed"
 
-        def encode(encoder: Any) -> None:
-            for i, buffer in enumerate(buffers):
-                encoder.setBuffer_offset_atIndex_(buffer, 0, i)
+            def encode(encoder: Any) -> None:
+                for i, buffer in enumerate(buffers):
+                    encoder.setBuffer_offset_atIndex_(buffer, 0, i)
 
-        air.execute_kernel(device, pso, metal.MTLSize(threads, 1, 1), metal.MTLSize(min(threads, pso.maxTotalThreadsPerThreadgroup()), 1, 1), encode)
-        ffi.memmove(ffi.cast("char *", ptrs[out]), buffers[out].contents().as_buffer(sizes[out]), sizes[out])
+            air.execute_kernel(device, pso, metal.MTLSize(threads, 1, 1), metal.MTLSize(min(threads, pso.maxTotalThreadsPerThreadgroup()), 1, 1), encode)
+            ffi.memmove(ffi.cast("char *", ptrs[out]), buffers[out].contents().as_buffer(sizes[out]), sizes[out])
 
-    return run
+        return run
+
+    return JITRuntime.compile(proc, compiler=compile_kernel)
