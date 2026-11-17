@@ -18,7 +18,7 @@ Representation (AIR), then packaging and running it through Metal.
   |    LLVM IR     |----->|   AIR (text)   |----->|    Metallib    |
   | (Open Source)  |      | (Proprietary)  |      |    (Binary)    |
   +----------------+      +----------------+      +----------------+
-          [ src/llvm_to_air.py ]   [ src/air_to_metallib.py ]   |
+          [ llvm_to_air.py: to_air ]  [ compile_to_metallib ]   |
                                                                 v
                                                   +----------------+
                                                   |   Apple GPU    |
@@ -32,12 +32,10 @@ undocumented, so everything here is reverse engineered.
 Library
 --------------------------------------------------------------------------------
 
-src/llvm_to_air.py
+llvm_to_air.py (single file; the Metal runtime calls need pyobjc-framework-Metal)
     to_air(llvm_ir_text, kernel_overrides=None) -> str
         Lower LLVM IR text to AIR LLVM IR text (target triple, datalayout,
         address spaces, air.* intrinsics and kernel metadata).
-
-src/air_to_metallib.py
     compile_to_metallib(air_llvm_ir) -> bytes
         Assemble AIR into a .metallib via `xcrun metal` / `xcrun metallib`.
     create_compute_pipeline(metallib_binary, kernel_name) -> (device, pso)

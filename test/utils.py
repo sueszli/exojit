@@ -7,8 +7,7 @@ import Metal
 root_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root_dir))
 
-from src.air_to_metallib import compile_to_metallib, create_compute_pipeline, execute_kernel
-from src.llvm_to_air import to_air
+from llvm_to_air import compile_to_metallib, create_compute_pipeline, execute_kernel, to_air
 
 
 def llvm_to_metallib(llvm_ir: str) -> bytes:

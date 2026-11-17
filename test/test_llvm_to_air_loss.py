@@ -9,7 +9,7 @@ import pytest
 root_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root_dir))
 
-from src.air_to_metallib import create_compute_pipeline, execute_kernel
+from llvm_to_air import create_compute_pipeline, execute_kernel
 from utils import llvm_to_metallib
 
 # cross-entropy loss: loss = -sum(y_true * log(y_pred))

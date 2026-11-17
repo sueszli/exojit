@@ -1,6 +1,6 @@
 import unittest
 
-from src.llvm_to_air import to_air
+from llvm_to_air import to_air
 
 
 class TestOpaquePointers(unittest.TestCase):

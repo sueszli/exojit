@@ -7,8 +7,8 @@ from utils import llvm_to_metallib
 root_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root_dir))
 
-from src import llvm_to_air
-from src.llvm_to_air import AirTranslator, IntrinsicHandler, MetadataGenerator, SignatureParser, to_air
+import llvm_to_air
+from llvm_to_air import AirTranslator, IntrinsicHandler, MetadataGenerator, SignatureParser, to_air
 
 LLVM_IR_EMPTY = """
 define void @empty_kernel(float* %a, float* %b, i32 %id) {

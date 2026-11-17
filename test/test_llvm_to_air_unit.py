@@ -5,7 +5,7 @@ from pathlib import Path
 root_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root_dir))
 
-from src import llvm_to_air
+import llvm_to_air
 
 
 class TestLlvmToAirUnit(unittest.TestCase):
