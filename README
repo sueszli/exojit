@@ -3,74 +3,18 @@
 ▌  ▌ ▝▞ ▌ ▌  ▐ ▖▌ ▌  ▌ ▌▐ ▌▚
 ▀▀▘▀▀▘▘ ▘ ▘   ▀ ▝▀   ▘ ▘▀▘▘ ▘
 
-// Reverse-engineered LLVM IR -> AIR lowering for Apple Silicon GPUs
 
-MLIR is the right abstraction for portable performance across heterogeneous
-hardware, but it has no Apple Silicon GPU backend [^1]. Mojo proved that
-targeting Apple GPUs via LLVM->AIR->MetalLib works, but their implementation
-is closed source [^2].
 
-This is a small Python library that provides an open source implementation of
-the missing piece: lowering plain LLVM IR to Apple's Intermediate
-Representation (AIR), then packaging and running it through Metal.
+A Python library that lowers LLVM IR -> AIR -> metallib and runs it on Apple
+Silicon GPUs through Metal.
 
-  +----------------+      +----------------+      +----------------+
-  |    LLVM IR     |----->|   AIR (text)   |----->|    Metallib    |
-  | (Open Source)  |      | (Proprietary)  |      |    (Binary)    |
-  +----------------+      +----------------+      +----------------+
-          [ llvm_to_air.py: to_air ]  [ compile_to_metallib ]   |
-                                                                v
-                                                  +----------------+
-                                                  |   Apple GPU    |
-                                                  |   (M-Series)   |
-                                                  +----------------+
 
-Fair warning: this is experimental and brittle. AIR is closed source and
-undocumented, so everything here is reverse engineered.
+AIR is closed and undocumented, so the lowering is reverse engineered.
 
---------------------------------------------------------------------------------
-Library
---------------------------------------------------------------------------------
 
-llvm_to_air.py (single file; the Metal runtime calls need pyobjc-framework-Metal)
-    to_air(llvm_ir_text, kernel_overrides=None) -> str
-        Lower LLVM IR text to AIR LLVM IR text (target triple, datalayout,
-        address spaces, air.* intrinsics and kernel metadata).
-    compile_to_metallib(air_llvm_ir) -> bytes
-        Assemble AIR into a .metallib via `xcrun metal` / `xcrun metallib`.
-    create_compute_pipeline(metallib_binary, kernel_name) -> (device, pso)
-        Load the metallib and build a Metal compute pipeline state.
-    execute_kernel(device, pso, grid_size, threadgroup_size, encode_args_fn)
-        Encode arguments, dispatch, and wait for completion.
+    test/test_llvm_to_air_matmul.py    # complete handwritten LLVM IR matmul
+    $ make test                        # needs xcrun metal and xcrun metallib
+    $ python3 -m unittest discover -s test -p test_llvm_to_air_unit.py  # CPU only
 
---------------------------------------------------------------------------------
-Example: handwritten LLVM IR matmul
---------------------------------------------------------------------------------
 
-See `test/test_llvm_to_air_matmul.py` for a complete, runnable example: it
-lowers a handwritten LLVM IR matmul kernel with `to_air`, builds it with
-`compile_to_metallib` and `create_compute_pipeline`, runs it with
-`execute_kernel`, and checks 2x2 and 3x3 results against known values.
-
---------------------------------------------------------------------------------
-Tests
---------------------------------------------------------------------------------
-
-    $ make test
-
-This runs pytest through `uv` with pyobjc's Metal bindings. Most tests
-compile kernels and run them on the GPU, so they need macOS on Apple
-Silicon with the Apple Metal toolchain installed (Xcode or the Command Line
-Tools providing `xcrun metal` and `xcrun metallib`). Without the toolchain,
-GPU checks can't run. The translator unit tests run on CPU only:
-
-    $ python3 -m unittest discover -s test -p test_llvm_to_air_unit.py
-
-Design notes on GPUs and on the reverse engineering of AIR live in `docs/`.
-
---------------------------------------------------------------------------------
-References
---------------------------------------------------------------------------------
-
-[^1] MLIR: https://discourse.llvm.org/t/rfc-mps-dialect-in-mlir/77102
-[^2] Mojo: https://forum.modular.com/t/apple-silicon-gpu-support-in-mojo/2295
+Reverse-engineering notes: rev-engineer.md.
