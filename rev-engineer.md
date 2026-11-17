@@ -1,4 +1,4 @@
-apple silicon architecture:
+eapple silicon architecture:
 
 - ARMv9-A, 64-bit. based on RISC but more instruction level parallelism.
 - UMA unified memory = unified memory pool. CPU, GPU, ANE all share same address space.
