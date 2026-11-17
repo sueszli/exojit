@@ -14,7 +14,7 @@ AIR is closed and undocumented, so the lowering is reverse engineered.
 
     test/test_llvm_to_air_matmul.py    # complete handwritten LLVM IR matmul
     $ make test                        # needs xcrun metal and xcrun metallib
-    $ python3 -m unittest discover -s test -p test_llvm_to_air_unit.py  # CPU only
+    $ make test-cpu                    # CPU only
 
 
 Reverse-engineering notes: rev-engineer.md.
