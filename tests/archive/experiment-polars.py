@@ -2,10 +2,6 @@
 # requires-python = ">=3.14"
 # dependencies = ["xdsl==0.75.0"]
 # ///
-
-# Polars-inspired lazy dataframes over Python lists, backed by xDSL.
-# AGPL-3.0.
-
 from typing import Any, ClassVar
 
 from xdsl.dialects.builtin import ModuleOp, StringAttr
