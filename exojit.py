@@ -34,7 +34,6 @@ from xdsl.transforms.common_subexpression_elimination import cse
 from xdsl.transforms.reconcile_unrealized_casts import reconcile_unrealized_casts
 from xdsl.utils.hints import isa
 
-
 # ===----------------------------------------------------------------------=== #
 # exo patches
 # ===----------------------------------------------------------------------=== #
@@ -214,13 +213,15 @@ class IRGenerator:
     symbol_table: dict[Sym, SSAValue]
     seen_proc_names: set[str]
     seen_extern_decls: set[str]
+    grid: tuple[Sym, Sym, int] | None
 
-    def __init__(self):
+    def __init__(self, grid: tuple[Sym, Sym, int] | None = None):
         self.module = ModuleOp([])
         self.builder = Builder(insertion_point=InsertPoint.at_end(self.module.body.blocks[0]))
         self.symbol_table = {}
         self.seen_proc_names = set()
         self.seen_extern_decls = set()
+        self.grid = grid  # (row iter, col iter, col count): binds two par loops to a trailing i32 gpu thread id
 
     def _emit(self, op: Operation) -> SSAValue:
         self.builder.insert(op)
@@ -438,6 +439,11 @@ class IRGenerator:
         self.builder = Builder(insertion_point=InsertPoint.at_end(merge_block))
 
     def _stmt_for(self, for_stmt: LoopIR.For) -> None:
+        if self.grid is not None and for_stmt.iter in self.grid[:2]:
+            # one thread per iteration, the iterator is already bound to the thread id
+            for stmt in for_stmt.body:
+                self._stmt(stmt)
+            return
         lo = self._expr(for_stmt.lo)
         hi = self._expr(for_stmt.hi)
         assert lo.type == hi.type and isinstance(lo.type, IntegerType)
@@ -542,7 +548,7 @@ class IRGenerator:
         if procedure.name in self.seen_proc_names:
             return
         self.seen_proc_names.add(procedure.name)
-        input_types = [self._arg_type(arg, procedure.body) for arg in procedure.args]
+        input_types = [self._arg_type(arg, procedure.body) for arg in procedure.args] + ([i32] if self.grid is not None else [])
         fn_type = llvm.LLVMFunctionType([llvm.LLVMPointerType() if isinstance(t, MemRefType) else t for t in input_types], llvm.LLVMVoidType())
         # save and restore builder/symbol state across the procedure scope
         parent_builder, parent_symbol_table = self.builder, self.symbol_table
@@ -550,16 +556,27 @@ class IRGenerator:
         func_region = Region(block)
         self.builder = Builder(insertion_point=InsertPoint.at_end(block))
         self.symbol_table = {arg.name: val for arg, val in zip(procedure.args, block.args)}
+        if self.grid is not None:
+            # linear grid: row = id // N, col = id % N
+            row, col, cols = self.grid
+            thread_id = self._emit(llvm.ZExtOp(block.args[-1], i64))
+            self.symbol_table[row] = self._emit(llvm.UDivOp(thread_id, self._int_const(cols)))
+            self.symbol_table[col] = self._emit(llvm.URemOp(thread_id, self._int_const(cols)))
         for stmt in procedure.body:
             self._stmt(stmt)
         self.builder.insert(llvm.ReturnOp())
         self.builder, self.symbol_table = parent_builder, parent_symbol_table
         noalias_attrs = ArrayAttr([DictionaryAttr({"llvm.noalias": UnitAttr()} if isinstance(t, LLVMPointerType) else {}) for t in input_types])
-        self.module.body.block.add_op(llvm.FuncOp(procedure.name, fn_type, linkage=llvm.LinkageAttr("external"), body=func_region, other_props={"arg_attrs": noalias_attrs}))
+        # llvm_to_air only parses bare `ptr %x` kernel arguments, so the gpu kernel carries no argument attributes
+        other_props: dict[str, Attribute | None] | None = {"arg_attrs": noalias_attrs} if self.grid is None else None
+        self.module.body.block.add_op(llvm.FuncOp(procedure.name, fn_type, linkage=llvm.LinkageAttr("external"), body=func_region, other_props=other_props))
 
     def generate(self, procs: list[LoopIR.proc]) -> ModuleOp:
+        assert self.grid is None or len(procs) == 1, "a gpu grid maps exactly one kernel procedure"
         for proc in procs:
             self._generate_procedure(proc)
+        if self.grid is not None:
+            return self.module  # every function becomes a metal kernel and there is no gpu heap, so no malloc/free
         # declare external malloc/free for dram alloc/free lowering
         self.module.body.block.add_op(llvm.FuncOp("malloc", llvm.LLVMFunctionType([i64], llvm.LLVMPointerType()), llvm.LinkageAttr("external")))
         self.module.body.block.add_op(llvm.FuncOp("free", llvm.LLVMFunctionType([llvm.LLVMPointerType()]), llvm.LinkageAttr("external")))
@@ -624,19 +641,22 @@ class JITRuntime:
         return convert
 
     @staticmethod
-    def compile(proc: Procedure, raw: bool = False, compiler: Callable[[Procedure, FFI], Callable[..., None]] | None = None) -> Callable[..., None]:
+    def compile(proc: Procedure, raw: bool = False, backend: str = "cpu") -> Callable[..., None]:
+        assert backend in ("cpu", "metal"), f"unsupported jit backend: {backend}"
         ir_args = proc._loopir_proc.args
         for arg in ir_args:
             assert arg.type.is_tensor_or_window() or isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)), f"unsupported JIT argument type for {arg.name}: {arg.type}"
         written = {sym for sym, _ in get_writes_of_stmts(proc._loopir_proc.body)}  # Exo resolves window and callee writes when classifying pointer mutability
         kinds = [arg.name in written if arg.type.is_tensor_or_window() else None for arg in ir_args]  # None: passed by value, False/True: pointer, writable or not
         ffi = FFI()
-        if compiler is None:
-            mlir_module = to_mlir(proc)
-            raw_jit = JITRuntime._jit_backend.jit(mlir_module, proc.name(), Context())  # retained by call's closure to keep the MCJIT code alive
-            call = lambda *args: raw_jit.c_func(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
+        if backend == "metal":
+            assert not raw, "raw=True is not supported by the metal backend"
+            from exojit_metal import compile_kernel  # lazy, so cpu-only use never loads the metal backend
+
+            call = compile_kernel(proc, ffi)  # takes the same buffer addresses the converters below produce
         else:
-            call = compiler(proc, ffi)  # reuse argument conversion
+            raw_jit = JITRuntime._jit_backend.jit(to_mlir(proc), proc.name(), Context())  # retained by call's closure to keep the MCJIT code alive
+            call = lambda *args: raw_jit.c_func(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
         names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in ir_args]
         if raw:
             wrapped = lambda *args, **kwargs: call(*(tuple(kwargs[name] for name in names) if kwargs else args))
@@ -660,14 +680,14 @@ class JITRuntime:
         return wrapped
 
 
-def to_mlir(library: Procedure | Sequence[Procedure], generator: IRGenerator | None = None) -> ModuleOp:
+def to_mlir(library: Procedure | Sequence[Procedure], grid: tuple[Sym, Sym, int] | None = None) -> ModuleOp:
     # exo procedures -> xdsl mlir (llvm dialect)
     if isinstance(library, Procedure):
         library = [library]
     compilable = [proc._loopir_proc for proc in library if not proc.is_instr()]
     all_procs = sorted(find_all_subprocs(compilable), key=lambda proc: proc.name)
     unique_procs = list({proc.name: proc for proc in all_procs if proc.instr is None}.values())
-    module = (generator or IRGenerator()).generate([MemoryAnalysis().run(WindowAnalysis().apply_proc(PrecisionAnalysis().run(proc))) for proc in unique_procs])
+    module = IRGenerator(grid).generate([MemoryAnalysis().run(WindowAnalysis().apply_proc(PrecisionAnalysis().run(proc))) for proc in unique_procs])
     cse(module)
     PatternRewriteWalker(GreedyRewritePatternApplier([ConvertLoadStorePattern(), ConvertSubviewPattern()])).rewrite_module(module)
     PatternRewriteWalker(GreedyRewritePatternApplier([RewriteMemRefTypes()])).rewrite_module(module)
@@ -679,7 +699,6 @@ def to_mlir(library: Procedure | Sequence[Procedure], generator: IRGenerator | N
 
 def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedure] | None = None, backend: str = "cpu"):
     # call directly: `jit(proc)(...)`, or as a decorator: `@jit(optimize=fn)`
-    assert backend in ("cpu", "metal"), f"unsupported jit backend: {backend}"
     if proc is None:
         return lambda fn: jit(fn, raw=raw, optimize=optimize, backend=backend)
     if callable(proc) and not isinstance(proc, Procedure):
@@ -687,9 +706,7 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
         proc = Procedure(Parser(body, src_info, parent_scope=DummyScope(proc.__globals__, {}), as_func=True).result())
     if optimize:
         proc = optimize(proc)
-    if backend == "metal":
-        assert False, "metal backend is not implemented"
-    return JITRuntime.compile(proc, raw=raw)
+    return JITRuntime.compile(proc, raw=raw, backend=backend)
 
 
 def main(source: Path, /, *, c: bool = False, mlir: bool = False) -> None:
