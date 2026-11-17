@@ -1,92 +1,74 @@
 ▌  ▌ ▌ ▌▙▗▌  ▐       ▞▀▖▜▘▛▀▖
 ▌  ▌ ▚▗▘▌▘▌  ▜▀ ▞▀▖  ▙▄▌▐ ▙▄▘
-▌  ▌ ▝▞ ▌ ▌  ▐ ▖▌ ▌  ▌ ▌▐ ▌▚ 
+▌  ▌ ▝▞ ▌ ▌  ▐ ▖▌ ▌  ▌ ▌▐ ▌▚
 ▀▀▘▀▀▘▘ ▘ ▘   ▀ ▝▀   ▘ ▘▀▘▘ ▘
 
-// Reverse-engineered compiler stack for Apple Silicon GPUs
-//
-// Coming soon to xDSL:
-// https://github.com/xdslproject/xdsl/blob/main/xdsl/backend/mps/__init__.py
+// Reverse-engineered LLVM IR -> AIR lowering for Apple Silicon GPUs
 
 MLIR is the right abstraction for portable performance across heterogeneous
-hardware, but it has no Apple Silicon GPU backend [^1]. This is a problem
-because (1) Apple Silicon market share is growing fast, (2) most of these
-machines have powerful GPUs sitting idle and (3) the world needs more compute
-for everything from protein folding to ML training.
+hardware, but it has no Apple Silicon GPU backend [^1]. Mojo proved that
+targeting Apple GPUs via LLVM->AIR->MetalLib works, but their implementation
+is closed source [^2].
 
-Mojo proved that targeting Apple GPUs via MLIR->LLVM->AIR->MetalLib works, but
-their implementation is closed source [^2].
-
-This project reverse engineers that missing piece and provides an open source
-implementation of the LLVM IR to AIR lowering pass.
+This is a small Python library that provides an open source implementation of
+the missing piece: lowering plain LLVM IR to Apple's Intermediate
+Representation (AIR), then packaging and running it through Metal.
 
   +----------------+      +----------------+      +----------------+
-  |    Frontend    |----->|  MLIR Dialect  |----->|  LLVM Bitcode  |
-  |                |      |                |      | (Open Source)  |
+  |    LLVM IR     |----->|   AIR (text)   |----->|    Metallib    |
+  | (Open Source)  |      | (Proprietary)  |      |    (Binary)    |
   +----------------+      +----------------+      +----------------+
-                                                           |
-                                                 [ src/llvm_to_air.py ]
-                                                           |
-  +----------------+      +----------------+      +--------v-------+
-  |   Apple GPU    |<-----|    Metallib    |<-----|   AIR Bitcode  |
-  |   (M-Series)   |      |    (Binary)    |      |  (Proprietary) |
-  +----------------+      +----------------+      +----------------+
+          [ src/llvm_to_air.py ]   [ src/air_to_metallib.py ]   |
+                                                                v
+                                                  +----------------+
+                                                  |   Apple GPU    |
+                                                  |   (M-Series)   |
+                                                  +----------------+
 
-The core contribution is `src/llvm_to_air.py`, which takes LLVM IR and lowers it 
-to Apple's Intermediate Representation AIR. This enables a full compilation 
-pipeline from high-level MLIR dialects down to executable code on Apple Silicon 
-GPUs. I used xDSL to write the entire compiler stack in Python, making it accessible
-and hackable.
-
-Fair warning: this is experimental and brittle. AIR is closed source and 
-undocumented, so everything here is reverse engineered. But it works and to 
-my knowledge this is the first open source end-to-end stack for Apple Silicon.
+Fair warning: this is experimental and brittle. AIR is closed source and
+undocumented, so everything here is reverse engineered.
 
 --------------------------------------------------------------------------------
-Performance
+Library
 --------------------------------------------------------------------------------
 
-The mandelbrot benchmark shows a 1150x speedup over the CPU Python impl.
+src/llvm_to_air.py
+    to_air(llvm_ir_text, kernel_overrides=None) -> str
+        Lower LLVM IR text to AIR LLVM IR text (target triple, datalayout,
+        address spaces, air.* intrinsics and kernel metadata).
 
-$ uv run demo_mandelbrot.py
-
-    mandelbrot benchmark (1,048,576 pixels)
-                                                                                                        
-    results (avg latency ms):
-    gpu            : 2.47 ms
-    numba          : 188.56 ms
-    numpy          : 1519.57 ms
-    numpy+numba    : 1820.99 ms
-    plain          : 2840.38 ms
-
-    relative to vanilla python:
-    gpu            : 1150.23x faster
-    numba          : 15.06x faster
-    numpy          : 1.87x faster
-    numpy+numba    : 1.56x faster
+src/air_to_metallib.py
+    compile_to_metallib(air_llvm_ir) -> bytes
+        Assemble AIR into a .metallib via `xcrun metal` / `xcrun metallib`.
+    create_compute_pipeline(metallib_binary, kernel_name) -> (device, pso)
+        Load the metallib and build a Metal compute pipeline state.
+    execute_kernel(device, pso, grid_size, threadgroup_size, encode_args_fn)
+        Encode arguments, dispatch, and wait for completion.
 
 --------------------------------------------------------------------------------
-Lisp Frontend
+Example: handwritten LLVM IR matmul
 --------------------------------------------------------------------------------
 
-There's also a tiny Common Lisp subset as a frontend.
+See `test/test_llvm_to_air_matmul.py` for a complete, runnable example: it
+lowers a handwritten LLVM IR matmul kernel with `to_air`, builds it with
+`compile_to_metallib` and `create_compute_pipeline`, runs it with
+`execute_kernel`, and checks 2x2 and 3x3 results against known values.
 
-$ uv run demo_linalg.py
+--------------------------------------------------------------------------------
+Tests
+--------------------------------------------------------------------------------
 
-    (print
-        (add
-            (matmul
-                (tensor (2 3) (-1.0 2.0 -3.0 4.0 -5.0 6.0))
-                (tensor (3 2) (7.0 8.0 9.0 10.0 11.0 12.0))
-            )
-            (tensor (2 2) (100.0 100.0 100.0 100.0))
-        )
-    )
+    $ make test
 
+This runs pytest through `uv` with pyobjc's Metal bindings. Most tests
+compile kernels and run them on the GPU, so they need macOS on Apple
+Silicon with the Apple Metal toolchain installed (Xcode or the Command Line
+Tools providing `xcrun metal` and `xcrun metallib`). Without the toolchain,
+GPU checks can't run. The translator unit tests run on CPU only:
 
-    Tensor(2 x 2):
-            78.000000 76.000000
-            149.000000 154.000000
+    $ python3 -m unittest discover -s test -p test_llvm_to_air_unit.py
+
+Design notes on GPUs and on the reverse engineering of AIR live in `docs/`.
 
 --------------------------------------------------------------------------------
 References
