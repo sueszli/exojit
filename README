@@ -13,7 +13,7 @@ AIR is closed and undocumented, so the lowering is reverse engineered.
 
 
     test/test_llvm_to_air_matmul.py    # complete handwritten LLVM IR matmul
-    $ make test                        # needs xcrun metal and xcrun metallib
+    $ make test                        # needs Xcode with the Metal Toolchain
     $ make test-cpu                    # CPU only
 
 
