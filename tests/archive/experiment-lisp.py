@@ -7,7 +7,7 @@
 # ///
 
 # Tiny Lisp-to-MLIR compiler. Run: uv run experiment-lisp.py program.lisp
-# AGPL-3.0. See archive/LICENSE.
+# AGPL-3.0.
 
 import argparse
 from functools import lru_cache

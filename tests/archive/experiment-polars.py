@@ -4,7 +4,7 @@
 # ///
 
 # Polars-inspired lazy dataframes over Python lists, backed by xDSL.
-# AGPL-3.0. See archive/LICENSE.
+# AGPL-3.0.
 
 from typing import Any, ClassVar
 
