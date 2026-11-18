@@ -185,7 +185,8 @@ def metal_toolchain_env() -> dict[str, str]:
         return env
     assert not os.environ.get("DEVELOPER_DIR")
     fallback = env | {"DEVELOPER_DIR": XCODE}
-    assert has_metal(fallback)
+    usable = has_metal(fallback)
+    assert usable
     return fallback
 
 
@@ -248,9 +249,9 @@ def execute_kernel(device, pso, grid, group, buffers) -> None:
     assert cmd.status() == metal.MTLCommandBufferStatusCompleted
 
 
-def build_kernel(proc: Procedure, ffi: FFI, *, sizes: tuple[int, int, int], threads: int) -> Callable[..., None]:
+def build_kernel(proc: Procedure, ffi: FFI, *, air: str, sizes: tuple[int, int, int], threads: int) -> Callable[..., None]:
     metal = import_module("Metal")
-    device, pso = create_pipeline(kernel_to_air(proc), proc.name())
+    device, pso = create_pipeline(air, proc.name())
     grid = metal.MTLSize(threads, 1, 1)
     group = metal.MTLSize(min(threads, pso.maxTotalThreadsPerThreadgroup()), 1, 1)
 
@@ -269,5 +270,6 @@ def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
     assert not proc.is_instr()
     m, n, k, _, _ = check_matmul(proc._loopir_proc)
     sizes = (4 * m * n, 4 * m * k, 4 * k * n)
-    compiler = partial(build_kernel, sizes=sizes, threads=m * n)
+    air = kernel_to_air(proc)
+    compiler = partial(build_kernel, air=air, sizes=sizes, threads=m * n)
     return JITRuntime.compile(proc, compiler=compiler)

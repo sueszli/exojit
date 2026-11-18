@@ -213,6 +213,13 @@ def test_metal_missing_pyobjc_fails_without_cpu_fallback(monkeypatch):
         jit(matmul, backend="metal")
 
 
+def test_metal_validates_air_before_optional_imports(monkeypatch):
+    monkeypatch.setitem(sys.modules, "Metal", None)
+    monkeypatch.setattr("backend_metal.AIR_OPCODES", set())
+    with pytest.raises(AssertionError):
+        jit(matmul, backend="metal")
+
+
 def test_cpu_jit_never_imports_metal_deps(tmp_path):
     script = tmp_path / "cpu_only.py"
     script.write_text(
