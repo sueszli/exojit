@@ -18,8 +18,9 @@ def matmul(out: f32[32, 48] @ DRAM, A: f32[32, 16] @ DRAM, B: f32[16, 48] @ DRAM
                 out[i, j] += A[i, k] * B[k, j]
 
 
-A = [[random.uniform(-1.0, 1.0) for _ in range(16)] for _ in range(32)]
-B = [[random.uniform(-1.0, 1.0) for _ in range(48)] for _ in range(16)]
+rng = random.Random(0)
+A = [[rng.uniform(-1.0, 1.0) for _ in range(16)] for _ in range(32)]
+B = [[rng.uniform(-1.0, 1.0) for _ in range(48)] for _ in range(16)]
 out = [[0.0] * 48 for _ in range(32)]
 expected = [[sum(A[i][k] * B[k][j] for k in range(16)) for j in range(48)] for i in range(32)]
 

@@ -44,8 +44,10 @@ and karpathy's original scalar autograd.
      original  66601    20604  20522  179583  1       
 
 
-There's also an experimental Apple Metal backend.
-It may eventually make it into xDSL:
+There's also an Apple Metal prototype that only
+handles static f32 matmuls. Its current path may
+flush subnormals to zero. It may eventually make
+it into xDSL:
 https://github.com/xdslproject/xdsl/blob/main/xdsl/backend/mps/__init__.py
 
 

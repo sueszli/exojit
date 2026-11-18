@@ -37,11 +37,11 @@ def matrix_dims(arg: LoopIR.fnarg) -> list[int]:
     return dims
 
 
-def is_loop(s: LoopIR.stmt, mode: type, extent: int) -> TypeGuard[LoopIR.For]:
+def is_zero_based_loop(s: LoopIR.stmt, mode: type, extent: int) -> TypeGuard[LoopIR.For]:
     return isinstance(s, LoopIR.For) and isinstance(s.loop_mode, mode) and isinstance(s.lo, LoopIR.Const) and s.lo.val == 0 and isinstance(s.hi, LoopIR.Const) and s.hi.val == extent
 
 
-def is_access(e: LoopIR.Read | LoopIR.Assign | LoopIR.Reduce, name: Sym, *syms: Sym) -> bool:
+def is_direct_access(e: LoopIR.Read | LoopIR.Assign | LoopIR.Reduce, name: Sym, *syms: Sym) -> bool:
     # name[syms...], every index a bare loop variable
     return e.name == name and len(e.idx) == len(syms) and all(isinstance(x, LoopIR.Read) and x.name == s and not x.idx for x, s in zip(e.idx, syms))
 
@@ -55,26 +55,24 @@ def check_matmul(ir: LoopIR.proc) -> tuple[int, int, int, Sym, Sym]:
     assert m * n < 2**32
 
     assert len(ir.body) == 1
-    rows = ir.body[0]
-    assert is_loop(rows, LoopIR.Par, m) and len(rows.body) == 1
-    cols = rows.body[0]
-    assert is_loop(cols, LoopIR.Par, n)
-    i, j, cell = rows.iter, cols.iter, cols.body
-
-    assert cell
-    init = cell[0]
-    assert isinstance(init, LoopIR.Assign) and is_access(init, out, i, j)
-    assert isinstance(init.rhs, LoopIR.Const) and init.rhs.val == 0
+    row_loop = ir.body[0]
+    assert is_zero_based_loop(row_loop, LoopIR.Par, m) and len(row_loop.body) == 1
+    col_loop = row_loop.body[0]
+    assert is_zero_based_loop(col_loop, LoopIR.Par, n)
+    i, j, cell = row_loop.iter, col_loop.iter, col_loop.body
 
     assert len(cell) == 2
-    red = cell[1]
-    assert is_loop(red, LoopIR.Seq, k) and len(red.body) == 1
-    acc = red.body[0]
-    assert isinstance(acc, LoopIR.Reduce) and is_access(acc, out, i, j)
-    rhs, kk = acc.rhs, red.iter
+    init, reduction_loop = cell
+    assert isinstance(init, LoopIR.Assign) and is_direct_access(init, out, i, j)
+    assert isinstance(init.rhs, LoopIR.Const) and init.rhs.val == 0
+
+    assert is_zero_based_loop(reduction_loop, LoopIR.Seq, k) and len(reduction_loop.body) == 1
+    update = reduction_loop.body[0]
+    assert isinstance(update, LoopIR.Reduce) and is_direct_access(update, out, i, j)
+    rhs, kk = update.rhs, reduction_loop.iter
     assert isinstance(rhs, LoopIR.BinOp) and rhs.op == "*"
-    assert isinstance(rhs.lhs, LoopIR.Read) and is_access(rhs.lhs, a, i, kk)
-    assert isinstance(rhs.rhs, LoopIR.Read) and is_access(rhs.rhs, b, kk, j)
+    assert isinstance(rhs.lhs, LoopIR.Read) and is_direct_access(rhs.lhs, a, i, kk)
+    assert isinstance(rhs.rhs, LoopIR.Read) and is_direct_access(rhs.rhs, b, kk, j)
     return m, n, k, i, j
 
 
@@ -85,12 +83,12 @@ def check_matmul(ir: LoopIR.proc) -> tuple[int, int, int, Sym, Sym]:
 
 class MetalIRGenerator(IRGenerator):
     # par grid -> trailing i32 thread id
-    def __init__(self, row: Sym, col: Sym, cols: int):
+    def __init__(self, row_sym: Sym, col_sym: Sym, col_count: int):
         super().__init__()
-        self.row, self.col, self.cols = row, col, cols
+        self.row_sym, self.col_sym, self.col_count = row_sym, col_sym, col_count
 
     def _stmt_for(self, for_stmt: LoopIR.For) -> None:
-        if for_stmt.iter not in (self.row, self.col):
+        if for_stmt.iter not in (self.row_sym, self.col_sym):
             return super()._stmt_for(for_stmt)
         for stmt in for_stmt.body:
             self._stmt(stmt)
@@ -104,8 +102,8 @@ class MetalIRGenerator(IRGenerator):
         self.builder = Builder(insertion_point=InsertPoint.at_end(block))
         self.symbol_table = {arg.name: val for arg, val in zip(proc.args, block.args)}
         thread_id = self._emit(llvm.ZExtOp(block.args[-1], i64))
-        self.symbol_table[self.row] = self._emit(llvm.UDivOp(thread_id, self._int_const(self.cols)))
-        self.symbol_table[self.col] = self._emit(llvm.URemOp(thread_id, self._int_const(self.cols)))
+        self.symbol_table[self.row_sym] = self._emit(llvm.UDivOp(thread_id, self._int_const(self.col_count)))
+        self.symbol_table[self.col_sym] = self._emit(llvm.URemOp(thread_id, self._int_const(self.col_count)))
         for stmt in proc.body:
             self._stmt(stmt)
         self.builder.insert(llvm.ReturnOp())
@@ -161,8 +159,8 @@ def to_air(module: llvmlite.ir.Module, name: str) -> str:
 
 
 def kernel_to_air(proc: Procedure) -> str:
-    _, cols, _, row, col = check_matmul(proc._loopir_proc)
-    llvm_module = convert_module(to_mlir(proc, MetalIRGenerator(row, col, cols)), fallback_target_triple="air64-apple-macosx")
+    _, n, _, i, j = check_matmul(proc._loopir_proc)
+    llvm_module = convert_module(to_mlir(proc, MetalIRGenerator(i, j, n)), fallback_target_triple="air64-apple-macosx")
     return to_air(llvm_module, proc.name())
 
 
@@ -224,17 +222,15 @@ def create_pipeline(air: str, name: str):
     return device, pso
 
 
-def device_buffer(device, ffi: FFI, ptr: int, size: int):
-    data = ffi.buffer(ffi.cast("char *", ptr), size)[:]
-    buffer = device.newBufferWithBytes_length_options_(data, size, import_module("Metal").MTLResourceStorageModeShared)
+def device_buffer(device, ffi: FFI, ptr: int, nbytes: int):
+    data = ffi.buffer(ffi.cast("char *", ptr), nbytes)
+    buffer = device.newBufferWithBytes_length_options_(data, nbytes, import_module("Metal").MTLResourceStorageModeShared)
     assert buffer is not None
     return buffer
 
 
-def execute_kernel(device, pso, grid, group, buffers) -> None:
+def execute_kernel(queue, pso, grid, group, buffers) -> None:
     metal = import_module("Metal")
-    queue = device.newCommandQueue()
-    assert queue
     cmd = queue.commandBuffer()
     assert cmd
     encoder = cmd.computeCommandEncoder()
@@ -249,17 +245,19 @@ def execute_kernel(device, pso, grid, group, buffers) -> None:
     assert cmd.status() == metal.MTLCommandBufferStatusCompleted
 
 
-def build_kernel(proc: Procedure, ffi: FFI, *, air: str, sizes: tuple[int, int, int], threads: int) -> Callable[..., None]:
+def build_kernel(proc: Procedure, ffi: FFI, *, air: str, nbytes: tuple[int, int, int], threads: int) -> Callable[..., None]:
     metal = import_module("Metal")
     device, pso = create_pipeline(air, proc.name())
+    queue = device.newCommandQueue()
+    assert queue
     grid = metal.MTLSize(threads, 1, 1)
     group = metal.MTLSize(min(threads, pso.maxTotalThreadsPerThreadgroup()), 1, 1)
 
     def run(*ptrs: int) -> None:
-        buffers = [device_buffer(device, ffi, ptr, size) for ptr, size in zip(ptrs, sizes, strict=True)]
-        execute_kernel(device, pso, grid, group, buffers)
-        out_size = sizes[0]
-        ffi.memmove(ffi.cast("char *", ptrs[0]), buffers[0].contents().as_buffer(out_size), out_size)
+        buffers = [device_buffer(device, ffi, ptr, buffer_nbytes) for ptr, buffer_nbytes in zip(ptrs, nbytes, strict=True)]
+        execute_kernel(queue, pso, grid, group, buffers)
+        out_nbytes = nbytes[0]
+        ffi.memmove(ffi.cast("char *", ptrs[0]), buffers[0].contents().as_buffer(out_nbytes), out_nbytes)
 
     return run
 
@@ -269,7 +267,7 @@ def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
     # reject before optional imports
     assert not proc.is_instr()
     m, n, k, _, _ = check_matmul(proc._loopir_proc)
-    sizes = (4 * m * n, 4 * m * k, 4 * k * n)
+    nbytes = (4 * m * n, 4 * m * k, 4 * k * n)
     air = kernel_to_air(proc)
-    compiler = partial(build_kernel, air=air, sizes=sizes, threads=m * n)
+    compiler = partial(build_kernel, air=air, nbytes=nbytes, threads=m * n)
     return JITRuntime.compile(proc, compiler=compiler)

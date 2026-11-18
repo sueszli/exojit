@@ -85,6 +85,23 @@ def test_jit_rejects_immutable_nested_writable_sequences():
         fn(dst, src)
 
 
+def test_jit_rejects_aliased_writable_rows():
+    fn = jit(copy_2x2)
+    row = [0.0, 0.0]
+    dst = [row, row]
+    with pytest.raises(AssertionError):
+        fn(dst, [[1.0, 2.0], [3.0, 4.0]])
+    assert row == [0.0, 0.0]
+
+
+def test_jit_accepts_repeated_readonly_rows():
+    fn = jit(copy_2x2)
+    row = [1.0, 2.0]
+    dst = [[0.0, 0.0], [0.0, 0.0]]
+    fn(dst, [row, row])
+    np.testing.assert_allclose(dst, [row, row])
+
+
 def test_jit_rejects_keyword_args():
     fn = jit(copy4)
     dst = [0.0, 0.0, 0.0, 0.0]
