@@ -27,7 +27,6 @@ LLVM and compiles it at import time via llvmlite MCJIT.
     $ uv run exojit example.py --mlir
     $ uv run exojit example.py --c
     $ uv run example.py
-    $ uv run example_metal.py
 
 
 I also reimplemented microGPT with every kernel written
