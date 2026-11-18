@@ -8,12 +8,12 @@ precommit-hook:
 
 .PHONY: fmt
 fmt:
-	uvx ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016,PLC0206,SIM115 exojit.py backend_metal.py microgpt tests example.py example_metal.py
-	uvx ruff format --line-length 5000 --target-version py314 exojit.py backend_metal.py microgpt tests example.py example_metal.py
+	uvx ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016,PLC0206,SIM115 exojit.py backend_metal.py microgpt tests example.py
+	uvx ruff format --line-length 5000 --target-version py314 exojit.py backend_metal.py microgpt tests example.py
 
 .PHONY: lint
 lint:
-	uv run --with vulture vulture --min-confidence 80 exojit.py backend_metal.py microgpt tests example.py example_metal.py
+	uv run --with vulture vulture --min-confidence 80 exojit.py backend_metal.py microgpt tests example.py
 	uv run --with pyright pyright exojit.py backend_metal.py
 
 .PHONY: microgpt
@@ -32,7 +32,6 @@ precommit:
 	$(MAKE) fmt
 	$(MAKE) lint
 	uv run python example.py
-	if [ "$$(uname -s)" = Darwin ]; then uv run python example_metal.py; fi
 	$(MAKE) tests
 
 .PHONY: leaderboard
