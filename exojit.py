@@ -624,16 +624,19 @@ class JITRuntime:
         return convert
 
     @staticmethod
-    def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
-        mlir_module = to_mlir(proc)
-        raw_jit = JITRuntime._jit_backend.jit(mlir_module, proc.name(), Context())  # retained by call's closure to keep the MCJIT code alive
+    def compile(proc: Procedure, raw: bool = False, compiler: Callable[[Procedure, FFI], Callable[..., None]] | None = None) -> Callable[..., None]:
         ir_args = proc._loopir_proc.args
         for arg in ir_args:
             assert arg.type.is_tensor_or_window() or isinstance(arg.type, (LoopIR.Size, LoopIR.Index, LoopIR.Int, LoopIR.Bool, LoopIR.Stride)), f"unsupported JIT argument type for {arg.name}: {arg.type}"
         written = {sym for sym, _ in get_writes_of_stmts(proc._loopir_proc.body)}  # Exo resolves window and callee writes when classifying pointer mutability
         kinds = [arg.name in written if arg.type.is_tensor_or_window() else None for arg in ir_args]  # None: passed by value, False/True: pointer, writable or not
         ffi = FFI()
-        call = lambda *args: raw_jit.c_func(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
+        if compiler is None:
+            mlir_module = to_mlir(proc)
+            raw_jit = JITRuntime._jit_backend.jit(mlir_module, proc.name(), Context())  # retained by call's closure to keep the MCJIT code alive
+            call = lambda *args: raw_jit.c_func(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
+        else:
+            call = compiler(proc, ffi)  # reuse argument conversion
         names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in ir_args]
         if raw:
             wrapped = lambda *args, **kwargs: call(*(tuple(kwargs[name] for name in names) if kwargs else args))
@@ -657,14 +660,14 @@ class JITRuntime:
         return wrapped
 
 
-def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
+def to_mlir(library: Procedure | Sequence[Procedure], generator: IRGenerator | None = None) -> ModuleOp:
     # exo procedures -> xdsl mlir (llvm dialect)
     if isinstance(library, Procedure):
         library = [library]
     compilable = [proc._loopir_proc for proc in library if not proc.is_instr()]
     all_procs = sorted(find_all_subprocs(compilable), key=lambda proc: proc.name)
     unique_procs = list({proc.name: proc for proc in all_procs if proc.instr is None}.values())
-    module = IRGenerator().generate([MemoryAnalysis().run(WindowAnalysis().apply_proc(PrecisionAnalysis().run(proc))) for proc in unique_procs])
+    module = (generator or IRGenerator()).generate([MemoryAnalysis().run(WindowAnalysis().apply_proc(PrecisionAnalysis().run(proc))) for proc in unique_procs])
     cse(module)
     PatternRewriteWalker(GreedyRewritePatternApplier([ConvertLoadStorePattern(), ConvertSubviewPattern()])).rewrite_module(module)
     PatternRewriteWalker(GreedyRewritePatternApplier([RewriteMemRefTypes()])).rewrite_module(module)
@@ -674,15 +677,18 @@ def to_mlir(library: Procedure | Sequence[Procedure]) -> ModuleOp:
     return module
 
 
-def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedure] | None = None):
+def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedure] | None = None, backend: str = "cpu"):
     # call directly: `jit(proc)(...)`, or as a decorator: `@jit(optimize=fn)`
+    assert backend in ("cpu", "metal"), f"unsupported jit backend: {backend}"
     if proc is None:
-        return lambda fn: jit(fn, raw=raw, optimize=optimize)
+        return lambda fn: jit(fn, raw=raw, optimize=optimize, backend=backend)
     if callable(proc) and not isinstance(proc, Procedure):
         body, src_info = get_ast_from_python(proc)
         proc = Procedure(Parser(body, src_info, parent_scope=DummyScope(proc.__globals__, {}), as_func=True).result())
     if optimize:
         proc = optimize(proc)
+    if backend == "metal":
+        assert False, "metal backend is not implemented"
     return JITRuntime.compile(proc, raw=raw)
 
 
