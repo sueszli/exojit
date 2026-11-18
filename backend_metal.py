@@ -169,7 +169,7 @@ def kernel_to_air(proc: Procedure) -> str:
 # ===----------------------------------------------------------------------=== #
 
 
-XCODE = "/Applications/Xcode.app/Contents/Developer"
+XCODE = Path("/Applications/Xcode.app/Contents/Developer")
 
 
 def has_metal(env: dict[str, str]) -> bool:
@@ -182,7 +182,8 @@ def metal_toolchain_env() -> dict[str, str]:
     if has_metal(env):
         return env
     assert not os.environ.get("DEVELOPER_DIR")
-    fallback = env | {"DEVELOPER_DIR": XCODE}
+    assert XCODE.is_dir()
+    fallback = env | {"DEVELOPER_DIR": str(XCODE)}
     usable = has_metal(fallback)
     assert usable
     return fallback

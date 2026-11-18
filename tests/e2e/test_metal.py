@@ -246,21 +246,22 @@ def test_cpu_jit_never_imports_metal_deps(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("environ", "usable", "expected"),
+    ("environ", "usable", "xcode_dir", "expected"),
     [
-        ({}, {None, XCODE}, {}),
-        ({}, {XCODE}, {"DEVELOPER_DIR": XCODE}),
-        ({"DEVELOPER_DIR": CUSTOM}, {CUSTOM}, {"DEVELOPER_DIR": CUSTOM}),
-        ({"DEVELOPER_DIR": CUSTOM}, {XCODE}, None),
-        ({}, set(), None),
+        ({}, {None, str(XCODE)}, False, {}),
+        ({}, {str(XCODE)}, True, {"DEVELOPER_DIR": str(XCODE)}),
+        ({}, {str(XCODE)}, False, None),
+        ({"DEVELOPER_DIR": CUSTOM}, {CUSTOM}, False, {"DEVELOPER_DIR": CUSTOM}),
+        ({"DEVELOPER_DIR": CUSTOM}, {str(XCODE)}, True, None),
+        ({}, set(), True, None),
     ],
 )
-def test_metal_toolchain_env(environ, usable, expected):
+def test_metal_toolchain_env(environ, usable, xcode_dir, expected):
     def run(cmd, env, **_):
         assert isinstance(cmd, list) and "shell" not in _
         return SimpleNamespace(returncode=int(env.get("DEVELOPER_DIR") not in usable))
 
-    with patch.dict(os.environ, environ, clear=True), patch("backend_metal.subprocess.run", run):
+    with patch.dict(os.environ, environ, clear=True), patch("backend_metal.subprocess.run", run), patch.object(type(XCODE), "is_dir", return_value=xcode_dir):
         if expected is None:
             with pytest.raises(AssertionError):
                 metal_toolchain_env()
