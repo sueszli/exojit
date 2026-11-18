@@ -24,6 +24,12 @@ dependencies = [
     "torch",
 ]
 
+[project.optional-dependencies]
+metal = [
+    "pyobjc-core; sys_platform == 'darwin'",
+    "pyobjc-framework-Metal; sys_platform == 'darwin'",
+]
+
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
@@ -32,7 +38,7 @@ build-backend = "setuptools.build_meta"
 py-modules = ["exojit", "backend_metal"]
 
 [tool.pytest.ini_options]
-addopts = "-n auto --forked -v"
+addopts = "-n auto -v"
 
 [project.scripts]
 exojit = "exojit:cli"

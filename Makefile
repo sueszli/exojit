@@ -8,12 +8,12 @@ precommit-hook:
 
 .PHONY: fmt
 fmt:
-	uvx ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016,PLC0206,SIM115 exojit.py backend_metal.py microgpt tests example.py
-	uvx ruff format --line-length 5000 --target-version py314 exojit.py backend_metal.py microgpt tests example.py
+	uvx ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016,PLC0206,SIM115 exojit.py backend_metal.py microgpt tests example.py example_metal.py
+	uvx ruff format --line-length 5000 --target-version py314 exojit.py backend_metal.py microgpt tests example.py example_metal.py
 
 .PHONY: lint
 lint:
-	uv run --with vulture vulture --min-confidence 80 exojit.py backend_metal.py microgpt tests example.py
+	uv run --with vulture vulture --min-confidence 80 exojit.py backend_metal.py microgpt tests example.py example_metal.py
 	uv run --with pyright pyright exojit.py backend_metal.py
 
 .PHONY: microgpt
@@ -22,12 +22,12 @@ microgpt:
 
 .PHONY: tests
 tests:
-	uv run pytest -W ignore tests/
-	uv run lit -j $$(nproc 2>/dev/null || sysctl -n hw.logicalcpu) tests/filecheck/
+	uv run --extra metal pytest -W ignore tests/
+	uv run --extra metal lit -j $$(nproc 2>/dev/null || sysctl -n hw.logicalcpu) tests/filecheck/
 
 .PHONY: precommit
 precommit:
-	uv sync
+	uv sync --extra metal
 	$(MAKE) precommit-hook
 	$(MAKE) fmt
 	$(MAKE) lint

@@ -1,4 +1,3 @@
-import importlib.util
 import os
 import platform
 import subprocess
@@ -6,6 +5,7 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 from textwrap import dedent
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -13,12 +13,12 @@ from exo import *
 from xdsl.dialects import llvm
 from xdsl.dialects.builtin import i32
 
-from backend_metal import MetalIRGenerator, thread_grid
+from backend_metal import MetalIRGenerator, get_target_datalayout, kernel_to_air, thread_grid
 from exojit import JITRuntime, jit, to_mlir
 
 ROOT = Path(__file__).resolve().parents[2]
-HAS_METAL = platform.system() == "Darwin" and platform.machine() == "arm64" and all(importlib.util.find_spec(name) is not None for name in ("Metal", "llvm_to_air"))
-requires_metal = pytest.mark.skipif(not HAS_METAL, reason="needs apple silicon, pyobjc Metal and llvm_to_air on PYTHONPATH")
+# the platform is the only skip condition: on any mac (intel included) missing pyobjc, toolchain or gpu must fail, never skip
+requires_metal = pytest.mark.skipif(platform.system() != "Darwin", reason="metal gpu tests need macOS")
 
 
 @proc
@@ -216,6 +216,28 @@ def test_metal_generator_reuses_cpu_lowering():
     assert sorted(func.sym_name.data for func in cpu_funcs) == ["free", "malloc", "matmul_par"]
 
 
+def test_kernel_to_air_is_pure_translation():
+    # off macos, translation must not touch xcrun: no `metal` on PATH and any subprocess fails the test
+    # the datalayout cache is cleared around the patch so a cached probe result cannot hide a subprocess call
+    get_target_datalayout.cache_clear()
+    try:
+        with patch("backend_metal.shutil.which", return_value=None), patch("backend_metal.subprocess.run", side_effect=AssertionError("unexpected subprocess")):
+            air = kernel_to_air(matmul_par)
+    finally:
+        get_target_datalayout.cache_clear()
+    assert 'target triple = "air64_v27-apple-macosx' in air and "define void @matmul_par(" in air
+    assert "udiv i64" in air and "urem i64" in air  # linear thread id -> (row, col)
+    assert air.count('!"air.read_write"') == 1 and air.count('!"air.thread_position_in_grid"') == 1 and air.count('!"air.read"') == 2
+
+
+def test_metal_missing_pyobjc_fails_without_cpu_fallback(monkeypatch):
+    # a mac without the metal extra must fail loudly instead of silently running on the cpu
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setitem(sys.modules, "Metal", None)  # a None entry makes `import Metal` fail like a missing package
+    with pytest.raises(ModuleNotFoundError, match="Metal"):
+        jit(matmul_par, backend="metal")
+
+
 def test_jit_runtime_compiler_seam():
     # a custom low-level compiler receives the converters' buffer addresses and the same ffi, and writes sync back
     def compiler(_proc, ffi):
@@ -237,7 +259,7 @@ def test_cpu_jit_never_imports_metal_deps(tmp_path, block_optional_deps):
         dedent(f"""
             import sys
             if {block_optional_deps}:
-                sys.modules.update(dict.fromkeys(("Metal", "objc", "llvm_to_air")))  # None entries make imports fail like absent packages
+                sys.modules.update(dict.fromkeys(("Metal", "objc")))  # None entries make imports fail like absent packages
             from exo import *
             from exojit import jit
 
@@ -249,7 +271,7 @@ def test_cpu_jit_never_imports_metal_deps(tmp_path, block_optional_deps):
             dst = [0.0, 0.0]
             jit(scale)(dst, [1.0, 2.5])
             assert dst == [2.0, 5.0], dst
-            assert all(sys.modules.get(name) is None for name in ("Metal", "objc", "llvm_to_air")), "cpu jit imported a metal dependency"
+            assert all(sys.modules.get(name) is None for name in ("Metal", "objc")), "cpu jit imported a metal dependency"
             assert "backend_metal" not in sys.modules, "cpu jit imported the metal backend"
             """)
     )
