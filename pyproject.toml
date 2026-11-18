@@ -19,8 +19,6 @@ dev = [
     "filecheck",
     "pytest",
     "pytest-xdist",
-]
-bench = [
     "plotnine",
     "polars",
     "pyarrow",

@@ -192,21 +192,19 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
-bench = [
+dev = [
+    { name = "filecheck" },
     { name = "jax" },
+    { name = "lit" },
     { name = "numba" },
     { name = "optax" },
     { name = "plotnine" },
     { name = "polars" },
     { name = "pyarrow" },
-    { name = "torch" },
-    { name = "tqdm" },
-]
-dev = [
-    { name = "filecheck" },
-    { name = "lit" },
     { name = "pytest" },
     { name = "pytest-xdist" },
+    { name = "torch" },
+    { name = "tqdm" },
 ]
 
 [package.metadata]
@@ -221,21 +219,19 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-bench = [
+dev = [
+    { name = "filecheck" },
     { name = "jax" },
+    { name = "lit" },
     { name = "numba" },
     { name = "optax" },
     { name = "plotnine" },
     { name = "polars" },
     { name = "pyarrow" },
-    { name = "torch" },
-    { name = "tqdm" },
-]
-dev = [
-    { name = "filecheck" },
-    { name = "lit" },
     { name = "pytest" },
     { name = "pytest-xdist" },
+    { name = "torch" },
+    { name = "tqdm" },
 ]
 
 [[package]]
