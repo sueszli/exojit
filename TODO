@@ -1,3 +1,5 @@
+# reverse engineering apple gpu
+
 apple silicon architecture:
 
 - ARMv9-A, 64-bit. based on RISC but more instruction level parallelism.
@@ -6,9 +8,6 @@ apple silicon architecture:
 - MPS metal performance shaders = not a compiler. library of single hand-tuned BLAS/LAPACK library operations.
 - MPSGraph = directed acyclic graph of ops. minimizes memory roundtrips and dispatch latency by fusing multiple kernels together in a single metal kernel pass.
 - MSL metal shading language = `.metal` shader files. similar to `.cuda` files. cpp-14 with added keywords. used to write graphics "shaders" or computation "kernels".
-- https://www.youtube.com/watch?v=H6ZpMMDvB1M
-- https://www.youtube.com/watch?v=6gQxhsZsawc
-- https://developer.apple.com/metal/cpp/
 
 targeting apple silicon gpus:
 
@@ -17,7 +16,7 @@ targeting apple silicon gpus:
 - the mojo-lang team wrote an LLVM→AIR bridge by reverse-engineering the metadata format
 - https://forum.modular.com/t/apple-silicon-gpu-support-in-mojo/2295
 
-inspect kernel output:
+example:
 
 ```bash
 cat > /tmp/experiment.metal << 'EOF'
@@ -41,3 +40,9 @@ outlook:
 - https://github.com/JuliaGPU/Metal.jl/blob/f7b082942ecae649a2f993724e94de41b667a7d2/bin/metallib-as#L8
 - https://github.com/JuliaBinaryWrappers/LLVMDowngrader_jll.jl
 - https://github.com/JuliaLLVM/llvm-downgrade
+
+docs:
+
+- https://www.youtube.com/watch?v=H6ZpMMDvB1M
+- https://www.youtube.com/watch?v=6gQxhsZsawc
+- https://developer.apple.com/metal/cpp/
