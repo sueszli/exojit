@@ -29,16 +29,11 @@ from exojit import IRGenerator, JITRuntime, to_mlir
 # ===----------------------------------------------------------------------=== #
 
 
-GRID = "metal backend: body must be `for i in par(0, M): for j in par(0, N): ...` over out[M, N]"
-INIT = "metal backend: each thread must first set out[i, j] = 0.0 (accumulation is unsupported)"
-REDUCE = "metal backend: after the zero, thread body must be exactly `for k in seq(0, K): out[i, j] += A[i, k] * B[k, j]`"
-
-
 def matrix_dims(arg: LoopIR.fnarg) -> list[int]:
-    t, msg = arg.type, f"metal backend: {arg.name} must be a static f32[M, N] @ DRAM matrix with positive extents, got {arg.type}"
-    assert isinstance(t, T.Tensor) and not t.is_window and isinstance(t.basetype(), T.F32) and arg.mem is DRAM, msg
+    t = arg.type
+    assert isinstance(t, T.Tensor) and not t.is_window and isinstance(t.basetype(), T.F32) and arg.mem is DRAM
     dims = [d.val for d in t.shape() if isinstance(d, LoopIR.Const) and type(d.val) is int and d.val > 0]
-    assert len(dims) == len(t.shape()) == 2, msg
+    assert len(dims) == len(t.shape()) == 2
     return dims
 
 
@@ -53,33 +48,33 @@ def is_access(e: LoopIR.Read | LoopIR.Assign | LoopIR.Reduce, name: Sym, *syms: 
 
 def check_matmul(ir: LoopIR.proc) -> tuple[int, int, int, Sym, Sym]:
     # exo race-checks only in its c backend
-    assert len(ir.args) == 3, f"metal backend: kernel must be matmul(out, A, B), got {len(ir.args)} arguments"
+    assert len(ir.args) == 3
     (m, n), (am, k), (bk, bn) = (matrix_dims(arg) for arg in ir.args)
     out, a, b = (arg.name for arg in ir.args)
-    assert (am, bk, bn) == (m, k, n), f"metal backend: shapes must be out[M, N], A[M, K], B[K, N], got out[{m}, {n}], A[{am}, {k}], B[{bk}, {bn}]"
-    assert m * n < 2**32, f"metal backend: {m}x{n} threads exceed the uint32 thread id"
+    assert (am, bk, bn) == (m, k, n)
+    assert m * n < 2**32
 
-    assert len(ir.body) == 1, GRID
+    assert len(ir.body) == 1
     rows = ir.body[0]
-    assert is_loop(rows, LoopIR.Par, m) and len(rows.body) == 1, GRID
+    assert is_loop(rows, LoopIR.Par, m) and len(rows.body) == 1
     cols = rows.body[0]
-    assert is_loop(cols, LoopIR.Par, n), GRID
+    assert is_loop(cols, LoopIR.Par, n)
     i, j, cell = rows.iter, cols.iter, cols.body
 
-    assert cell, INIT
+    assert cell
     init = cell[0]
-    assert isinstance(init, LoopIR.Assign) and is_access(init, out, i, j), INIT
-    assert isinstance(init.rhs, LoopIR.Const) and init.rhs.val == 0, INIT
+    assert isinstance(init, LoopIR.Assign) and is_access(init, out, i, j)
+    assert isinstance(init.rhs, LoopIR.Const) and init.rhs.val == 0
 
-    assert len(cell) == 2, REDUCE
+    assert len(cell) == 2
     red = cell[1]
-    assert is_loop(red, LoopIR.Seq, k) and len(red.body) == 1, REDUCE
+    assert is_loop(red, LoopIR.Seq, k) and len(red.body) == 1
     acc = red.body[0]
-    assert isinstance(acc, LoopIR.Reduce) and is_access(acc, out, i, j), REDUCE
+    assert isinstance(acc, LoopIR.Reduce) and is_access(acc, out, i, j)
     rhs, kk = acc.rhs, red.iter
-    assert isinstance(rhs, LoopIR.BinOp) and rhs.op == "*", REDUCE
-    assert isinstance(rhs.lhs, LoopIR.Read) and is_access(rhs.lhs, a, i, kk), REDUCE
-    assert isinstance(rhs.rhs, LoopIR.Read) and is_access(rhs.rhs, b, kk, j), REDUCE
+    assert isinstance(rhs, LoopIR.BinOp) and rhs.op == "*"
+    assert isinstance(rhs.lhs, LoopIR.Read) and is_access(rhs.lhs, a, i, kk)
+    assert isinstance(rhs.rhs, LoopIR.Read) and is_access(rhs.rhs, b, kk, j)
     return m, n, k, i, j
 
 
@@ -102,7 +97,7 @@ class MetalIRGenerator(IRGenerator):
 
     def generate(self, procs: list[LoopIR.proc]) -> ModuleOp:
         # bare ptr args, no malloc/free decls
-        assert len(procs) == 1, "metal backend: expected exactly one kernel procedure"
+        assert len(procs) == 1
         proc = procs[0]
         input_types = [self._arg_type(arg, proc.body) for arg in proc.args] + [i32]
         region = Region(block := Block(arg_types=input_types))
@@ -150,14 +145,13 @@ def is_opaque_ptr(t: llvmlite.ir.Type) -> bool:
 
 def to_air(module: llvmlite.ir.Module, name: str) -> str:
     fns = module.functions
-    assert len(fns) == 1 and fns[0].name == name and fns[0].blocks, "metal backend: expected a single kernel definition"
+    assert len(fns) == 1 and fns[0].name == name and fns[0].blocks
     fn = fns[0]
     types = [arg.type for arg in fn.args]
-    signature_ok = len(types) == 4 and all(is_opaque_ptr(t) for t in types[:3]) and types[3] == llvmlite.ir.IntType(32)
-    assert signature_ok, f"metal backend: unexpected kernel signature in\n{module}"
+    assert len(types) == 4 and all(is_opaque_ptr(t) for t in types[:3]) and types[3] == llvmlite.ir.IntType(32)
     for block in fn.blocks:
         for instr in block.instructions:
-            assert instr.opname in AIR_OPCODES, f"metal backend: unexpected llvm instruction {str(instr).strip()!r}"
+            assert instr.opname in AIR_OPCODES
     lines: list[str] = []
     fn.descr_body(lines)
     # air needs typed device pointers. no allocas, so every ptr is a buffer
@@ -189,16 +183,15 @@ def metal_toolchain_env() -> dict[str, str]:
     env = {**os.environ, "MACOSX_DEPLOYMENT_TARGET": "15.0"}
     if has_metal(env):
         return env
-    developer_dir = os.environ.get("DEVELOPER_DIR")
-    assert not developer_dir, f"metal backend: no usable metal compiler in DEVELOPER_DIR={developer_dir}"
+    assert not os.environ.get("DEVELOPER_DIR")
     fallback = env | {"DEVELOPER_DIR": XCODE}
-    assert has_metal(fallback), f"metal backend: no metal compiler in the selected toolchain or {XCODE}. Install the Metal Toolchain or set DEVELOPER_DIR"
+    assert has_metal(fallback)
     return fallback
 
 
 def run_tool(env: dict[str, str], tool: str, *args: str) -> None:
     result = subprocess.run(["xcrun", "-sdk", "macosx", tool, *args], check=False, capture_output=True, text=True, env=env)
-    assert result.returncode == 0, f"metal backend: {tool} failed:\n{result.stdout}\n{result.stderr}"
+    assert result.returncode == 0
 
 
 def build_metallib(air: str, workdir: Path, env: dict[str, str]) -> Path:
@@ -211,18 +204,18 @@ def build_metallib(air: str, workdir: Path, env: dict[str, str]) -> Path:
 
 def load_pipeline(device, metallib: Path, name: str):
     url = import_module("Foundation").NSURL.fileURLWithPath_(str(metallib))
-    library, error = device.newLibraryWithURL_error_(url, None)
-    assert library, f"metal backend: failed to load metallib: {error}"
+    library, _ = device.newLibraryWithURL_error_(url, None)
+    assert library
     fn = library.newFunctionWithName_(name)
-    assert fn, f"metal backend: function {name} not found in metallib"
-    pso, error = device.newComputePipelineStateWithFunction_error_(fn, None)
-    assert pso, f"metal backend: failed to create pipeline: {error}"
+    assert fn
+    pso, _ = device.newComputePipelineStateWithFunction_error_(fn, None)
+    assert pso
     return pso
 
 
 def create_pipeline(air: str, name: str):
     device = import_module("Metal").MTLCreateSystemDefaultDevice()
-    assert device, "metal backend: no metal device"
+    assert device
     env = metal_toolchain_env()
     with tempfile.TemporaryDirectory() as d:
         metallib = build_metallib(air, Path(d), env)
@@ -233,18 +226,18 @@ def create_pipeline(air: str, name: str):
 def device_buffer(device, ffi: FFI, ptr: int, size: int):
     data = ffi.buffer(ffi.cast("char *", ptr), size)[:]
     buffer = device.newBufferWithBytes_length_options_(data, size, import_module("Metal").MTLResourceStorageModeShared)
-    assert buffer is not None, "metal backend: buffer allocation failed"
+    assert buffer is not None
     return buffer
 
 
 def execute_kernel(device, pso, grid, group, buffers) -> None:
     metal = import_module("Metal")
     queue = device.newCommandQueue()
-    assert queue, "metal backend: failed to create command queue"
+    assert queue
     cmd = queue.commandBuffer()
-    assert cmd, "metal backend: failed to create command buffer"
+    assert cmd
     encoder = cmd.computeCommandEncoder()
-    assert encoder, "metal backend: failed to create compute encoder"
+    assert encoder
     encoder.setComputePipelineState_(pso)
     for i, buffer in enumerate(buffers):
         encoder.setBuffer_offset_atIndex_(buffer, 0, i)
@@ -252,7 +245,7 @@ def execute_kernel(device, pso, grid, group, buffers) -> None:
     encoder.endEncoding()
     cmd.commit()
     cmd.waitUntilCompleted()
-    assert cmd.status() == metal.MTLCommandBufferStatusCompleted, f"metal backend: command buffer failed with status {cmd.status()}: {cmd.error()}"
+    assert cmd.status() == metal.MTLCommandBufferStatusCompleted
 
 
 def build_kernel(proc: Procedure, ffi: FFI, *, sizes: tuple[int, int, int], threads: int) -> Callable[..., None]:
@@ -271,9 +264,9 @@ def build_kernel(proc: Procedure, ffi: FFI, *, sizes: tuple[int, int, int], thre
 
 
 def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
-    assert not raw, "raw=True is not supported by the metal backend"
+    assert not raw
     # reject before optional imports
-    assert not proc.is_instr(), f"metal backend: {proc.name()} is an instr, not a kernel"
+    assert not proc.is_instr()
     m, n, k, _, _ = check_matmul(proc._loopir_proc)
     sizes = (4 * m * n, 4 * m * k, 4 * k * n)
     compiler = partial(build_kernel, sizes=sizes, threads=m * n)
