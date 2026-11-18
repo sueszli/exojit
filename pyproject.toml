@@ -29,7 +29,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["exojit", "exojit_metal"]
+py-modules = ["exojit", "backend_metal"]
 
 [tool.pytest.ini_options]
 addopts = "-n auto --forked -v"

@@ -13,8 +13,8 @@ from exo import *
 from xdsl.dialects import llvm
 from xdsl.dialects.builtin import i32
 
+from backend_metal import MetalIRGenerator, thread_grid
 from exojit import JITRuntime, jit, to_mlir
-from exojit_metal import MetalIRGenerator, thread_grid
 
 ROOT = Path(__file__).resolve().parents[2]
 HAS_METAL = platform.system() == "Darwin" and platform.machine() == "arm64" and all(importlib.util.find_spec(name) is not None for name in ("Metal", "llvm_to_air"))
@@ -250,7 +250,7 @@ def test_cpu_jit_never_imports_metal_deps(tmp_path, block_optional_deps):
             jit(scale)(dst, [1.0, 2.5])
             assert dst == [2.0, 5.0], dst
             assert all(sys.modules.get(name) is None for name in ("Metal", "objc", "llvm_to_air")), "cpu jit imported a metal dependency"
-            assert "exojit_metal" not in sys.modules, "cpu jit imported the metal backend"
+            assert "backend_metal" not in sys.modules, "cpu jit imported the metal backend"
             """)
     )
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, (str(ROOT), os.environ.get("PYTHONPATH"))))}

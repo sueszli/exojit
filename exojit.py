@@ -688,9 +688,9 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
     if optimize:
         proc = optimize(proc)
     if backend == "metal":
-        import exojit_metal  # lazy
+        import backend_metal  # lazy
 
-        return exojit_metal.compile(proc, raw=raw)
+        return backend_metal.compile(proc, raw=raw)
     return JITRuntime.compile(proc, raw=raw)
 
 
