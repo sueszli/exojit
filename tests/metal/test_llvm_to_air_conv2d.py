@@ -6,9 +6,7 @@ from backend_metal import create_compute_pipeline, execute_kernel
 
 from .utils import Metal, llvm_to_metallib
 
-# 2D Convolution: out[y,x] = sum over kernel of input[y+ky, x+kx] * kernel[ky, kx]
-# simplified version: 3x3 input, 2x2 kernel, no padding, stride=1
-# output will be 2x2
+# 3x3 input, 2x2 kernel, stride 1
 LLVM_IR_CONV2D = """
 define void @conv2d(float* %input, float* %kernel, float* %output, i32 %global_id) {
 entry:
@@ -131,22 +129,10 @@ def binary_conv2d():
 
 
 def test_conv2d_identity(binary_conv2d):
-    # input: 3x3 matrix
-    # [1, 2, 3]
-    # [4, 5, 6]
-    # [7, 8, 9]
     input_data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
 
-    # kernel: 2x2 matrix (simple averaging kernel)
-    # [0.25, 0.25]
-    # [0.25, 0.25]
     kernel_data = [0.25, 0.25, 0.25, 0.25]
 
-    # expected output: 2x2 matrix
-    # out[0,0] = 0.25*(1+2+4+5) = 3.0
-    # out[0,1] = 0.25*(2+3+5+6) = 4.0
-    # out[1,0] = 0.25*(4+5+7+8) = 6.0
-    # out[1,1] = 0.25*(5+6+8+9) = 7.0
     expected = [3.0, 4.0, 6.0, 7.0]
 
     result = run_conv2d(binary_conv2d, input_data, kernel_data, 4)
@@ -154,18 +140,10 @@ def test_conv2d_identity(binary_conv2d):
 
 
 def test_conv2d_edge_detection(binary_conv2d):
-    # input: 3x3 matrix
-    # [1, 1, 1]
-    # [1, 1, 1]
-    # [1, 1, 1]
     input_data = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
-    # kernel: 2x2 Sobel-like
-    # [1, -1]
-    # [1, -1]
     kernel_data = [1.0, -1.0, 1.0, -1.0]
 
-    # expected: all zeros (no edges in uniform image)
     expected = [0.0, 0.0, 0.0, 0.0]
 
     result = run_conv2d(binary_conv2d, input_data, kernel_data, 4)

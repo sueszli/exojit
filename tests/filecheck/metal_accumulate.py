@@ -1,7 +1,7 @@
 # REQUIRES: metal
 # RUN: %python %s | filecheck %s
 
-# accumulates into the incoming output, so each thread reads and writes only its own cell of a 3x2 grid: id -> (id / 2, id % 2)
+# accumulates into own cell, id -> (id / 2, id % 2)
 # CHECK: define void @metal_accumulate({{.*}}addrspace(1)*{{.*}}"air-buffer-no-alias"{{.*}}, i32 %{{[^,]*}}) #0 {
 # CHECK: udiv i64
 # CHECK: urem i64
@@ -9,7 +9,6 @@
 # CHECK: !"air.thread_position_in_grid"
 # CHECK: call 1 gpu 6 2; 14 3; 22 4
 # CHECK-NEXT: call 2 gpu 11 2; 25 2; 39 2
-# CHECK-NEXT: gpu == cpu == reference
 
 from exo import *
 
@@ -30,10 +29,9 @@ B = [[1.0, -1.0], [2.0, 0.5]]
 C_cpu, C_gpu, reference = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]
 print(kernel_to_air(metal_accumulate))
 cpu, gpu = jit(metal_accumulate), jit(metal_accumulate, backend="metal")
-for call in (1, 2):  # the second dispatch reuses the compiled kernel and must see the first call's results
+for call in (1, 2):  # reused kernel sees prior results
     cpu(C_cpu, A, B)
     gpu(C_gpu, A, B)
     reference = [[reference[i][j] + sum(A[i][k] * B[k][j] for k in range(2)) for j in range(2)] for i in range(3)]
     print("call", call, "gpu", "; ".join(" ".join(f"{v:g}" for v in row) for row in C_gpu))
     assert C_gpu == C_cpu == reference, (call, C_gpu, C_cpu, reference)
-print("gpu == cpu == reference")

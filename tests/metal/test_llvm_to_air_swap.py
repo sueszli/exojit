@@ -2,29 +2,7 @@ import pytest
 
 from .utils import llvm_to_metallib, run_kernel_1d_float
 
-#
-# var swap
-#
-
-# kernel void test_kernel(
-#    device const float* in_ptr [[buffer(0)]],         // pointer to input in global memory
-#    device float* out_ptr [[buffer(1)]],              // pointer to output in global memory
-#    uint global_id [[thread_position_in_grid]],       // thread across the entire execution grid
-#    uint local_id [[thread_position_in_threadgroup]], // thread within the threadgroup
-#    threadgroup float* shared_ptr [[threadgroup(0)]]  // pointer to shared memory within the threadgroup
-# ) {
-#     float val_in = in_ptr[global_id];
-#     shared_ptr[local_id] = val_in;
-#
-#     threadgroup_barrier(mem_flags::mem_threadgroup); // wait until all threads have stored their values
-#
-#     // if (id % 2 == 0) { neighbor = id + 1 } else { neighbor = id - 1 }
-#     uint neighbor_id = local_id ^ 1;
-#
-#     // swap
-#     float val_neighbor = shared_ptr[neighbor_id];
-#     out_ptr[global_id] = val_neighbor;
-# }
+# out[i] = in[i ^ 1] via shared memory
 
 LLVM_IR = """
 declare void @"barrier"()
@@ -64,8 +42,6 @@ def test_basic_swap(binary):
 
 def test_larger_array(binary):
     input_data = [float(i) for i in range(8)]
-    # 0<->1, 2<->3, 4<->5, 6<->7
-    # 0->1, 1->0, 2->3, 3->2, etc.
     expected = [1.0, 0.0, 3.0, 2.0, 5.0, 4.0, 7.0, 6.0]
     result = run_kernel_1d_float(binary, input_data, "test_kernel")
     assert result == pytest.approx(expected)

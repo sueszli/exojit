@@ -28,6 +28,6 @@ if __name__ == "__main__":
     cpu, gpu = [[0.0] * 48 for _ in range(32)], [[0.0] * 48 for _ in range(32)]
 
     jit(matmul)(cpu, A, B)
-    jit(matmul, backend="metal")(gpu, A, B)  # one gpu thread per output cell
+    jit(matmul, backend="metal")(gpu, A, B)  # one thread per cell
     assert all(math.isclose(gpu[i][j], cpu[i][j], rel_tol=1e-5, abs_tol=1e-5) for i in range(32) for j in range(48))
     print(f"metal matmul matches cpu: out[0][:4] = {[round(x, 4) for x in gpu[0][:4]]}")

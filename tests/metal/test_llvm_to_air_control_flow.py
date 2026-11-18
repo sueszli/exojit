@@ -2,14 +2,7 @@ import pytest
 
 from .utils import llvm_to_metallib, run_kernel_1d_float
 
-#
-# tests translation of 'br', 'label', and 'phi'.
-#
-#   if val > 10.0:
-#       res = val + 1.0
-#   else:
-#       res = val - 1.0
-#
+# br, label and phi
 
 LLVM_IR = """
 define void @test_kernel(float* %in_ptr, float* %out_ptr, i32 %global_id, i32 %local_id, float* %shared_ptr) 
@@ -45,10 +38,6 @@ def binary_control_flow():
 
 def test_control_flow(binary_control_flow):
     input_data = [0.0, 10.0, 10.1, 20.0]
-    # 0.0 <= 10 -> -1.0
-    # 10.0 <= 10 -> 9.0
-    # 10.1 > 10 -> 11.1
-    # 20.0 > 10 -> 21.0
     expected = [-1.0, 9.0, 11.1, 21.0]
     result = run_kernel_1d_float(binary_control_flow, input_data, "test_kernel")
     assert result == pytest.approx(expected)

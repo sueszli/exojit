@@ -7,7 +7,7 @@ from backend_metal import create_compute_pipeline, execute_kernel
 
 from .utils import Metal, llvm_to_metallib
 
-# cross-entropy loss: loss = -sum(y_true * log(y_pred))
+# cross-entropy loss
 LLVM_IR_CROSS_ENTROPY = """
 declare float @llvm.log.f32(float)
 
@@ -139,7 +139,7 @@ def test_cross_entropy_multi_class(binary_cross_entropy):
     assert result[0] == pytest.approx(expected_loss, rel=1e-4)
 
 
-# mean squared error loss: loss = mean((y_pred - y_true)^2)
+# mse loss
 LLVM_IR_MSE = """
 define void @mse_loss(float* %y_pred, float* %y_true, float* %output, i32 %global_id) {
 entry:

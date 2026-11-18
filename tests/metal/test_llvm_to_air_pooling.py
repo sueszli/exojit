@@ -2,8 +2,7 @@ import pytest
 
 from .utils import llvm_to_metallib, run_kernel_1d_float
 
-# max pooling 2D: out[y,x] = max(input[2*y:2*y+2, 2*x:2*x+2])
-# input: 4x4, Pool size: 2x2, Stride: 2, Output: 2x2
+# 2x2 max pool, stride 2, 4x4 -> 2x2
 
 LLVM_IR_MAXPOOL2D = """
 declare float @llvm.maxnum.f32(float, float)
@@ -84,18 +83,8 @@ def binary_maxpool2d():
 
 
 def test_maxpool2d_basic(binary_maxpool2d):
-    # input: 4x4 matrix
-    # [ 1,  2,  3,  4]
-    # [ 5,  6,  7,  8]
-    # [ 9, 10, 11, 12]
-    # [13, 14, 15, 16]
     input_data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]
 
-    # expected output: 2x2 matrix (2x2 pooling, stride 2)
-    # out[0,0] = max(1,2,5,6) = 6
-    # out[0,1] = max(3,4,7,8) = 8
-    # out[1,0] = max(9,10,13,14) = 14
-    # out[1,1] = max(11,12,15,16) = 16
     expected = [6.0, 8.0, 14.0, 16.0]
 
     result = run_kernel_1d_float(binary_maxpool2d, input_data, "maxpool2d")
@@ -103,17 +92,15 @@ def test_maxpool2d_basic(binary_maxpool2d):
 
 
 def test_maxpool2d_negative(binary_maxpool2d):
-    # input: 4x4 matrix with negative values
     input_data = [-1.0, -2.0, -3.0, -4.0, -5.0, -6.0, -7.0, -8.0, -9.0, -10.0, -11.0, -12.0, -13.0, -14.0, -15.0, -16.0]
 
-    # expected: max of each 2x2 region (least negative)
     expected = [-1.0, -3.0, -9.0, -11.0]
 
     result = run_kernel_1d_float(binary_maxpool2d, input_data, "maxpool2d")
     assert result[:4] == pytest.approx(expected)
 
 
-# average pooling 2D: out[y,x] = avg(input[2*y:2*y+2, 2*x:2*x+2])
+# 2x2 avg pool, stride 2
 LLVM_IR_AVGPOOL2D = """
 define void @avgpool2d(float* %input, float* %output, i32 %global_id) {
 entry:
@@ -187,7 +174,6 @@ def binary_avgpool2d():
 
 
 def test_avgpool2d_basic(binary_avgpool2d):
-    # input: 4x4 matrix
     input_data = [
         1.0,
         2.0,
@@ -207,11 +193,6 @@ def test_avgpool2d_basic(binary_avgpool2d):
         16.0,
     ]
 
-    # expected output: 2x2 matrix
-    # out[0,0] = avg(1,2,5,6) = 3.5
-    # out[0,1] = avg(3,4,7,8) = 5.5
-    # out[1,0] = avg(9,10,13,14) = 11.5
-    # out[1,1] = avg(11,12,15,16) = 13.5
     expected = [3.5, 5.5, 11.5, 13.5]
 
     result = run_kernel_1d_float(binary_avgpool2d, input_data, "avgpool2d")
@@ -219,10 +200,8 @@ def test_avgpool2d_basic(binary_avgpool2d):
 
 
 def test_avgpool2d_uniform(binary_avgpool2d):
-    # input: all 5.0
     input_data = [5.0] * 16
 
-    # expected: all 5.0
     expected = [5.0, 5.0, 5.0, 5.0]
 
     result = run_kernel_1d_float(binary_avgpool2d, input_data, "avgpool2d")

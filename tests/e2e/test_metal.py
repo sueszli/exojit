@@ -17,7 +17,7 @@ from backend_metal import MetalIRGenerator, get_target_datalayout, kernel_to_air
 from exojit import JITRuntime, jit, to_mlir
 
 ROOT = Path(__file__).resolve().parents[2]
-# the platform is the only skip condition: on any mac (intel included) missing pyobjc, toolchain or gpu must fail, never skip
+# skip off macos only, missing deps fail
 requires_metal = pytest.mark.skipif(platform.system() != "Darwin", reason="metal gpu tests need macOS")
 
 
@@ -32,7 +32,7 @@ def matmul_par(C: f32[3, 5] @ DRAM, A: f32[3, 4] @ DRAM, B: f32[4, 5] @ DRAM):
 
 @proc
 def outer_accumulate_par(C: f32[4, 3] @ DRAM, A: f32[4, 1] @ DRAM, B: f32[1, 3] @ DRAM):
-    # reduction length 1 that accumulates into the incoming output values
+    # accumulates into incoming output
     for i in par(0, 4):
         for j in par(0, 3):
             for k in seq(0, 1):
@@ -186,7 +186,7 @@ def two_outputs(C: f32[2, 2] @ DRAM, D: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM):
 
 @proc
 def fill_too_many_threads(C: f32[65536, 65536] @ DRAM):
-    # 2**32 threads, one past the largest uint32 thread id
+    # 2**32 threads, overflows uint32 id
     for i in par(0, 65536):
         for j in par(0, 65536):
             C[i, j] = 0.0
@@ -194,7 +194,7 @@ def fill_too_many_threads(C: f32[65536, 65536] @ DRAM):
 
 @pytest.mark.parametrize(("p", "match"), [(matmul_seq, r"par\(0, M\)"), (matmul_dynamic, "static f32 tensor"), (matmul_f64, "static f32 tensor"), (matmul_alloc, "unsupported statement Alloc"), (matmul_call, "unsupported statement Call"), (matmul_window, "unsupported statement WindowStmt"), (matmul_racy, "may only write"), (matmul_transposed, "may only write"), (matmul_neighbor_read, "may only be read"), (matmul_nested_par, "nested inside the thread grid"), (matmul_partial_grid, "must span"), (two_outputs, "exactly one written argument"), (fill_too_many_threads, "uint32 thread id")])
 def test_metal_rejects_unsupported_procs(p, match):
-    # validation runs before compiling or importing the optional metal dependencies
+    # rejected before optional imports
     with pytest.raises(AssertionError, match=match):
         jit(p, backend="metal")
 
@@ -207,7 +207,6 @@ def test_metal_rejects_raw_and_unknown_backends():
 
 
 def test_metal_generator_reuses_cpu_lowering():
-    # the to_mlir generator seam: a single grid kernel with a trailing i32 thread id, no noalias attrs and no malloc/free
     _, row, col, _, cols = thread_grid(matmul_par._loopir_proc)
     funcs = [op for op in to_mlir(matmul_par, MetalIRGenerator(row, col, cols)).body.block.ops if isinstance(op, llvm.FuncOp)]
     assert [func.sym_name.data for func in funcs] == ["matmul_par"]
@@ -217,8 +216,7 @@ def test_metal_generator_reuses_cpu_lowering():
 
 
 def test_kernel_to_air_is_pure_translation():
-    # off macos, translation must not touch xcrun: no `metal` on PATH and any subprocess fails the test
-    # the datalayout cache is cleared around the patch so a cached probe result cannot hide a subprocess call
+    # cached probe could hide subprocess
     get_target_datalayout.cache_clear()
     try:
         with patch("backend_metal.shutil.which", return_value=None), patch("backend_metal.subprocess.run", side_effect=AssertionError("unexpected subprocess")):
@@ -226,20 +224,18 @@ def test_kernel_to_air_is_pure_translation():
     finally:
         get_target_datalayout.cache_clear()
     assert 'target triple = "air64_v27-apple-macosx' in air and "define void @matmul_par(" in air
-    assert "udiv i64" in air and "urem i64" in air  # linear thread id -> (row, col)
+    assert "udiv i64" in air and "urem i64" in air  # id -> (row, col)
     assert air.count('!"air.read_write"') == 1 and air.count('!"air.thread_position_in_grid"') == 1 and air.count('!"air.read"') == 2
 
 
 def test_metal_missing_pyobjc_fails_without_cpu_fallback(monkeypatch):
-    # a mac without the metal extra must fail loudly instead of silently running on the cpu
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
-    monkeypatch.setitem(sys.modules, "Metal", None)  # a None entry makes `import Metal` fail like a missing package
+    monkeypatch.setitem(sys.modules, "Metal", None)  # None fails import
     with pytest.raises(ModuleNotFoundError, match="Metal"):
         jit(matmul_par, backend="metal")
 
 
 def test_jit_runtime_compiler_seam():
-    # a custom low-level compiler receives the converters' buffer addresses and the same ffi, and writes sync back
     def compiler(_proc, ffi):
         def run(*ptrs):
             assert all(isinstance(ptr, int) for ptr in ptrs)
@@ -259,7 +255,7 @@ def test_cpu_jit_never_imports_metal_deps(tmp_path, block_optional_deps):
         dedent(f"""
             import sys
             if {block_optional_deps}:
-                sys.modules.update(dict.fromkeys(("Metal", "objc")))  # None entries make imports fail like absent packages
+                sys.modules.update(dict.fromkeys(("Metal", "objc")))  # block imports
             from exo import *
             from exojit import jit
 

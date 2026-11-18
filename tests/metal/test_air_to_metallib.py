@@ -13,7 +13,7 @@ TOOLCHAIN_ENV = {"DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer", 
 
 class TestAirToMetallib(unittest.TestCase):
     def setUp(self):
-        # compile_to_metallib resolves xcrun and the xcode toolchain env first, both mocked so these tests run off macos and count only the tool checks and the build
+        # mocked so tests run off macos
         for target, value in (("backend_metal.shutil.which", "/usr/bin/xcrun"), ("backend_metal.metal_toolchain_env", TOOLCHAIN_ENV)):
             patcher = patch(target, return_value=value)
             patcher.start()
@@ -23,7 +23,6 @@ class TestAirToMetallib(unittest.TestCase):
     @patch("backend_metal.Path")
     @patch("backend_metal.tempfile.NamedTemporaryFile")
     def test_compile_to_metallib_success(self, mock_tempfile, mock_path, mock_subprocess):
-        # setup mocks
         mock_f_ll = MagicMock()
         mock_f_ll.name = "/tmp/test.ll"
         mock_f_air = MagicMock()
@@ -31,39 +30,33 @@ class TestAirToMetallib(unittest.TestCase):
         mock_f_lib = MagicMock()
         mock_f_lib.name = "/tmp/test.metallib"
 
-        # context managers for tempfiles
         mock_f_ll.__enter__.return_value = mock_f_ll
         mock_f_air.__enter__.return_value = mock_f_air
         mock_f_lib.__enter__.return_value = mock_f_lib
 
         mock_tempfile.side_effect = [mock_f_ll, mock_f_air, mock_f_lib]
 
-        # subprocess result
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_subprocess.return_value = mock_result
 
-        # path read_bytes
         mock_path_obj = MagicMock()
         mock_path_obj.read_bytes.return_value = b"fake_metallib_content"
         mock_path.return_value = mock_path_obj
 
-        # call
         result = backend_metal.compile_to_metallib("fake_ir")
 
-        # assertions
         self.assertEqual(result, b"fake_metallib_content")
         mock_f_ll.write.assert_called_with(b"fake_ir")
-        # called 4 times: metal check, metallib check, metal compile, metallib link
+        # 2 tool checks, compile, link
         self.assertEqual(mock_subprocess.call_count, 4)
         cmds = [call.args[0] for call in mock_subprocess.call_args_list]
         self.assertEqual(cmds[0], ["xcrun", "-sdk", "macosx", "metal", "--version"])
         self.assertEqual(cmds[1], ["xcrun", "-sdk", "macosx", "metallib", "--version"])
-        # the build is two argv commands, compile then link, each temp path one argument
         self.assertEqual(cmds[2], ["xcrun", "-sdk", "macosx", "metal", "-x", "ir", "-c", "/tmp/test.ll", "-o", "/tmp/test.air"])
         self.assertEqual(cmds[3], ["xcrun", "-sdk", "macosx", "metallib", "/tmp/test.air", "-o", "/tmp/test.metallib"])
         mock_path.assert_called_with("/tmp/test.metallib")
-        # every xcrun call runs in the toolchain env, never through a shell
+        # toolchain env, no shell
         self.assertTrue(all(call.kwargs["env"] == TOOLCHAIN_ENV for call in mock_subprocess.call_args_list))
         self.assertTrue(all(not call.kwargs.get("shell", False) for call in mock_subprocess.call_args_list))
         self.assertTrue(all(call.kwargs.get("check") is False for call in mock_subprocess.call_args_list))
@@ -71,7 +64,6 @@ class TestAirToMetallib(unittest.TestCase):
     @patch("backend_metal.subprocess.run")
     @patch("backend_metal.tempfile.NamedTemporaryFile")
     def test_compile_to_metallib_failure(self, mock_tempfile, mock_subprocess):
-        # setup mocks
         mock_f_ll = MagicMock()
         mock_f_ll.name = "/tmp/test.ll"
         mock_f_air = MagicMock()
@@ -85,19 +77,18 @@ class TestAirToMetallib(unittest.TestCase):
 
         mock_tempfile.side_effect = [mock_f_ll, mock_f_air, mock_f_lib]
 
-        # subprocess result - first call (metal check) fails
+        # metal check fails
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stdout = "some error"
         mock_result.stderr = "some stderr"
         mock_subprocess.return_value = mock_result
 
-        # call and assert raises - should fail on metal check
         with self.assertRaises(AssertionError) as cm:
             backend_metal.compile_to_metallib("fake_ir")
 
         self.assertIn("metal not found", str(cm.exception))
-        # the failed tool check stops before any build command
+        # stops before build
         self.assertEqual(mock_subprocess.call_count, 1)
         self.assertEqual(mock_subprocess.call_args.args[0], ["xcrun", "-sdk", "macosx", "metal", "--version"])
 
@@ -105,7 +96,6 @@ class TestAirToMetallib(unittest.TestCase):
     @patch("backend_metal.Path")
     @patch("backend_metal.tempfile.NamedTemporaryFile")
     def test_compile_to_metallib_empty_output(self, mock_tempfile, mock_path, mock_subprocess):
-        # setup mocks
         mock_f_ll = MagicMock()
         mock_f_ll.name = "/tmp/test.ll"
         mock_f_air = MagicMock()
@@ -124,20 +114,19 @@ class TestAirToMetallib(unittest.TestCase):
         mock_subprocess.return_value = mock_result
 
         mock_path_obj = MagicMock()
-        mock_path_obj.read_bytes.return_value = b""  # Empty
+        mock_path_obj.read_bytes.return_value = b""
         mock_path.return_value = mock_path_obj
 
-        # call and assert raises
         with self.assertRaises(AssertionError) as cm:
             backend_metal.compile_to_metallib("fake_ir")
 
         self.assertIn("generated metallib is empty", str(cm.exception))
-        # both build steps ran before the empty output was detected
+        # both steps ran first
         self.assertEqual(mock_subprocess.call_count, 4)
         self.assertEqual(mock_subprocess.call_args.args[0], ["xcrun", "-sdk", "macosx", "metallib", "/tmp/test.air", "-o", "/tmp/test.metallib"])
 
     def _build_in_dir(self, tmpdir, calls, fail_compile=False):
-        # real temp files under `tmpdir`, fake xcrun: records argv/kwargs into `calls`, checks the files exist while each step runs
+        # real temp files, fake xcrun
         def fake_run(cmd, **kwargs):
             calls.append((cmd, kwargs))
             if cmd[-1] == "--version":
@@ -173,7 +162,7 @@ class TestAirToMetallib(unittest.TestCase):
                 self.assertIsInstance(cmd, list)
                 self.assertFalse(kwargs.get("shell", False))
                 self.assertEqual(kwargs["env"], TOOLCHAIN_ENV)
-            self.assertEqual(os.listdir(tmpdir), [])  # temp files cleaned up
+            self.assertEqual(os.listdir(tmpdir), [])
 
     def test_compile_to_metallib_failed_compile_never_links(self):
         with tempfile.TemporaryDirectory(prefix="exo jit; dir ") as tmpdir:
@@ -194,43 +183,33 @@ class TestAirToMetallib(unittest.TestCase):
         mock_metal = MagicMock()
         mock_objc = MagicMock()
 
-        # mock metal device
         mock_device = MagicMock()
         mock_metal.MTLCreateSystemDefaultDevice.return_value = mock_device
 
-        # mock ctypes
         mock_libdispatch = MagicMock()
         mock_ctypes.CDLL.return_value = mock_libdispatch
 
-        # mock dispatch_data_create
         mock_dispatch_data = MagicMock()
         mock_libdispatch.dispatch_data_create.return_value = mock_dispatch_data
 
-        # mock objc bridge
         mock_ns_dispatch = MagicMock()
         mock_objc.objc_object.return_value = mock_ns_dispatch
 
-        # mock library
         mock_library = MagicMock()
         mock_device.newLibraryWithData_error_.return_value = (mock_library, None)
 
-        # mock function
         mock_fn = MagicMock()
         mock_library.newFunctionWithName_.return_value = mock_fn
 
-        # mock PSO
         mock_pso = MagicMock()
         mock_device.newComputePipelineStateWithFunction_error_.return_value = (mock_pso, None)
 
-        # call
         with patch.dict(sys.modules, {"Metal": mock_metal, "objc": mock_objc}):
             device, pso = backend_metal.create_compute_pipeline(b"binary", "kernel_name")
 
-        # assertions
         self.assertEqual(device, mock_device)
         self.assertEqual(pso, mock_pso)
 
-        # Verify ctypes calls
         mock_ctypes.create_string_buffer.assert_called()
         mock_libdispatch.dispatch_data_create.assert_called()
         mock_objc.objc_object.assert_called_with(c_void_p=mock_dispatch_data)
@@ -253,7 +232,6 @@ class TestAirToMetallib(unittest.TestCase):
         mock_device = MagicMock()
         mock_metal.MTLCreateSystemDefaultDevice.return_value = mock_device
 
-        # mock ctypes setup
         mock_libdispatch = MagicMock()
         mock_ctypes.CDLL.return_value = mock_libdispatch
         mock_libdispatch.dispatch_data_create.return_value = MagicMock()
@@ -272,7 +250,6 @@ class TestAirToMetallib(unittest.TestCase):
         mock_device = MagicMock()
         mock_metal.MTLCreateSystemDefaultDevice.return_value = mock_device
 
-        # mock ctypes setup
         mock_libdispatch = MagicMock()
         mock_ctypes.CDLL.return_value = mock_libdispatch
         mock_libdispatch.dispatch_data_create.return_value = MagicMock()
@@ -338,7 +315,6 @@ class TestAirToMetallib(unittest.TestCase):
         mock_encoder = MagicMock()
         mock_buffer.computeCommandEncoder.return_value = mock_encoder
 
-        # simulate failure
         mock_metal = MagicMock()
         with patch.dict(sys.modules, {"Metal": mock_metal}):
             mock_metal.MTLCommandBufferStatusCompleted = 1

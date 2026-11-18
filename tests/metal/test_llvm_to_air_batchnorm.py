@@ -4,8 +4,7 @@ import pytest
 
 from .utils import llvm_to_metallib, run_kernel_1d_float
 
-# batch Normalization: out[i] = gamma * (x[i] - mean) / sqrt(var + eps) + beta
-# simplified: batch size = 4, single feature
+# batchnorm, batch 4, single feature
 
 LLVM_IR_BATCHNORM = """
 declare float @llvm.sqrt.f32(float)
@@ -82,14 +81,6 @@ def binary_batchnorm():
 
 
 def test_batchnorm_basic(binary_batchnorm):
-    # input: [1, 2, 3, 4]
-    # mean = 2.5
-    # variance = ((1-2.5)^2 + (2-2.5)^2 + (3-2.5)^2 + (4-2.5)^2) / 4
-    #          = (2.25 + 0.25 + 0.25 + 2.25) / 4 = 1.25
-    # std = sqrt(1.25 + 1e-5) ≈ 1.118
-    # normalized: [(1-2.5)/1.118, (2-2.5)/1.118, (3-2.5)/1.118, (4-2.5)/1.118]
-    #           ≈ [-1.342, -0.447, 0.447, 1.342]
-
     input_data = [1.0, 2.0, 3.0, 4.0]
 
     mean = 2.5
@@ -102,11 +93,6 @@ def test_batchnorm_basic(binary_batchnorm):
 
 
 def test_batchnorm_zero_mean(binary_batchnorm):
-    # input: [-2, -1, 1, 2]
-    # mean = 0
-    # variance = (4 + 1 + 1 + 4) / 4 = 2.5
-    # std = sqrt(2.5 + 1e-5) ≈ 1.581
-
     input_data = [-2.0, -1.0, 1.0, 2.0]
 
     mean = 0.0
@@ -119,12 +105,7 @@ def test_batchnorm_zero_mean(binary_batchnorm):
 
 
 def test_batchnorm_uniform(binary_batchnorm):
-    # input: [5, 5, 5, 5]
-    # mean = 5
-    # variance = 0
-    # std = sqrt(0 + 1e-5) ≈ 0.00316
-    # normalized: all should be ~0
-
+    # zero variance, eps avoids nan
     input_data = [5.0, 5.0, 5.0, 5.0]
     expected = [0.0, 0.0, 0.0, 0.0]
 

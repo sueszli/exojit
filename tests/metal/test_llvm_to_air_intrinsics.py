@@ -30,13 +30,12 @@ def binary_minmax():
 def test_minmax_clamp(binary_minmax):
     """Test min/max intrinsics for clamping."""
     input_data = [-5.0, 0.0, 5.0, 10.0, 15.0]
-    # Clamp to [0, 10]
     expected = [0.0, 0.0, 5.0, 10.0, 10.0]
     result = run_kernel_1d_float(binary_minmax, input_data, "minmax_kernel")
     assert result == pytest.approx(expected)
 
 
-# fma (fused multiply-add)
+# fma
 LLVM_IR_FMA = """
 declare float @llvm.fma.f32(float, float, float)
 
@@ -63,7 +62,6 @@ def binary_fma():
 def test_fma(binary_fma):
     """Test fused multiply-add intrinsic."""
     input_data = [0.0, 1.0, 2.0, 3.0]
-    # result = val * 2.0 + 3.0
     expected = [3.0, 5.0, 7.0, 9.0]
     result = run_kernel_1d_float(binary_fma, input_data, "fma_kernel")
     assert result == pytest.approx(expected)

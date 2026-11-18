@@ -4,7 +4,7 @@ import pytest
 
 from .utils import llvm_to_metallib, run_kernel_1d_float
 
-# Sigmoid: out[i] = 1.0 / (1.0 + exp(-in[i]))
+# sigmoid: out[i] = 1.0 / (1.0 + exp(-in[i]))
 LLVM_IR_SIGMOID = """
 declare float @llvm.exp.f32(float)
 

@@ -92,7 +92,7 @@ def test_function_with_comments_only():
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="building a metallib needs macOS")
 def test_multiple_address_spaces():
-    from .utils import llvm_to_metallib  # imports Metal, so only the module level translation tests run off macos
+    from .utils import llvm_to_metallib  # imports Metal
 
     air_ir = to_air(LLVM_IR_MULTI_ADDRSPACE)
     assert "addrspace(1)" in air_ir
@@ -117,32 +117,26 @@ def test_deterministic_output():
 
 class TestLlvmToAirExhaustive(unittest.TestCase):
     def test_metadata_emit_intrinsic_decl_convert(self):
-        # f.f32.u.i32
         lines = MetadataGenerator._emit_intrinsic_decl("@air.convert.f.f32.u.i32")
         self.assertEqual(len(lines), 1)
         self.assertIn("declare float @air.convert.f.f32.u.i32(i32) #2", lines[0])
 
-        # u.i32.f.f32
         lines = MetadataGenerator._emit_intrinsic_decl("@air.convert.u.i32.f.f32")
         self.assertIn("declare i32 @air.convert.u.i32.f.f32(float) #2", lines[0])
 
-        # vectors fallback
         lines = MetadataGenerator._emit_intrinsic_decl("@air.convert.f.f32.s.i16")
         self.assertIn("declare float @air.convert.f.f32.s.i16(i16) #2", lines[0])
 
     def test_metadata_emit_intrinsic_decl_math(self):
-        # 1 arg
         lines = MetadataGenerator._emit_intrinsic_decl("@air.exp.f32")
         self.assertIn("declare float @air.exp.f32(float) #2", lines[0])
 
-        # 2 args
         lines = MetadataGenerator._emit_intrinsic_decl("@air.pow.f32")
         self.assertIn("declare float @air.pow.f32(float, float) #2", lines[0])
 
         lines = MetadataGenerator._emit_intrinsic_decl("@air.fmin.f32")
         self.assertIn("declare float @air.fmin.f32(float, float) #2", lines[0])
 
-        # 3 args
         lines = MetadataGenerator._emit_intrinsic_decl("@air.fma.f32")
         self.assertIn("declare float @air.fma.f32(float, float, float) #2", lines[0])
 
@@ -285,15 +279,11 @@ class TestLlvmToAirExhaustive(unittest.TestCase):
         lines = MetadataGenerator.emit(kernels, set())
         full_text = "\n".join(lines)
 
-        # A: loc 0, as 1
+        # device + constant share slots
         self.assertRegex(full_text, r'!"air.location_index", i32 0, i32 1.*!"air.address_space", i32 1')
-        # B: loc 1, as 2
         self.assertRegex(full_text, r'!"air.location_index", i32 1, i32 1.*!"air.address_space", i32 2')
-        # C: loc 0, as 3
         self.assertRegex(full_text, r'!"air.location_index", i32 0, i32 1.*!"air.address_space", i32 3')
-        # D: loc 2, as 1
         self.assertRegex(full_text, r'!"air.location_index", i32 2, i32 1.*!"air.address_space", i32 1')
-        # E: loc 1, as 3
         self.assertRegex(full_text, r'!"air.location_index", i32 1, i32 1.*!"air.address_space", i32 3')
 
 

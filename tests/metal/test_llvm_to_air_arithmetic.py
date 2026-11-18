@@ -4,9 +4,7 @@ import pytest
 
 from .utils import llvm_to_metallib, run_kernel_1d_float
 
-#
 # out[i] = in[i] * 2.0 + 1.0
-#
 
 LLVM_IR_ARITHMETIC = """
 define void @test_kernel(float* %in_ptr, float* %out_ptr, i32 %global_id, i32 %local_id, float* %shared_ptr) 
@@ -31,15 +29,12 @@ def binary_arithmetic():
 
 def test_arithmetic(binary_arithmetic):
     input_data = [0.0, 1.0, 2.0, -5.0]
-    # expected: x * 2 + 1
     expected = [1.0, 3.0, 5.0, -9.0]
     result = run_kernel_1d_float(binary_arithmetic, input_data, "test_kernel")
     assert result == pytest.approx(expected)
 
 
-#
 # out[i] = in[i] + 1.0
-#
 
 LLVM_IR_ADD = """
 define void @add_kernel(float* %a, float* %b, i32 %id) {
@@ -67,9 +62,7 @@ def test_add(binary_add):
     assert result == expected_output
 
 
-#
 # out[i] = in[i] + i
-#
 
 LLVM_IR_ADD_INDEX = """
 define void @add_index(float* %a, float* %b, i32 %id) {
@@ -98,9 +91,7 @@ def test_large_grid_execution(binary_add_index):
         assert output[i] == expected, f"Mismatch at index {i}: expected {expected}, got {output[i]}"
 
 
-#
 # out[i] = in[i] - 1.0
-#
 
 LLVM_IR_SUB = """
 define void @sub_kernel(float* %a, float* %b, i32 %id) {
@@ -127,9 +118,7 @@ def test_sub(binary_sub):
     assert result == pytest.approx(expected)
 
 
-#
 # out[i] = exp(in[i]) / 2.0
-#
 
 LLVM_IR_TENSOR_OPS = """
 declare float @llvm.exp.f32(float)

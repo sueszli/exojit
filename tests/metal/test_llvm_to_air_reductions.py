@@ -73,7 +73,6 @@ def binary_sitofp_test():
 
 def test_sitofp_conversion(binary_sitofp_test):
     """Test that sitofp correctly converts signed int to float."""
-    # input[i] + float(i - 2) should give us input[i] + (i - 2)
     input_data = [10.0, 20.0, 30.0, 40.0, 50.0]
     expected = [8.0, 19.0, 30.0, 41.0, 52.0]  # input[i] + (i - 2)
     result = run_kernel_1d_float(binary_sitofp_test, input_data, "sitofp_test")

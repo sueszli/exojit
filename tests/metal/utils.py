@@ -3,7 +3,7 @@ import platform
 
 import pytest
 
-# the platform is the only skip condition, checked before importing Metal. on any mac (intel included) missing pyobjc, toolchain or gpu must fail
+# skip off macos only, before importing Metal
 if platform.system() != "Darwin":
     pytest.skip("metal gpu tests need macOS", allow_module_level=True)
 
@@ -19,9 +19,7 @@ def llvm_to_metallib(llvm_ir: str) -> bytes:
     return compile_to_metallib(air_llvm_text)
 
 
-#
 # custom runtime wrappers
-#
 
 
 def _run_kernel_common_1d(metallib_binary: bytes, input_data: list, kernel_name: str, c_type, width: int, height: int, threadgroup_w: int, threadgroup_h: int, use_shared_mem: bool) -> list:

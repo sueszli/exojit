@@ -2,9 +2,7 @@ import pytest
 
 from .utils import llvm_to_metallib, run_kernel_1d_float
 
-#
-# out[i] = (i%2==0) ? in[i] : in[i+1] (safe if we make input large enough)
-#
+# out[i] = i even ? in[i] : in[i+1]
 
 
 LLVM_IR_SELECT_PTR_SINGLE = """
@@ -38,16 +36,7 @@ def binary_select_ptr_single():
 
 
 def test_select_ptr_single(binary_select_ptr_single):
-    # input: [0, 1, 2, 3, 4]
-    # i=0 (even): take input[0] = 0
-    # i=1 (odd): take input[2] = 2 (Wait? code says take next=idx+1? i=1 -> next=2. Yes.)
-    # i=2 (even): take input[2] = 2
-    # i=3 (odd): take input[4] = 4
     input_data = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
-    # i=0: in[0] = 0.0
-    # i=1: in[2] = 2.0
-    # i=2: in[2] = 2.0
-    # i=3: in[4] = 4.0
     expected = [0.0, 2.0, 2.0, 4.0]
     result = run_kernel_1d_float(binary_select_ptr_single, input_data, "select_ptr_single")
     assert result[:4] == pytest.approx(expected)

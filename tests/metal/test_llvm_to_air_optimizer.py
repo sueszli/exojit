@@ -6,7 +6,7 @@ from backend_metal import create_compute_pipeline, execute_kernel
 
 from .utils import Metal, llvm_to_metallib
 
-# params[i] -= learning_rate * gradients[i]
+# sgd
 LLVM_IR_SGD_BASIC = """
 define void @sgd_basic(float* %params, float* %gradients, float %learning_rate, i32 %global_id) {
 entry:
@@ -53,7 +53,6 @@ def run_sgd_basic(binary, params, gradients, learning_rate):
 
     execute_kernel(device, pso, grid_size, threadgroup_size, encode_args)
 
-    # read back updated parameters
     output_ptr = buf_params.contents()
     output_buffer = output_ptr.as_buffer(len(params) * 4)
     results_view = memoryview(output_buffer).cast("f")
@@ -66,13 +65,6 @@ def binary_sgd_basic():
 
 
 def test_sgd_basic_simple(binary_sgd_basic):
-    # params = [1.0, 2.0, 3.0, 4.0]
-    # gradients = [0.1, 0.2, 0.3, 0.4]
-    # lr = 0.1
-    # expected: params[i] -= 0.1 * gradients[i]
-    # = [1.0 - 0.01, 2.0 - 0.02, 3.0 - 0.03, 4.0 - 0.04]
-    # = [0.99, 1.98, 2.97, 3.96]
-
     params = [1.0, 2.0, 3.0, 4.0]
     gradients = [0.1, 0.2, 0.3, 0.4]
     learning_rate = 0.1
@@ -88,7 +80,7 @@ def test_sgd_basic_zero_gradients(binary_sgd_basic):
     gradients = [0.0, 0.0, 0.0, 0.0]
     learning_rate = 0.1
 
-    expected = [1.0, 2.0, 3.0, 4.0]  # No change
+    expected = [1.0, 2.0, 3.0, 4.0]
 
     result = run_sgd_basic(binary_sgd_basic, params, gradients, learning_rate)
     assert result == pytest.approx(expected, rel=1e-5)
@@ -99,16 +91,13 @@ def test_sgd_basic_negative_gradients(binary_sgd_basic):
     gradients = [-0.1, -0.2, -0.3, -0.4]
     learning_rate = 0.1
 
-    # params[i] -= lr * grad[i]
-    # = params[i] -= 0.1 * (-grad[i])
-    # = params[i] + 0.1 * abs(grad[i])
     expected = [1.01, 2.02, 3.03, 4.04]
 
     result = run_sgd_basic(binary_sgd_basic, params, gradients, learning_rate)
     assert result == pytest.approx(expected, rel=1e-5)
 
 
-# sgd with momentum: velocity = momentum * velocity + grad; param -= lr * velocity
+# sgd with momentum
 LLVM_IR_SGD_MOMENTUM = """
 define void @sgd_momentum(float* %params, float* %gradients, float* %velocity, float %learning_rate, float %momentum, i32 %global_id) {
 entry:
@@ -190,9 +179,7 @@ def test_sgd_momentum_simple(binary_sgd_momentum):
     learning_rate = 0.1
     momentum = 0.9
 
-    # expected velocity: 0.9 * 0.0 + grad = grad
     expected_velocity = [0.1, 0.2, 0.3, 0.4]
-    # expected params: param - lr * velocity
     expected_params = [0.99, 1.98, 2.97, 3.96]
 
     result_params, result_velocity = run_sgd_momentum(binary_sgd_momentum, params, gradients, velocity, learning_rate, momentum)
@@ -217,7 +204,7 @@ def test_sgd_momentum_with_existing_velocity(binary_sgd_momentum):
     assert result_velocity == pytest.approx(expected_velocity, rel=1e-5)
 
 
-# sgd with weigh decay: params[i] -= lr * (gradients[i] + weight_decay * params[i])
+# sgd with weight decay
 LLVM_IR_SGD_WEIGHT_DECAY = """
 define void @sgd_weight_decay(float* %params, float* %gradients, float %learning_rate, float %weight_decay, i32 %global_id) {
 entry:

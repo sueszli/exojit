@@ -7,8 +7,7 @@ from backend_metal import create_compute_pipeline, execute_kernel
 
 from .utils import Metal, llvm_to_metallib
 
-# logistic regression forward pass: y = sigmoid(w * x + b)
-# sigmoid(z) = 1 / (1 + exp(-z))
+# y = sigmoid(w * x + b)
 LLVM_IR_LOGISTIC_FORWARD = """
 declare float @llvm.exp.f32(float)
 
@@ -84,7 +83,6 @@ def test_logistic_forward_zero_input(binary_logistic_forward):
     w = [1.0]
     b = [0.0]
 
-    # sigmoid(0) = 0.5
     expected = [0.5, 0.5, 0.5, 0.5]
 
     result = run_logistic_forward(binary_logistic_forward, x, w, b)
@@ -118,7 +116,6 @@ def test_logistic_forward_with_bias(binary_logistic_forward):
     w = [2.0]
     b = [-3.0]
 
-    # z = 2*x - 3 = [-1, 1, 3, 5]
     expected = [sigmoid(-1.0), sigmoid(1.0), sigmoid(3.0), sigmoid(5.0)]
 
     result = run_logistic_forward(binary_logistic_forward, x, w, b)

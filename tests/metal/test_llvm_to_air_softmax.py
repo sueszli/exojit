@@ -4,9 +4,7 @@ import pytest
 
 from .utils import llvm_to_metallib, run_kernel_1d_float
 
-#
-# softmax(x)[i] = exp(x[i]) / sum(exp(x[j]) for all j)
-#
+# softmax(x)[i] = exp(x[i]) / sum(exp(x))
 
 LLVM_IR_SOFTMAX = """
 declare float @llvm.exp.f32(float)
@@ -64,11 +62,6 @@ def binary_softmax():
 
 
 def test_softmax_simple(binary_softmax):
-    # Input: [0, 1, 2, 3]
-    # exp: [1, e, e^2, e^3]
-    # sum: 1 + e + e^2 + e^3
-    # softmax: [1/sum, e/sum, e^2/sum, e^3/sum]
-
     input_data = [0.0, 1.0, 2.0, 3.0]
     exp_vals = [math.exp(x) for x in input_data]
     sum_exp = sum(exp_vals)

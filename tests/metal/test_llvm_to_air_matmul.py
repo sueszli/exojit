@@ -81,8 +81,7 @@ def run_matmul(binary, A, B, M, N, K):
         encoder.setBytes_length_atIndex_(k_bytes, 4, 5)
 
     grid_size = Metal.MTLSize(M * N, 1, 1)
-    threadgroup_size = Metal.MTLSize(1, 1, 1)  # Simple execution
-
+    threadgroup_size = Metal.MTLSize(1, 1, 1)
     execute_kernel(device, pso, grid_size, threadgroup_size, encode_args)
 
     output_ptr = buf_c.contents()
@@ -97,14 +96,6 @@ def binary_matmul():
 
 
 def test_matmul_2x2(binary_matmul):
-    # A = [1, 2,
-    #      3, 4]
-    # B = [5, 6,
-    #      7, 8]
-    # C = [1*5+2*7, 1*6+2*8,
-    #      3*5+4*7, 3*6+4*8]
-    #   = [19, 22,
-    #      43, 50]
     A = [1.0, 2.0, 3.0, 4.0]
     B = [5.0, 6.0, 7.0, 8.0]
     M, N, K = 2, 2, 2

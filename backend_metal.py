@@ -34,8 +34,7 @@ from exojit import IRGenerator, JITRuntime, to_mlir
 
 
 def thread_grid(ir: LoopIR.proc) -> tuple[int, Sym, Sym, int, int]:
-    # the only supported shape: static f32 tensors, `for i in par(0, M): for j in par(0, N): <seq body>` writing only out[i, j]
-    # exo does not check that par loops are race-free outside its c backend, so disjoint writes are checked here
+    # exo skips race checks outside c backend
     for arg in ir.args:
         assert isinstance(arg.type, T.Tensor) and not arg.type.is_window and isinstance(arg.type.basetype(), T.F32) and all(isinstance(dim, LoopIR.Const) for dim in arg.type.shape()), f"metal backend: argument {arg.name} must be a static f32 tensor, got {arg.type}"
         assert all(isinstance(dim, LoopIR.Const) and isinstance(dim.val, int) and dim.val > 0 for dim in arg.type.shape()), f"metal backend: argument {arg.name} must have positive integer extents, got {arg.type}"
@@ -97,7 +96,7 @@ def thread_grid(ir: LoopIR.proc) -> tuple[int, Sym, Sym, int, int]:
 
 
 class MetalIRGenerator(IRGenerator):
-    # reuses the cpu lowering, but binds the two par loops of the grid to a trailing i32 gpu thread id
+    # par grid -> trailing i32 thread id
     def __init__(self, row: Sym, col: Sym, cols: int):
         super().__init__()
         self.row, self.col, self.cols = row, col, cols
@@ -105,18 +104,18 @@ class MetalIRGenerator(IRGenerator):
     def _stmt_for(self, for_stmt: LoopIR.For) -> None:
         if for_stmt.iter not in (self.row, self.col):
             return super()._stmt_for(for_stmt)
-        for stmt in for_stmt.body:  # one thread per iteration, the iterator is already bound to the thread id
+        for stmt in for_stmt.body:  # bound to thread id
             self._stmt(stmt)
 
     def generate(self, procs: list[LoopIR.proc]) -> ModuleOp:
-        # the kernel has no noalias arg attrs (to_air only parses bare `ptr %x` arguments) and there is no gpu heap, so no malloc/free
+        # bare ptr args for to_air, no gpu heap
         assert len(procs) == 1, "metal backend: a thread grid maps exactly one kernel procedure"
         proc = procs[0]
         input_types = [self._arg_type(arg, proc.body) for arg in proc.args] + [i32]
         region = Region(block := Block(arg_types=input_types))
         self.builder = Builder(insertion_point=InsertPoint.at_end(block))
         self.symbol_table = {arg.name: val for arg, val in zip(proc.args, block.args)}
-        thread_id = self._emit(llvm.ZExtOp(block.args[-1], i64))  # linear grid: row = id // cols, col = id % cols
+        thread_id = self._emit(llvm.ZExtOp(block.args[-1], i64))
         self.symbol_table[self.row] = self._emit(llvm.UDivOp(thread_id, self._int_const(self.cols)))
         self.symbol_table[self.col] = self._emit(llvm.URemOp(thread_id, self._int_const(self.cols)))
         for stmt in proc.body:
@@ -128,28 +127,26 @@ class MetalIRGenerator(IRGenerator):
 
 
 def kernel_to_air(proc: Procedure) -> str:
-    # exo -> llvm dialect (cpu lowering + grid) -> llvm ir text (xdsl) -> air text. pure translation, no metal toolchain or pyobjc needed
     out, row, col, _, cols = thread_grid(proc._loopir_proc)
-    llvm_module = convert_module(to_mlir(proc, MetalIRGenerator(row, col, cols)), fallback_target_triple="air64-apple-macosx")  # to_air replaces the triple and datalayout
+    llvm_module = convert_module(to_mlir(proc, MetalIRGenerator(row, col, cols)), fallback_target_triple="air64-apple-macosx")  # to_air replaces triple
     kernel_args = llvm_module.get_global(proc.name()).args
-    overrides = {proc.name(): {kernel_args[out].name: "out", kernel_args[-1].name: "id"}}  # to_air derives read_write access and thread_position_in_grid from these names
+    overrides = {proc.name(): {kernel_args[out].name: "out", kernel_args[-1].name: "id"}}  # names drive air abi
     return to_air(str(llvm_module), kernel_overrides=overrides)
 
 
 def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
-    # exo -> air (kernel_to_air) -> metallib (xcrun) -> metal pipeline, wrapped by the cpu jit's argument conversion
     assert not raw, "raw=True is not supported by the metal backend"
     ir = proc._loopir_proc
-    out, _, _, rows, cols = thread_grid(ir)  # reject before compiling or importing optional deps
+    out, _, _, rows, cols = thread_grid(ir)  # reject before optional imports
 
     def compile_kernel(proc: Procedure, ffi: FFI) -> Callable[..., None]:
-        metal = import_module("Metal")  # optional dep, only loaded on the metal path
+        metal = import_module("Metal")  # lazy
         device, pso = create_compute_pipeline(compile_to_metallib(kernel_to_air(proc)), proc.name())
         sizes = [4 * math.prod(dim.val for dim in arg.type.shape()) for arg in ir.args]
         threads = rows * cols
 
         def run(*ptrs: int) -> None:
-            # buffer index i is kernel argument i, the trailing thread id is not a buffer
+            # trailing thread id isn't a buffer
             buffers = [device.newBufferWithBytes_length_options_(ffi.buffer(ffi.cast("char *", ptr), size)[:], size, metal.MTLResourceStorageModeShared) for ptr, size in zip(ptrs, sizes, strict=True)]
             assert all(buffer is not None for buffer in buffers), "metal backend: buffer allocation failed"
 
@@ -170,7 +167,7 @@ def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
 # ===----------------------------------------------------------------------=== #
 
 
-# the air module header and footer must match the local metal toolchain, with fallbacks so translation also runs off macos
+# match local toolchain, fallback off macos
 
 
 def get_mac_version() -> str:
@@ -178,7 +175,7 @@ def get_mac_version() -> str:
 
 
 def metal_probe_cmd() -> list[str] | None:
-    # metadata probes only run on macos with metal on PATH, through the same selected xcrun toolchain as compile_to_metallib
+    # same xcrun toolchain as compile
     if platform.system() != "Darwin" or not (metal := shutil.which("metal")):
         return None
     return ["xcrun", "-sdk", "macosx", "metal"] if shutil.which("xcrun") else [metal]
@@ -208,9 +205,8 @@ def get_target_datalayout() -> str:
 
 @cache
 def metal_toolchain_env() -> dict[str, str]:
-    # subprocess env for xcrun, os.environ itself is never mutated. xcode-select often points at the command line tools,
-    # which lack the metal compiler: an explicit DEVELOPER_DIR is respected as is, otherwise the first full /Applications/Xcode*.app with metal is used
-    # the translator emits air 2.7 (see the !air.version metadata), newer compilers target air 2.8 unless the deployment target is macos 15
+    # clts lack metal -> DEVELOPER_DIR, then Xcode*.app
+    # air 2.7 needs macos 15 target
     env = {**os.environ, "MACOSX_DEPLOYMENT_TARGET": os.environ.get("MACOSX_DEPLOYMENT_TARGET") or "15.0"}
 
     def has_metal(**overrides: str) -> bool:
@@ -232,31 +228,12 @@ def metal_toolchain_env() -> dict[str, str]:
 # ===----------------------------------------------------------------------=== #
 
 
-# `llvm ir` -> `air llvm` lowering: rewrite plain llvm kernels into the dialect the metal backend accepts
-#
-# air is textual llvm ir plus apple's gpu abi: addrspace-qualified pointers, constant buffers for scalars,
-# air.* intrinsics and !air.* metadata that binds each argument to a buffer slot. none of this exists in the input,
-# so it is reconstructed from argument names and per-function addrspace tracking with regex text rewrites.
-#
-# pipeline order matters:
-# ----------------------
-#     1. signature      - buffers become addrspace(1|3) pointers, scalars become addrspace(2) constant buffers
-#     2. instructions   - per-line rewrites that consume the addrspace map produced by the signature
-#     3. metadata       - declarations and !air.* nodes, emitted last because they need every kernel and intrinsic seen
-#
-# example (signature + entry, scalar %n is loaded once and its uses renamed to %val_n):
-# ------------------------------------------------------------------------------------
-#     define void @k(float* %out, i32 %n, i32 %id) {
-#     entry:
-#     =>
-#     define void @k(float addrspace(1)* nocapture noundef "air-buffer-no-alias" %out, i32 addrspace(2)* nocapture noundef readonly align 4 dereferenceable(4) "air-buffer-no-alias" %n, i32 %id) #0 {
-#     entry:
-#       %val_n = load i32, i32 addrspace(2)* %n, align 4
+# order: signature -> instructions -> metadata
 
 
 KernelArg = tuple[str, str, bool]  # (air type, semantic name, is output)
 
-# thread position args stay plain values in addrspace 0, the signature and the metadata must agree on these names
+# addrspace 0, shared with metadata
 GRID_POSITION_NAMES = ("id", "gid", "global_id")
 THREADGROUP_POSITION_NAMES = ("tid", "lid", "local_id")
 
@@ -265,13 +242,8 @@ AIR_TO_LLVM_TYPES = {air: llvm for llvm, air in LLVM_TO_AIR_TYPES.items()}
 
 
 def get_type_info(type_str: str) -> tuple[str, int, int] | None:
-    # maps llvm type to (name, size, align) tuple.
-    # examples:
-    #   "i32" -> ("int", 4, 4)
-    #   "<4 x float>" -> ("float", 16, 16)
     t = type_str.strip()
 
-    # vector types: <N x type>, aligned to their full size
     if t.startswith("<") and t.endswith(">") and (match := re.search(r"<\s*(\d+)\s+x\s+([\w\d\.]+)\s*>", t)):
         info = get_type_info(match.group(2))
         assert info is not None, f"unsupported vector element type: {t}"
@@ -279,7 +251,7 @@ def get_type_info(type_str: str) -> tuple[str, int, int] | None:
         total_size = elem_size * int(match.group(1))
         return (base_name, total_size, total_size)
 
-    # substring match in order, so pointer spellings resolve to their element and bare opaque `ptr` defaults to float
+    # ordered substring match, bare ptr -> float
     scalars = [("double", ("double", 8, 8)), ("float", ("float", 4, 4)), ("i64", ("long", 8, 8)), ("i32", ("int", 4, 4)), ("i16", ("short", 2, 2)), ("i8", ("char", 1, 1)), ("ptr", ("float", 4, 4))]
     return next((info for key, info in scalars if key in t), None)
 
@@ -287,7 +259,6 @@ def get_type_info(type_str: str) -> tuple[str, int, int] | None:
 class SignatureParser:
     @staticmethod
     def parse(lines: list[str], start_idx: int, kernel_overrides: dict[str, dict[str, str]] | None = None) -> tuple[str, list[KernelArg], str, int, dict[str, int], dict[str, str]]:
-        # rewrites one `define void` header and returns the per-function state the body rewrite consumes
         pkg, idx = SignatureParser._read_signature_lines(lines, start_idx)
 
         sig_match = re.search(r"define\s+void\s+@\"?([\w\.]+)\"?\s*\((.*?)\).*?{", pkg, re.DOTALL)
@@ -304,7 +275,6 @@ class SignatureParser:
 
     @staticmethod
     def _read_signature_lines(lines: list[str], start_idx: int) -> tuple[str, int]:
-        # handles multi-line function signatures
         pkg = lines[start_idx]
         i = start_idx
         while "{" not in pkg:
@@ -323,7 +293,7 @@ class SignatureParser:
             a_type = " ".join(type_parts)
             name_no_prefix = clean_name.replace("%", "").replace('"', "")
 
-            # overrides give generated names like %0 a semantic role, the metadata generator keys off the semantic name
+            # metadata keys off semantic name
             semantic_name = (arg_map or {}).get(name_no_prefix, name_no_prefix)
             res_type, is_output, sig_part = SignatureParser._process_single_argument(a_type, clean_name, semantic_name, var_addrspaces, scalar_loads)
             new_sig_parts.append(sig_part)
@@ -338,13 +308,13 @@ class SignatureParser:
 
     @staticmethod
     def _process_buffer_argument(a_type: str, clean_name: str, name_no_prefix: str, var_addrspaces: dict[str, int]) -> tuple[str, bool, str]:
-        # llvm ir has no memory or access qualifiers, so threadgroup memory and read_write outputs are inferred from names
+        # no qualifiers in llvm ir -> infer from names
         as_id = 3 if "shared" in clean_name else 1
         var_addrspaces[clean_name] = as_id
         is_output = any(x in clean_name.lower() for x in ["out", "result"]) or clean_name in ["%C", "%c"] or name_no_prefix in ["out", "result"]
 
         res_type = a_type
-        if a_type == "ptr":  # default to float for opaque pointers
+        if a_type == "ptr":  # opaque -> float
             res_type = f"float addrspace({as_id})*"
         elif "addrspace" not in a_type:
             res_type = a_type.replace("*", f" addrspace({as_id})*")
@@ -358,7 +328,7 @@ class SignatureParser:
             var_addrspaces[clean_name] = 0
             return a_type, False, f"{a_type} {clean_name}"
 
-        # metal binds scalar kernel args as constant buffers (addrspace 2), the body reads them through one load at entry
+        # scalars -> constant buffers, loaded at entry
         base_type = a_type.strip()
         ptr_type = f"{base_type} addrspace(2)*"
         info = get_type_info(base_type)
@@ -374,7 +344,7 @@ class SignatureParser:
 class IntrinsicHandler:
     @staticmethod
     def handle_type_casts(line: str, used_intrinsics: set[str]) -> str:
-        # the metal backend rejects raw int<->float cast opcodes, they must become air.convert calls
+        # metal rejects raw int<->float casts
         conversions = [("uitofp", "@air.convert.f.{dst}.u.{src}", "tail call fast"), ("sitofp", "@air.convert.f.{dst}.s.{src}", "tail call fast"), ("fptoui", "@air.convert.u.{dst}.f.{src}", "tail call"), ("fptosi", "@air.convert.s.{dst}.f.{src}", "tail call")]
         for opcode, intr_template, call_attrs in conversions:
             if not (match := re.search(rf"(%\S+)\s*=\s*{opcode}\s+(\S+)\s+(%\S+)\s+to\s+(\S+)", line)):
@@ -403,11 +373,11 @@ class MetadataGenerator:
     def emit(kernels: list[tuple[str, list[KernelArg]]], used_intrinsics: set[str], metal_version_str: str | None = None) -> list[str]:
         lines = ["\ndeclare void @air.wg.barrier(i32, i32) local_unnamed_addr #1"]
 
-        # sorted so repeated translations of the same input are byte-identical
+        # sorted for deterministic output
         for intr in sorted(used_intrinsics):
             lines.extend(MetadataGenerator._emit_intrinsic_decl(intr))
 
-        # #0 tags kernel definitions, #1 the barrier declaration, #2 intrinsic declarations and barrier call sites
+        # #0 kernels, #1 barrier decl, #2 intrinsics
         lines.append('attributes #0 = { mustprogress nofree norecurse nosync nounwind willreturn "approx-func-fp-math"="true" "frame-pointer"="all" "min-legal-vector-width"="0" "no-builtins" "no-infs-fp-math"="true" "no-nans-fp-math"="true" "no-signed-zeros-fp-math"="true" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "unsafe-fp-math"="true" }')
         lines.append("attributes #1 = { convergent mustprogress nounwind willreturn }")
         lines.append("attributes #2 = { convergent nounwind willreturn }")
@@ -419,13 +389,13 @@ class MetadataGenerator:
     @staticmethod
     def _emit_intrinsic_decl(intr: str) -> list[str]:
         if "air.convert" in intr:
-            # @air.convert.f.f32.u.i32 -> [f, f32, u, i32], index 1 is the dest type and index 3 the src type
+            # [kind, dst, kind, src]
             parts = intr.replace("@air.convert.", "").split(".")
             ret_type = AIR_TO_LLVM_TYPES.get(parts[1], parts[1])
             arg_type = AIR_TO_LLVM_TYPES.get(parts[3], parts[3])
             return [f"declare {ret_type} {intr}({arg_type}) #2"]
 
-        # binary ops are checked first because "fmax" contains "fma"
+        # "fmax" contains "fma"
         arg_types = "(float, float)" if any(x in intr for x in ["pow", "fmin", "fmax"]) else "(float, float, float)" if "fma" in intr else "(float)"
         name = intr.replace("@", "")
         return [f"declare float @{name}{arg_types} #2"]
@@ -434,7 +404,7 @@ class MetadataGenerator:
     def _generate_kernel_metadata(kernels: list[tuple[str, list[KernelArg]]], metal_version_str: str | None = None) -> list[str]:
         lines: list[str] = []
 
-        # every line here is one numbered node, so the next node id is the line count
+        # node id = line count
         def m(content: str) -> str:
             lines.append(f"!{len(lines)} = {content}")
             return f"!{len(lines) - 1}"
@@ -442,7 +412,7 @@ class MetadataGenerator:
         kernel_nodes = []
         for func_name, args_list in kernels:
             arg_meta_refs = []
-            # buffer slots: device(1) and constant(2) share one location counter, threadgroup(3) has its own
+            # device + constant share slots
             loc_indices = {1: 0, 3: 0}
             for idx, (at, an, is_out) in enumerate(args_list):
                 content, as_id = MetadataGenerator._get_air_metadata_content(at, an, is_out)
@@ -464,7 +434,7 @@ class MetadataGenerator:
         metal_ver = m('!{!"Metal", i32 3, i32 2, i32 0}')
         src_file = m('!{!"input.ll"}')
 
-        # named metadata goes before the numbered nodes it references
+        # named metadata first
         top_meta = [f"!air.kernel = !{{{', '.join(kernel_nodes)}}}", f"!air.compile_options = !{{{', '.join(desc_refs[:3])}}}", f"!llvm.ident = !{{{desc_refs[3]}}}", f"!air.version = !{{{version}}}", f"!air.language_version = !{{{metal_ver}}}", f"!air.source_file_name = !{{{src_file}}}", ""]
         return top_meta + lines
 
@@ -482,11 +452,11 @@ class MetadataGenerator:
         assert info is not None, f"unsupported buffer element type: {base_t_str}"
         base_name, size, align = info
 
-        # TODO: hacky "magic string" dependency, fix at MLIR lowering phase
+        # TODO: magic strings, fix in mlir lowering
         as_id = 3 if "addrspace(3)" in arg_type else (2 if "addrspace(2)" in arg_type else 1)
         access_mode = '!"air.read"' if (as_id == 2 or not is_output) else '!"air.read_write"'
 
-        # {loc_index} is filled in by the caller, which owns the per-kernel slot counters
+        # caller fills {loc_index}
         meta_parts = ['!"air.buffer"', '!"air.location_index", i32 {loc_index}, i32 1', access_mode, f'!"air.address_space", i32 {as_id}', f'!"air.arg_type_size", i32 {size}', f'!"air.arg_type_align_size", i32 {align}', f'!"air.arg_type_name", !"{base_name}"']
         if as_id == 2:
             meta_parts.insert(1, f'!"air.buffer_size", i32 {size}')
@@ -504,7 +474,7 @@ class AirTranslator:
     kernels: list[tuple[str, list[KernelArg]]]
     kernel_overrides: dict[str, dict[str, str]] | None
     used_intrinsics: set[str]
-    # per-function state, replaced by SignatureParser.parse at every `define void`
+    # reset per function
     var_addrspaces: dict[str, int]
     scalar_loads: dict[str, str]
 
@@ -521,7 +491,7 @@ class AirTranslator:
         self.output_lines.append(f'target datalayout = "{get_target_datalayout()}"')
         self.output_lines.append(f'target triple = "air64_v27-apple-macosx{get_mac_version()}"\n')
 
-        # only kernels, comments and labels survive at module scope
+        # drop non-kernel globals
         i = 0
         while i < len(self.lines):
             line = self.lines[i]
@@ -547,7 +517,7 @@ class AirTranslator:
             self.output_lines.append("}")
             return idx + 1
 
-        # scalar loads must follow the entry label, a label cannot come after instructions in its block
+        # loads after entry label
         if has_line and self.lines[idx].strip().endswith(":"):
             self.output_lines.append(self.lines[idx])
             idx += 1
@@ -583,11 +553,11 @@ class AirTranslator:
         return idx
 
     def _convert_instruction(self, line: str) -> str:
-        # any barrier call becomes a threadgroup barrier that fences threadgroup memory (mem_flags 2)
+        # mem_flags 2 = threadgroup memory
         if "call" in line and "barrier" in line:
             return "  tail call void @air.wg.barrier(i32 2, i32 1) #2"
 
-        # pointer rewrites must precede propagation, which reads the addrspace(N) they just inserted
+        # pointer rewrites before propagation
         line = IntrinsicHandler.handle_type_casts(line, self.used_intrinsics)
         line = IntrinsicHandler.replace_intrinsics(line, self.used_intrinsics)
         line = self._rewrite_pointers(line)
@@ -607,37 +577,27 @@ class AirTranslator:
         def replacer(m: re.Match[str]) -> str:
             var_part = m.group(1)
             as_id = self.var_addrspaces.get(var_part, 0)
-            # assume float for opaque pointers
             return f"float addrspace({as_id})* {var_part}" if as_id > 0 else m.group(0)
 
         return re.sub(r"\bptr\s+(%[\w\.\"]+)", replacer, line)
 
     def _propagate_address_spaces(self, line: str) -> None:
-        # pointers derived via gep/bitcast/select inherit their base's addrspace so later loads/stores get rewritten too
+        # derived pointers inherit addrspace
         if "=" not in line or not (lhs_match := re.search(r"(%[\w\.\"]+)\s*=", line)):
             return
         if not any(x in line for x in ["getelementptr", "bitcast", "select"]):
             return
-        # addrspace(N)* | ptr addrspace(N)
         if as_match := re.search(r"addrspace\((\d+)\)", line):
             self.var_addrspaces[lhs_match.group(1)] = int(as_match.group(1))
 
     def _apply_scalar_loads(self, line: str) -> str:
         for param_name, loaded_var in self.scalar_loads.items():
-            # use word boundaries to avoid partial replacements
             line = re.sub(re.escape(param_name) + r"\b", loaded_var, line)
         return line
 
 
 def to_air(llvm_ir_text: str, kernel_overrides: dict[str, dict[str, str]] | None = None) -> str:
-    # llvm ir text -> air llvm text
-    #
-    # kernel_overrides renames arguments per kernel ({kernel: {raw arg name: semantic name}}) for generators
-    # like mlir or tvm that emit non-semantic names. the semantic name drives the abi:
-    #
-    #     define void @vector_add(float* %0, float* %1, float* %2, i32 %3) { ... }
-    #     kernel_overrides = {"vector_add": {"2": "out", "3": "gid"}}
-    #     =>  %2 is a read_write buffer, %3 gets air.thread_position_in_grid metadata
+    # overrides: {kernel: {raw name: semantic name}}
     assert llvm_ir_text
     return AirTranslator(llvm_ir_text, kernel_overrides).translate()
 
@@ -656,7 +616,7 @@ def compile_to_metallib(air_llvm_ir: str) -> bytes:
     with tempfile.NamedTemporaryFile(suffix=".ll") as f_ll, tempfile.NamedTemporaryFile(suffix=".air") as f_air, tempfile.NamedTemporaryFile(suffix=".metallib") as f_lib:
         f_ll.write(air_llvm_ir.encode("utf-8"))
         f_ll.flush()
-        # argv lists, no shell: temp paths with spaces or shell metacharacters stay single arguments. the linker only runs after a successful compile
+        # argv, no shell
         steps = (("metal", ["xcrun", "-sdk", "macosx", "metal", "-x", "ir", "-c", f_ll.name, "-o", f_air.name]), ("metallib", ["xcrun", "-sdk", "macosx", "metallib", f_air.name, "-o", f_lib.name]))
         for tool, cmd in steps:
             result = subprocess.run(cmd, check=False, capture_output=True, text=True, env=env)
@@ -666,25 +626,22 @@ def compile_to_metallib(air_llvm_ir: str) -> bytes:
         return lib_data
 
 
-# pyobjc is imported on first runtime call, so translation and metallib builds work without it
-@cache  # one pipeline per (metallib, kernel), repeated dispatches reuse it
+@cache  # reused across dispatches
 def create_compute_pipeline(metallib_binary: bytes, kernel_name: str):
     device = import_module("Metal").MTLCreateSystemDefaultDevice()
     assert device, "metal not supported on this device"
 
-    # newLibraryWithData_error_ takes a dispatch_data_t, built here through libdispatch via ctypes
+    # library needs dispatch_data_t
     libdispatch = ctypes.CDLL(ctypes.util.find_library("dispatch") or "/usr/lib/system/libdispatch.dylib")
-    # dispatch_data_create(const void *buffer, size_t size, dispatch_queue_t queue, dispatch_block_t destructor)
     libdispatch.dispatch_data_create.restype = ctypes.c_void_p
     libdispatch.dispatch_data_create.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]
 
-    # a NULL destructor makes libdispatch copy the bytes, so c_data may be freed when this function returns
+    # null destructor copies bytes
     data_len = len(metallib_binary)
     c_data = ctypes.create_string_buffer(metallib_binary, data_len)
     dispatch_data = libdispatch.dispatch_data_create(c_data, data_len, None, None)
     assert dispatch_data, "failed to create dispatch_data"
 
-    # bridge c_void_p to object for PyObjC
     ns_dispatch_data = import_module("objc").objc_object(c_void_p=dispatch_data)
     library, error = device.newLibraryWithData_error_(ns_dispatch_data, None)
     assert library, f"error loading library: {error}"
@@ -705,13 +662,13 @@ def execute_kernel(device, pso, grid_size, threadgroup_size, encode_args_fn: Cal
     encoder = cmd_buffer.computeCommandEncoder()
     assert encoder, "failed to create compute command encoder"
 
-    # buffer bindings are kernel-specific, so the caller encodes them between pipeline selection and dispatch
+    # caller binds buffers
     encoder.setComputePipelineState_(pso)
     encode_args_fn(encoder)
     encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
     encoder.endEncoding()
 
-    # timing covers commit to completion, encoding above is excluded
+    # excludes encoding
     start_time = time.perf_counter()
     cmd_buffer.commit()
     cmd_buffer.waitUntilCompleted()
