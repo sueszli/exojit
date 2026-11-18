@@ -49,16 +49,25 @@ def metal_matmul(C: f32[37, 41] @ DRAM, A: f32[37, 7] @ DRAM, B: f32[7, 41] @ DR
 
 A = [[float((i + 2 * k) % 5 - 2) for k in range(7)] for i in range(37)]
 B = [[float((3 * k + j) % 7 - 3) for j in range(41)] for k in range(7)]
+# nonzero sentinel catches missing zeroing
 C_cpu, C_gpu = [[0.5] * 41 for _ in range(37)], [[0.5] * 41 for _ in range(37)]
+
+# temp files must honor TMPDIR
 assert os.path.samefile(tempfile.gettempdir(), os.environ.get("TMPDIR", tempfile.gettempdir()))
 print(kernel_to_air(metal_matmul))
+
 jit(metal_matmul)(C_cpu, A, B)
+
+# wraps keeps the real GPU submission
 with patch("backend_metal.execute_kernel", wraps=execute_kernel) as dispatch:
     jit(metal_matmul, backend="metal")(C_gpu, A, B)
+
 assert dispatch.call_count == 1
 device, pipeline, grid, group, _ = dispatch.call_args.args
 assert device.name().startswith("Apple") and pipeline.threadExecutionWidth() > 1
 assert (grid.width, grid.height, grid.depth) == (37 * 41, 1, 1) and group.width > 1
+
+# independent reference, not either backend
 reference = [[sum(A[i][k] * B[k][j] for k in range(7)) for j in range(41)] for i in range(37)]
 assert C_gpu == C_cpu == reference
 print("gpu", *(f"{v:g}" for v in (C_gpu[0][0], C_gpu[0][40], C_gpu[36][0], C_gpu[36][40], sum(map(sum, C_gpu)))))
