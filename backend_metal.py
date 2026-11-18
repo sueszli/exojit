@@ -104,7 +104,7 @@ class MetalIRGenerator(IRGenerator):
     def _stmt_for(self, for_stmt: LoopIR.For) -> None:
         if for_stmt.iter not in (self.row, self.col):
             return super()._stmt_for(for_stmt)
-        for stmt in for_stmt.body:  # bound to thread id
+        for stmt in for_stmt.body:
             self._stmt(stmt)
 
     def generate(self, procs: list[LoopIR.proc]) -> ModuleOp:
@@ -128,7 +128,7 @@ class MetalIRGenerator(IRGenerator):
 
 def kernel_to_air(proc: Procedure) -> str:
     out, row, col, _, cols = thread_grid(proc._loopir_proc)
-    llvm_module = convert_module(to_mlir(proc, MetalIRGenerator(row, col, cols)), fallback_target_triple="air64-apple-macosx")  # to_air replaces triple
+    llvm_module = convert_module(to_mlir(proc, MetalIRGenerator(row, col, cols)), fallback_target_triple="air64-apple-macosx")
     kernel_args = llvm_module.get_global(proc.name()).args
     overrides = {proc.name(): {kernel_args[out].name: "out", kernel_args[-1].name: "id"}}  # names drive air abi
     return to_air(str(llvm_module), kernel_overrides=overrides)
@@ -140,13 +140,12 @@ def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
     out, _, _, rows, cols = thread_grid(ir)  # reject before optional imports
 
     def compile_kernel(proc: Procedure, ffi: FFI) -> Callable[..., None]:
-        metal = import_module("Metal")  # lazy
+        metal = import_module("Metal")
         device, pso = create_compute_pipeline(compile_to_metallib(kernel_to_air(proc)), proc.name())
         sizes = [4 * math.prod(dim.val for dim in arg.type.shape()) for arg in ir.args]
         threads = rows * cols
 
         def run(*ptrs: int) -> None:
-            # trailing thread id isn't a buffer
             buffers = [device.newBufferWithBytes_length_options_(ffi.buffer(ffi.cast("char *", ptr), size)[:], size, metal.MTLResourceStorageModeShared) for ptr, size in zip(ptrs, sizes, strict=True)]
             assert all(buffer is not None for buffer in buffers), "metal backend: buffer allocation failed"
 
@@ -165,9 +164,6 @@ def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
 # ===----------------------------------------------------------------------=== #
 # toolchain probes
 # ===----------------------------------------------------------------------=== #
-
-
-# match local toolchain, fallback off macos
 
 
 def get_mac_version() -> str:
@@ -228,9 +224,6 @@ def metal_toolchain_env() -> dict[str, str]:
 # ===----------------------------------------------------------------------=== #
 
 
-# order: signature -> instructions -> metadata
-
-
 KernelArg = tuple[str, str, bool]  # (air type, semantic name, is output)
 
 # addrspace 0, shared with metadata
@@ -251,7 +244,7 @@ def get_type_info(type_str: str) -> tuple[str, int, int] | None:
         total_size = elem_size * int(match.group(1))
         return (base_name, total_size, total_size)
 
-    # ordered substring match, bare ptr -> float
+    # substring match, order matters
     scalars = [("double", ("double", 8, 8)), ("float", ("float", 4, 4)), ("i64", ("long", 8, 8)), ("i32", ("int", 4, 4)), ("i16", ("short", 2, 2)), ("i8", ("char", 1, 1)), ("ptr", ("float", 4, 4))]
     return next((info for key, info in scalars if key in t), None)
 
@@ -314,7 +307,7 @@ class SignatureParser:
         is_output = any(x in clean_name.lower() for x in ["out", "result"]) or clean_name in ["%C", "%c"] or name_no_prefix in ["out", "result"]
 
         res_type = a_type
-        if a_type == "ptr":  # opaque -> float
+        if a_type == "ptr":
             res_type = f"float addrspace({as_id})*"
         elif "addrspace" not in a_type:
             res_type = a_type.replace("*", f" addrspace({as_id})*")
@@ -328,7 +321,6 @@ class SignatureParser:
             var_addrspaces[clean_name] = 0
             return a_type, False, f"{a_type} {clean_name}"
 
-        # scalars -> constant buffers, loaded at entry
         base_type = a_type.strip()
         ptr_type = f"{base_type} addrspace(2)*"
         info = get_type_info(base_type)
@@ -373,7 +365,6 @@ class MetadataGenerator:
     def emit(kernels: list[tuple[str, list[KernelArg]]], used_intrinsics: set[str], metal_version_str: str | None = None) -> list[str]:
         lines = ["\ndeclare void @air.wg.barrier(i32, i32) local_unnamed_addr #1"]
 
-        # sorted for deterministic output
         for intr in sorted(used_intrinsics):
             lines.extend(MetadataGenerator._emit_intrinsic_decl(intr))
 
@@ -404,7 +395,6 @@ class MetadataGenerator:
     def _generate_kernel_metadata(kernels: list[tuple[str, list[KernelArg]]], metal_version_str: str | None = None) -> list[str]:
         lines: list[str] = []
 
-        # node id = line count
         def m(content: str) -> str:
             lines.append(f"!{len(lines)} = {content}")
             return f"!{len(lines) - 1}"
@@ -434,7 +424,6 @@ class MetadataGenerator:
         metal_ver = m('!{!"Metal", i32 3, i32 2, i32 0}')
         src_file = m('!{!"input.ll"}')
 
-        # named metadata first
         top_meta = [f"!air.kernel = !{{{', '.join(kernel_nodes)}}}", f"!air.compile_options = !{{{', '.join(desc_refs[:3])}}}", f"!llvm.ident = !{{{desc_refs[3]}}}", f"!air.version = !{{{version}}}", f"!air.language_version = !{{{metal_ver}}}", f"!air.source_file_name = !{{{src_file}}}", ""]
         return top_meta + lines
 
@@ -456,7 +445,6 @@ class MetadataGenerator:
         as_id = 3 if "addrspace(3)" in arg_type else (2 if "addrspace(2)" in arg_type else 1)
         access_mode = '!"air.read"' if (as_id == 2 or not is_output) else '!"air.read_write"'
 
-        # caller fills {loc_index}
         meta_parts = ['!"air.buffer"', '!"air.location_index", i32 {loc_index}, i32 1', access_mode, f'!"air.address_space", i32 {as_id}', f'!"air.arg_type_size", i32 {size}', f'!"air.arg_type_align_size", i32 {align}', f'!"air.arg_type_name", !"{base_name}"']
         if as_id == 2:
             meta_parts.insert(1, f'!"air.buffer_size", i32 {size}')
@@ -474,7 +462,6 @@ class AirTranslator:
     kernels: list[tuple[str, list[KernelArg]]]
     kernel_overrides: dict[str, dict[str, str]] | None
     used_intrinsics: set[str]
-    # reset per function
     var_addrspaces: dict[str, int]
     scalar_loads: dict[str, str]
 
@@ -491,7 +478,6 @@ class AirTranslator:
         self.output_lines.append(f'target datalayout = "{get_target_datalayout()}"')
         self.output_lines.append(f'target triple = "air64_v27-apple-macosx{get_mac_version()}"\n')
 
-        # drop non-kernel globals
         i = 0
         while i < len(self.lines):
             line = self.lines[i]
@@ -517,7 +503,6 @@ class AirTranslator:
             self.output_lines.append("}")
             return idx + 1
 
-        # loads after entry label
         if has_line and self.lines[idx].strip().endswith(":"):
             self.output_lines.append(self.lines[idx])
             idx += 1
@@ -582,7 +567,6 @@ class AirTranslator:
         return re.sub(r"\bptr\s+(%[\w\.\"]+)", replacer, line)
 
     def _propagate_address_spaces(self, line: str) -> None:
-        # derived pointers inherit addrspace
         if "=" not in line or not (lhs_match := re.search(r"(%[\w\.\"]+)\s*=", line)):
             return
         if not any(x in line for x in ["getelementptr", "bitcast", "select"]):
@@ -616,7 +600,6 @@ def compile_to_metallib(air_llvm_ir: str) -> bytes:
     with tempfile.NamedTemporaryFile(suffix=".ll") as f_ll, tempfile.NamedTemporaryFile(suffix=".air") as f_air, tempfile.NamedTemporaryFile(suffix=".metallib") as f_lib:
         f_ll.write(air_llvm_ir.encode("utf-8"))
         f_ll.flush()
-        # argv, no shell
         steps = (("metal", ["xcrun", "-sdk", "macosx", "metal", "-x", "ir", "-c", f_ll.name, "-o", f_air.name]), ("metallib", ["xcrun", "-sdk", "macosx", "metallib", f_air.name, "-o", f_lib.name]))
         for tool, cmd in steps:
             result = subprocess.run(cmd, check=False, capture_output=True, text=True, env=env)
@@ -626,12 +609,11 @@ def compile_to_metallib(air_llvm_ir: str) -> bytes:
         return lib_data
 
 
-@cache  # reused across dispatches
+@cache
 def create_compute_pipeline(metallib_binary: bytes, kernel_name: str):
     device = import_module("Metal").MTLCreateSystemDefaultDevice()
     assert device, "metal not supported on this device"
 
-    # library needs dispatch_data_t
     libdispatch = ctypes.CDLL(ctypes.util.find_library("dispatch") or "/usr/lib/system/libdispatch.dylib")
     libdispatch.dispatch_data_create.restype = ctypes.c_void_p
     libdispatch.dispatch_data_create.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]
@@ -662,13 +644,11 @@ def execute_kernel(device, pso, grid_size, threadgroup_size, encode_args_fn: Cal
     encoder = cmd_buffer.computeCommandEncoder()
     assert encoder, "failed to create compute command encoder"
 
-    # caller binds buffers
     encoder.setComputePipelineState_(pso)
     encode_args_fn(encoder)
     encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
     encoder.endEncoding()
 
-    # excludes encoding
     start_time = time.perf_counter()
     cmd_buffer.commit()
     cmd_buffer.waitUntilCompleted()
