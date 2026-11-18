@@ -8,6 +8,15 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "absl-py"
+version = "2.5.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1f/1d/58e2b5a6e4d703ccb2a029943d665974cb3d5a4fb2b3e3675dd03a9df10e/absl_py-2.5.1.tar.gz", hash = "sha256:286e71c82c1a38e75bbcf185f9b37d0305ad7786535107cb49bf4df9ff2e1f95", size = 118387, upload-time = "2026-10-09T08:38:58.037Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b3/7d/01e62f59e4166af1be6238d9f2b7f3453630c51b8044b412d05b5606532a/absl_py-2.5.1-py3-none-any.whl", hash = "sha256:721200f2f0e9960f2ca9dc3a2a706b201f5f75d812c158f059cbbe29eeafbdb8", size = 137673, upload-time = "2026-10-09T08:38:56.629Z" },
+]
+
+[[package]]
 name = "asdl"
 version = "0.1.5"
 source = { registry = "https://pypi.org/simple" }
@@ -175,48 +184,58 @@ source = { editable = "." }
 dependencies = [
     { name = "cffi" },
     { name = "exo-lang" },
-    { name = "filecheck" },
-    { name = "jax" },
-    { name = "lit" },
     { name = "llvmlite" },
-    { name = "numba" },
     { name = "numpy" },
+    { name = "pyobjc-framework-metal", marker = "sys_platform == 'darwin'" },
+    { name = "tyro" },
+    { name = "xdsl" },
+]
+
+[package.dev-dependencies]
+bench = [
+    { name = "jax" },
+    { name = "numba" },
+    { name = "optax" },
     { name = "plotnine" },
     { name = "polars" },
     { name = "pyarrow" },
-    { name = "pyobjc-core", marker = "sys_platform == 'darwin'" },
-    { name = "pyobjc-framework-metal", marker = "sys_platform == 'darwin'" },
-    { name = "pytest" },
-    { name = "pytest-forked" },
-    { name = "pytest-xdist" },
     { name = "torch" },
     { name = "tqdm" },
-    { name = "tyro" },
-    { name = "xdsl" },
+]
+dev = [
+    { name = "filecheck" },
+    { name = "lit" },
+    { name = "pytest" },
+    { name = "pytest-xdist" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "cffi" },
     { name = "exo-lang", git = "https://github.com/exo-lang/exo.git?rev=ec75d3c5b229b1519890f836e7badcd46b04c007" },
-    { name = "filecheck" },
-    { name = "jax" },
-    { name = "lit" },
     { name = "llvmlite" },
-    { name = "numba" },
     { name = "numpy" },
+    { name = "pyobjc-framework-metal", marker = "sys_platform == 'darwin'" },
+    { name = "tyro" },
+    { name = "xdsl", git = "https://github.com/xdslproject/xdsl.git?rev=ad4fb9c277a65993a1c988dfeea2b30c52b66db9" },
+]
+
+[package.metadata.requires-dev]
+bench = [
+    { name = "jax" },
+    { name = "numba" },
+    { name = "optax" },
     { name = "plotnine" },
     { name = "polars" },
     { name = "pyarrow" },
-    { name = "pyobjc-core", marker = "sys_platform == 'darwin'" },
-    { name = "pyobjc-framework-metal", marker = "sys_platform == 'darwin'" },
-    { name = "pytest" },
-    { name = "pytest-forked" },
-    { name = "pytest-xdist" },
     { name = "torch" },
     { name = "tqdm" },
-    { name = "tyro" },
-    { name = "xdsl", git = "https://github.com/xdslproject/xdsl.git?rev=ad4fb9c277a65993a1c988dfeea2b30c52b66db9" },
+]
+dev = [
+    { name = "filecheck" },
+    { name = "lit" },
+    { name = "pytest" },
+    { name = "pytest-xdist" },
 ]
 
 [[package]]
@@ -697,6 +716,21 @@ wheels = [
 ]
 
 [[package]]
+name = "optax"
+version = "0.2.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "absl-py" },
+    { name = "jax" },
+    { name = "jaxlib" },
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b1/45/103ec6ed4594cf8dec67e29ef3f72bb5530a86db4e28a354110e8fc8425b/optax-0.2.9.tar.gz", hash = "sha256:fcaa7e34c37ab2875c72d91e55374ff02a7ef6463b79fdb45bd3d65c6d4d61c5", size = 314052, upload-time = "2026-11-11T18:36:36.667Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/18/3ebc9263daccd4c41a5d90785f467eb24d450355f8c7089906d154677797/optax-0.2.9-py3-none-any.whl", hash = "sha256:ec037b3975685e2550f9cc4994feda1492162ff9b812a0ea5face18c8fdf2948", size = 416967, upload-time = "2026-11-11T18:36:35.084Z" },
+]
+
+[[package]]
 name = "ordered-set"
 version = "4.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -852,15 +886,6 @@ wheels = [
 ]
 
 [[package]]
-name = "py"
-version = "1.11.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/98/ff/fec109ceb715d2a6b4c4a85a61af3b40c723a961e8828319fbcb15b868dc/py-1.11.0.tar.gz", hash = "sha256:51c75c4126074b472f746a24399ad32f6053d1b34b68d2fa41e558e6f4a98719", size = 207796, upload-time = "2021-11-04T17:17:01.377Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f6/f0/10642828a8dfb741e5f3fbaac830550a518a775c7fff6f04a007259b0548/py-1.11.0-py2.py3-none-any.whl", hash = "sha256:607c53218732647dff4acdfcd50cb62615cedf612e72d1724fb1a0cc6405b378", size = 98708, upload-time = "2021-11-04T17:17:00.152Z" },
-]
-
-[[package]]
 name = "pyarrow"
 version = "23.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -969,19 +994,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d1/db/7ef3487e0fb0049ddb5ce41d3a49c235bf9ad299b6a25d5780a89f19230f/pytest-9.0.2.tar.gz", hash = "sha256:75186651a92bd89611d1d9fc20f0b4345fd827c41ccd5c299a868a05d70edf11", size = 1568901, upload-time = "2025-12-06T21:30:51.014Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3b/ab/b3226f0bd7cdcf710fbede2b3548584366da3b19b5021e74f5bde2a8fa3f/pytest-9.0.2-py3-none-any.whl", hash = "sha256:711ffd45bf766d5264d487b917733b453d917afd2b0ad65223959f59089f875b", size = 374801, upload-time = "2025-12-06T21:30:49.154Z" },
-]
-
-[[package]]
-name = "pytest-forked"
-version = "1.6.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "py" },
-    { name = "pytest" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/8c/c9/93ad2ba2413057ee694884b88cf7467a46c50c438977720aeac26e73fdb7/pytest-forked-1.6.0.tar.gz", hash = "sha256:4dafd46a9a600f65d822b8f605133ecf5b3e1941ebb3588e943b4e3eb71a5a3f", size = 9977, upload-time = "2023-02-12T23:22:27.544Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f4/af/9c0bda43e486a3c9bf1e0f876d0f241bc3f229d7d65d09331a0868db9629/pytest_forked-1.6.0-py3-none-any.whl", hash = "sha256:810958f66a91afb1a1e2ae83089d8dc1cd2437ac96b12963042fbb9fb4d16af0", size = 4897, upload-time = "2023-02-12T23:22:26.022Z" },
 ]
 
 [[package]]

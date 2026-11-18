@@ -18,7 +18,7 @@ lint:
 
 .PHONY: microgpt
 microgpt:
-	uv run python microgpt/exojit_impl.py
+	uv run --group bench python microgpt/exojit_impl.py
 
 .PHONY: tests
 tests:
@@ -31,22 +31,20 @@ precommit:
 	$(MAKE) precommit-hook
 	$(MAKE) fmt
 	$(MAKE) lint
-	uv run example.py
-	if [ "$$(uname -s)" = Darwin ]; then uv run example_metal.py; fi
-	$(MAKE) microgpt
+	uv run python example.py
+	if [ "$$(uname -s)" = Darwin ]; then uv run python example_metal.py; fi
 	$(MAKE) tests
 
 .PHONY: leaderboard
 leaderboard:
-	uv run python microgpt/utils.py
+	uv run --group bench python microgpt/utils.py
 
 .PHONY: benchmark
 benchmark:
-	uv sync
-	uv run python microgpt/original_impl.py
-	uv run python microgpt/plain_impl.py
-	uv run python microgpt/numpy_impl.py
-	uv run python microgpt/torch_impl.py
-	uv run python microgpt/jax_impl.py
-	uv run python microgpt/exojit_impl.py
-	uv run python microgpt/kernels/run.py
+	uv run --group bench python microgpt/original_impl.py
+	uv run --group bench python microgpt/plain_impl.py
+	uv run --group bench python microgpt/numpy_impl.py
+	uv run --group bench python microgpt/torch_impl.py
+	uv run --group bench python microgpt/jax_impl.py
+	uv run --group bench python microgpt/exojit_impl.py
+	uv run --group bench python microgpt/kernels/run.py

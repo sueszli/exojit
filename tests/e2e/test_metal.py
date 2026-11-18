@@ -1,5 +1,4 @@
 import os
-import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -10,11 +9,11 @@ from unittest.mock import patch
 import pytest
 from exo import *
 
-from backend_metal import get_target_datalayout, kernel_to_air, metal_toolchain_env
+from backend_metal import XCODE, check_matmul, kernel_to_air, metal_toolchain_env
 from exojit import jit
 
 ROOT = Path(__file__).resolve().parents[2]
-XCODE, CUSTOM = "/Applications/Xcode.app/Contents/Developer", "/opt/Xcode.app/Contents/Developer"
+CUSTOM = "/opt/Xcode 16;beta.app/Contents/Developer"
 
 
 @proc
@@ -27,68 +26,178 @@ def matmul(C: f32[2, 3] @ DRAM, A: f32[2, 4] @ DRAM, B: f32[4, 3] @ DRAM):
 
 
 @proc
-def racy(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM):
+def racy(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM, B: f32[2, 2] @ DRAM):
     for i in par(0, 2):
         for j in par(0, 2):
-            C[i, 0] += A[i, j]
+            C[i, j] = 0.0
+            for k in seq(0, 2):
+                C[i, 0] += A[i, k] * B[k, j]
 
 
 @proc
-def neighbor_read(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM):
+def wrong_init_cell(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM, B: f32[2, 2] @ DRAM):
     for i in par(0, 2):
         for j in par(0, 2):
-            C[i, j] = C[1 - i, j] + A[i, j]
+            C[i, 0] = 0.0
+            for k in seq(0, 2):
+                C[i, j] += A[i, k] * B[k, j]
 
 
 @proc
-def nested_par(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM):
+def wrong_init_value(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM, B: f32[2, 2] @ DRAM):
     for i in par(0, 2):
         for j in par(0, 2):
+            C[i, j] = 1.0
+            for k in seq(0, 2):
+                C[i, j] += A[i, k] * B[k, j]
+
+
+@proc
+def nonzero_start(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM, B: f32[2, 2] @ DRAM):
+    for i in par(0, 2):
+        for j in par(0, 2):
+            C[i, j] = 0.0
+            for k in seq(1, 2):
+                C[i, j] += A[i, k] * B[k, j]
+
+
+@proc
+def transposed_read(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM, B: f32[2, 2] @ DRAM):
+    for i in par(0, 2):
+        for j in par(0, 2):
+            C[i, j] = 0.0
+            for k in seq(0, 2):
+                C[i, j] += A[k, i] * B[k, j]
+
+
+@proc
+def neighbor_read(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM, B: f32[2, 2] @ DRAM):
+    for i in par(0, 2):
+        for j in par(0, 2):
+            C[i, j] = 0.0
+            for k in seq(0, 2):
+                C[i, j] += A[i, k] * C[1 - i, j]
+
+
+@proc
+def nested_par(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM, B: f32[2, 2] @ DRAM):
+    for i in par(0, 2):
+        for j in par(0, 2):
+            C[i, j] = 0.0
             for k in par(0, 2):
-                C[i, j] += A[i, k]
+                C[i, j] += A[i, k] * B[k, j]
 
 
 @proc
-def partial_grid(C: f32[4, 2] @ DRAM, A: f32[4, 2] @ DRAM):
+def extra_stmt(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM, B: f32[2, 2] @ DRAM):
+    for i in par(0, 2):
+        for j in par(0, 2):
+            C[i, j] = 0.0
+            for k in seq(0, 2):
+                C[i, j] += A[i, k] * B[k, j]
+            C[i, j] = A[i, j]
+
+
+@proc
+def accumulate(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM, B: f32[2, 2] @ DRAM):
+    for i in par(0, 2):
+        for j in par(0, 2):
+            for k in seq(0, 2):
+                C[i, j] += A[i, k] * B[k, j]
+
+
+@proc
+def partial_grid(C: f32[4, 2] @ DRAM, A: f32[4, 2] @ DRAM, B: f32[2, 2] @ DRAM):
+    for i in par(0, 2):
+        for j in par(0, 2):
+            C[i, j] = 0.0
+            for k in seq(0, 2):
+                C[i, j] += A[i, k] * B[k, j]
+
+
+@proc
+def seq_grid(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM, B: f32[2, 2] @ DRAM):
+    for i in seq(0, 2):
+        for j in par(0, 2):
+            C[i, j] = 0.0
+            for k in seq(0, 2):
+                C[i, j] += A[i, k] * B[k, j]
+
+
+@proc
+def bad_shapes(C: f32[2, 3] @ DRAM, A: f32[2, 4] @ DRAM, B: f32[5, 3] @ DRAM):
+    for i in par(0, 2):
+        for j in par(0, 3):
+            C[i, j] = 0.0
+            for k in seq(0, 4):
+                C[i, j] += A[i, k] * B[k, j]
+
+
+@proc
+def f64_matmul(C: f64[2, 2] @ DRAM, A: f64[2, 2] @ DRAM, B: f64[2, 2] @ DRAM):
+    for i in par(0, 2):
+        for j in par(0, 2):
+            C[i, j] = 0.0
+            for k in seq(0, 2):
+                C[i, j] += A[i, k] * B[k, j]
+
+
+@proc
+def scalar_arg(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM, s: f32):
+    for i in par(0, 2):
+        for j in par(0, 2):
+            C[i, j] = A[i, j] * s
+
+
+@proc
+def two_args(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM):
     for i in par(0, 2):
         for j in par(0, 2):
             C[i, j] = A[i, j]
 
 
 @proc
-def two_outputs(C: f32[2, 2] @ DRAM, D: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM):
-    for i in par(0, 2):
-        for j in par(0, 2):
-            C[i, j] = A[i, j]
-            D[i, j] = A[i, j]
-
-
-@proc
-def copy_f64(C: f64[2, 2] @ DRAM, A: f64[2, 2] @ DRAM):
-    for i in par(0, 2):
-        for j in par(0, 2):
-            C[i, j] = A[i, j]
-
-
-@proc
-def window(C: f32[2, 2] @ DRAM, A: f32[2, 2] @ DRAM):
-    for i in par(0, 2):
-        for j in par(0, 2):
-            row = A[i, :]
-            C[i, j] = row[j]
-
-
-@proc
-def too_many_threads(C: f32[65536, 65536] @ DRAM):
+def too_many_threads(C: f32[65536, 65536] @ DRAM, A: f32[65536, 1] @ DRAM, B: f32[1, 65536] @ DRAM):
     for i in par(0, 65536):
         for j in par(0, 65536):
             C[i, j] = 0.0
+            for k in seq(0, 1):
+                C[i, j] += A[i, k] * B[k, j]
 
 
-@pytest.mark.parametrize(("p", "match"), [(racy, "may only write"), (neighbor_read, "may only be read"), (nested_par, "nested inside the thread grid"), (partial_grid, "must span"), (two_outputs, "exactly one written argument"), (copy_f64, "static f32 tensor"), (window, "unsupported statement WindowStmt"), (too_many_threads, "uint32 thread id")])
-def test_metal_rejects_unsafe_procs(p, match):
+@pytest.mark.parametrize(
+    ("p", "match"),
+    [
+        (racy, "after the zero"),
+        (transposed_read, "after the zero"),
+        (neighbor_read, "after the zero"),
+        (nonzero_start, "after the zero"),
+        (wrong_init_cell, "accumulation is unsupported"),
+        (wrong_init_value, "accumulation is unsupported"),
+        (nested_par, "after the zero"),
+        (extra_stmt, "after the zero"),
+        (accumulate, "accumulation is unsupported"),
+        (partial_grid, "body must be `for i in par"),
+        (seq_grid, "body must be `for i in par"),
+        (bad_shapes, "shapes must be"),
+        (f64_matmul, "static f32"),
+        (scalar_arg, "static f32"),
+        (two_args, "matmul\\(out, A, B\\)"),
+        (too_many_threads, "uint32 thread id"),
+    ],
+)
+def test_metal_rejects_unsupported_procs(p, match, monkeypatch):
+    monkeypatch.setitem(sys.modules, "Metal", None)  # validation must precede optional imports
     with pytest.raises(AssertionError, match=match):
         jit(p, backend="metal")
+
+
+def test_metal_accepts_matmul_and_emits_air_without_toolchain():
+    assert check_matmul(matmul._loopir_proc)[:3] == (2, 3, 4)
+    with patch("backend_metal.subprocess.run", side_effect=AssertionError("unexpected subprocess")):
+        air = kernel_to_air(matmul)
+    assert 'target triple = "air64_v27-apple-macosx15.0.0"' in air and " ptr " not in air
+    assert air.count('!"air.read_write"') == 1 and '!"air.arg_name", !"out"' in air and '!"air.thread_position_in_grid"' in air
 
 
 def test_metal_rejects_raw_and_unknown_backends():
@@ -99,20 +208,9 @@ def test_metal_rejects_raw_and_unknown_backends():
 
 
 def test_metal_missing_pyobjc_fails_without_cpu_fallback(monkeypatch):
-    monkeypatch.setattr(platform, "system", lambda: "Darwin")
     monkeypatch.setitem(sys.modules, "Metal", None)  # None fails import
     with pytest.raises(ModuleNotFoundError, match="Metal"):
         jit(matmul, backend="metal")
-
-
-def test_off_mac_translation_ignores_metal_on_path():
-    get_target_datalayout.cache_clear()  # cached probe could hide subprocess
-    try:
-        with patch("backend_metal.platform.system", return_value="Linux"), patch("backend_metal.shutil.which", return_value="/usr/local/bin/metal"), patch("backend_metal.subprocess.run", side_effect=AssertionError("unexpected subprocess")):
-            air = kernel_to_air(matmul)
-    finally:
-        get_target_datalayout.cache_clear()
-    assert 'target triple = "air64_v27-apple-macosx' in air and air.count('!"air.read_write"') == 1 and '!"air.thread_position_in_grid"' in air
 
 
 def test_cpu_jit_never_imports_metal_deps(tmp_path):
@@ -120,7 +218,7 @@ def test_cpu_jit_never_imports_metal_deps(tmp_path):
     script.write_text(
         dedent("""
             import sys
-            sys.modules.update(dict.fromkeys(("Metal", "objc")))  # None blocks import
+            sys.modules.update(dict.fromkeys(("Metal", "Foundation", "objc")))  # None blocks import
             from exo import *
             from exojit import jit
 
@@ -141,21 +239,23 @@ def test_cpu_jit_never_imports_metal_deps(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("environ", "usable", "apps", "expected"),
+    ("environ", "usable", "expected"),
     [
-        ({}, {XCODE}, ["/Applications/Xcode.app"], {"DEVELOPER_DIR": XCODE, "MACOSX_DEPLOYMENT_TARGET": "15.0"}),
-        ({"DEVELOPER_DIR": CUSTOM, "MACOSX_DEPLOYMENT_TARGET": "26.0"}, {CUSTOM, XCODE}, ["/Applications/Xcode.app"], {"DEVELOPER_DIR": CUSTOM, "MACOSX_DEPLOYMENT_TARGET": "26.0"}),
-        ({"DEVELOPER_DIR": CUSTOM}, {XCODE}, ["/Applications/Xcode.app"], "no usable metal compiler in DEVELOPER_DIR"),
-        ({}, set(), [], "no full Xcode"),
+        ({}, {None, XCODE}, {}),
+        ({}, {XCODE}, {"DEVELOPER_DIR": XCODE}),
+        ({"DEVELOPER_DIR": CUSTOM}, {CUSTOM}, {"DEVELOPER_DIR": CUSTOM}),
+        ({"DEVELOPER_DIR": CUSTOM}, {XCODE}, "no usable metal compiler in DEVELOPER_DIR"),
+        ({}, set(), "no metal compiler in the selected toolchain"),
     ],
 )
-def test_metal_toolchain_env(environ, usable, apps, expected):
+def test_metal_toolchain_env(environ, usable, expected):
     def run(cmd, env, **_):
+        assert isinstance(cmd, list) and "shell" not in _
         return SimpleNamespace(returncode=int(env.get("DEVELOPER_DIR") not in usable))
 
-    with patch.dict(os.environ, environ, clear=True), patch("backend_metal.subprocess.run", run), patch("backend_metal.glob", return_value=apps):
+    with patch.dict(os.environ, environ, clear=True), patch("backend_metal.subprocess.run", run):
         if isinstance(expected, str):
             with pytest.raises(AssertionError, match=expected):
-                metal_toolchain_env.__wrapped__()
+                metal_toolchain_env()
         else:
-            assert metal_toolchain_env.__wrapped__() == expected and dict(os.environ) == environ
+            assert metal_toolchain_env() == expected | {"MACOSX_DEPLOYMENT_TARGET": "15.0"} and dict(os.environ) == environ

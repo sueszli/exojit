@@ -8,22 +8,27 @@ dependencies = [
     "xdsl @ git+https://github.com/xdslproject/xdsl.git@ad4fb9c277a65993a1c988dfeea2b30c52b66db9",
     "tyro",
     "cffi",
+    "numpy",
+    "llvmlite",
+    "pyobjc-framework-Metal; sys_platform == 'darwin'",
+]
+
+[dependency-groups]
+dev = [
     "lit",
     "filecheck",
-    "numpy",
     "pytest",
     "pytest-xdist",
-    "pytest-forked",
-    "llvmlite",
+]
+bench = [
     "plotnine",
     "polars",
     "pyarrow",
     "tqdm",
     "jax",
+    "optax",
     "numba",
     "torch",
-    "pyobjc-core; sys_platform == 'darwin'",
-    "pyobjc-framework-Metal; sys_platform == 'darwin'",
 ]
 
 [build-system]
