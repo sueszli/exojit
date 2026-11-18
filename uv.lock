@@ -184,6 +184,8 @@ dependencies = [
     { name = "plotnine" },
     { name = "polars" },
     { name = "pyarrow" },
+    { name = "pyobjc-core", marker = "sys_platform == 'darwin'" },
+    { name = "pyobjc-framework-metal", marker = "sys_platform == 'darwin'" },
     { name = "pytest" },
     { name = "pytest-forked" },
     { name = "pytest-xdist" },
@@ -191,12 +193,6 @@ dependencies = [
     { name = "tqdm" },
     { name = "tyro" },
     { name = "xdsl" },
-]
-
-[package.optional-dependencies]
-metal = [
-    { name = "pyobjc-core", marker = "sys_platform == 'darwin'" },
-    { name = "pyobjc-framework-metal", marker = "sys_platform == 'darwin'" },
 ]
 
 [package.metadata]
@@ -212,8 +208,8 @@ requires-dist = [
     { name = "plotnine" },
     { name = "polars" },
     { name = "pyarrow" },
-    { name = "pyobjc-core", marker = "sys_platform == 'darwin' and extra == 'metal'" },
-    { name = "pyobjc-framework-metal", marker = "sys_platform == 'darwin' and extra == 'metal'" },
+    { name = "pyobjc-core", marker = "sys_platform == 'darwin'" },
+    { name = "pyobjc-framework-metal", marker = "sys_platform == 'darwin'" },
     { name = "pytest" },
     { name = "pytest-forked" },
     { name = "pytest-xdist" },
@@ -222,7 +218,6 @@ requires-dist = [
     { name = "tyro" },
     { name = "xdsl", git = "https://github.com/xdslproject/xdsl.git?rev=ad4fb9c277a65993a1c988dfeea2b30c52b66db9" },
 ]
-provides-extras = ["metal"]
 
 [[package]]
 name = "filecheck"

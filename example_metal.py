@@ -1,7 +1,7 @@
 # /// script
 # requires-python = "==3.14.*"
 # dependencies = [
-#   "exojit[metal] @ git+https://github.com/sueszli/exojit@feat/metal-backend",
+#   "exojit @ git+https://github.com/sueszli/exojit@feat/metal-backend",
 # ]
 # ///
 
@@ -9,21 +9,14 @@ import math
 import random
 
 from exo import *
-from exo.API import Procedure
-from exo.stdlib.scheduling import parallelize_loop
 
 from exojit import jit
 
 
-def optimize_matmul(p: Procedure) -> Procedure:
-    p = parallelize_loop(p, "i")
-    return parallelize_loop(p, "j")
-
-
-@jit(optimize=optimize_matmul, backend="metal")
+@jit(backend="metal")
 def matmul(out: f32[32, 48] @ DRAM, A: f32[32, 16] @ DRAM, B: f32[16, 48] @ DRAM):
-    for i in seq(0, 32):
-        for j in seq(0, 48):
+    for i in par(0, 32):
+        for j in par(0, 48):
             out[i, j] = 0.0
             for k in seq(0, 16):
                 out[i, j] += A[i, k] * B[k, j]

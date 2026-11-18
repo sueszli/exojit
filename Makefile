@@ -22,12 +22,12 @@ microgpt:
 
 .PHONY: tests
 tests:
-	uv run --extra metal pytest -W ignore tests/
-	uv run --extra metal lit -j $$(nproc 2>/dev/null || sysctl -n hw.logicalcpu) tests/filecheck/
+	uv run pytest -W ignore tests/
+	uv run lit -j $$(nproc 2>/dev/null || sysctl -n hw.logicalcpu) tests/filecheck/
 
 .PHONY: precommit
 precommit:
-	uv sync --extra metal
+	uv sync
 	$(MAKE) precommit-hook
 	$(MAKE) fmt
 	$(MAKE) lint

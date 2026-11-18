@@ -22,10 +22,6 @@ dependencies = [
     "jax",
     "numba",
     "torch",
-]
-
-[project.optional-dependencies]
-metal = [
     "pyobjc-core; sys_platform == 'darwin'",
     "pyobjc-framework-Metal; sys_platform == 'darwin'",
 ]
