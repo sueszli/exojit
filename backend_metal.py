@@ -3,10 +3,13 @@ import re
 import subprocess
 import tempfile
 from collections.abc import Callable
+from functools import partial
 from importlib import import_module
 from pathlib import Path
+from string import Template
 from typing import TypeGuard
 
+import llvmlite.ir
 from cffi import FFI
 from exo import DRAM
 from exo.API import Procedure
@@ -43,14 +46,13 @@ def is_loop(s: LoopIR.stmt, mode: type, extent: int) -> TypeGuard[LoopIR.For]:
     return isinstance(s, LoopIR.For) and isinstance(s.loop_mode, mode) and isinstance(s.lo, LoopIR.Const) and s.lo.val == 0 and isinstance(s.hi, LoopIR.Const) and s.hi.val == extent
 
 
-def is_access(e: LoopIR.expr | LoopIR.stmt, name: Sym, *syms: Sym) -> bool:
+def is_access(e: LoopIR.Read | LoopIR.Assign | LoopIR.Reduce, name: Sym, *syms: Sym) -> bool:
     # name[syms...], every index a bare loop variable
-    idx = getattr(e, "idx", None)
-    return getattr(e, "name", None) == name and idx is not None and len(idx) == len(syms) and all(isinstance(x, LoopIR.Read) and x.name == s and not x.idx for x, s in zip(idx, syms))
+    return e.name == name and len(e.idx) == len(syms) and all(isinstance(x, LoopIR.Read) and x.name == s and not x.idx for x, s in zip(e.idx, syms))
 
 
 def check_matmul(ir: LoopIR.proc) -> tuple[int, int, int, Sym, Sym]:
-    # exo skips race checks outside c backend, so accept exactly one shape of program
+    # exo race-checks only in its c backend
     assert len(ir.args) == 3, f"metal backend: kernel must be matmul(out, A, B), got {len(ir.args)} arguments"
     (m, n), (am, k), (bk, bn) = (matrix_dims(arg) for arg in ir.args)
     out, a, b = (arg.name for arg in ir.args)
@@ -117,41 +119,57 @@ class MetalIRGenerator(IRGenerator):
         return self.module
 
 
-# tested with air 2.7 / macos 15 / metal 3.2
-AIR_HEADER = 'target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v16:16:16-v24:32:32-v32:32:32-v48:64:64-v64:64:64-v96:128:128-v128:128:128-v192:256:256-v256:256:256-v512:512:512-v1024:1024:1024-n8:16:32"\ntarget triple = "air64_v27-apple-macosx15.0.0"\n'
-AIR_OPCODES = {"zext", "udiv", "urem", "mul", "add", "icmp", "phi", "br", "getelementptr", "load", "store", "fmul", "fadd", "ret"}
+AIR_OPCODES = {"zext", "udiv", "urem", "mul", "add", "icmp", "phi", "br", "getelementptr", "load", "store", "fmul", "fadd", "ret void"}
 DEVICE_PTR = "float addrspace(1)*"
 
+# tested with air 2.7 / macos 15 / metal 3.2
+AIR_MODULE = Template("""\
+target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v16:16:16-v24:32:32-v32:32:32-v48:64:64-v64:64:64-v96:128:128-v128:128:128-v192:256:256-v256:256:256-v512:512:512-v1024:1024:1024-n8:16:32"
+target triple = "air64_v27-apple-macosx15.0.0"
 
-def air_metadata(name: str) -> str:
-    buffers = [f'!{{i32 {i}, !"air.buffer", !"air.location_index", i32 {i}, i32 1, !"{access}", !"air.address_space", i32 1, !"air.arg_type_size", i32 4, !"air.arg_type_align_size", i32 4, !"air.arg_type_name", !"float", !"air.arg_name", !"{arg}"}}' for i, (arg, access) in enumerate((("out", "air.read_write"), ("A", "air.read"), ("B", "air.read")))]
-    thread = '!{i32 3, !"air.thread_position_in_grid", !"air.arg_type_name", !"uint", !"air.arg_name", !"id"}'
-    sig = f"void ({DEVICE_PTR}, {DEVICE_PTR}, {DEVICE_PTR}, i32)*"
-    nodes = [*buffers, thread, "!{}", f'!{{{sig} @"{name}", !4, !{{!0, !1, !2, !3}}}}', "!{i32 2, i32 7, i32 0}", '!{!"Metal", i32 3, i32 2, i32 0}']
-    named = ["!air.kernel = !{!5}", "!air.version = !{!6}", "!air.language_version = !{!7}"]
-    return "\n".join(named + [f"!{i} = {node}" for i, node in enumerate(nodes)])
+define void $fn(float addrspace(1)* nocapture noundef "air-buffer-no-alias" $out, float addrspace(1)* nocapture noundef "air-buffer-no-alias" $a, float addrspace(1)* nocapture noundef "air-buffer-no-alias" $b, i32 $tid) {
+$body}
+
+!air.kernel = !{!5}
+!air.version = !{!6}
+!air.language_version = !{!7}
+!0 = !{i32 0, !"air.buffer", !"air.location_index", i32 0, i32 1, !"air.read_write", !"air.address_space", i32 1, !"air.arg_type_size", i32 4, !"air.arg_type_align_size", i32 4, !"air.arg_type_name", !"float", !"air.arg_name", !"out"}
+!1 = !{i32 1, !"air.buffer", !"air.location_index", i32 1, i32 1, !"air.read", !"air.address_space", i32 1, !"air.arg_type_size", i32 4, !"air.arg_type_align_size", i32 4, !"air.arg_type_name", !"float", !"air.arg_name", !"A"}
+!2 = !{i32 2, !"air.buffer", !"air.location_index", i32 2, i32 1, !"air.read", !"air.address_space", i32 1, !"air.arg_type_size", i32 4, !"air.arg_type_align_size", i32 4, !"air.arg_type_name", !"float", !"air.arg_name", !"B"}
+!3 = !{i32 3, !"air.thread_position_in_grid", !"air.arg_type_name", !"uint", !"air.arg_name", !"id"}
+!4 = !{}
+!5 = !{void (float addrspace(1)*, float addrspace(1)*, float addrspace(1)*, i32)* $fn, !4, !{!0, !1, !2, !3}}
+!6 = !{i32 2, i32 7, i32 0}
+!7 = !{!"Metal", i32 3, i32 2, i32 0}
+""")
 
 
-def to_air(llvm_ir: str, name: str) -> str:
-    # adapter for MetalIRGenerator output only: one kernel, three f32 buffers, i32 thread id
-    assert llvm_ir.count("define ") == 1 and "declare " not in llvm_ir, "metal backend: expected a single kernel definition"
-    sig = re.search(rf'define void @"?{re.escape(name)}"?\((?:ptr (%"?[\w.]+"?)), (?:ptr (%"?[\w.]+"?)), (?:ptr (%"?[\w.]+"?)), i32 (%"?[\w.]+"?)\)\s*\{{\n(.*?)\n\}}', llvm_ir, re.DOTALL)
-    assert sig, f"metal backend: unexpected kernel signature in\n{llvm_ir}"
-    *ptrs, tid, body = sig.groups()
-    for line in body.splitlines():
-        if line.strip() and not line.strip().endswith(":"):
-            op = line.split("=", 1)[1].split()[0] if "=" in line else line.split()[0]
-            assert op in AIR_OPCODES, f"metal backend: unexpected llvm instruction {line.strip()!r}"
-    # no allocas or other pointer spaces, so every ptr is a device buffer
-    body = re.sub(r"\bptr\b", DEVICE_PTR, body)
-    params = ", ".join([f'{DEVICE_PTR} nocapture noundef "air-buffer-no-alias" {p}' for p in ptrs] + [f"i32 {tid}"])
-    return f'{AIR_HEADER}\ndefine void @"{name}"({params}) {{\n{body}\n}}\n\n{air_metadata(name)}\n'
+def is_opaque_ptr(t: llvmlite.ir.Type) -> bool:
+    return isinstance(t, llvmlite.ir.PointerType) and t.is_opaque and t == llvmlite.ir.PointerType()
+
+
+def to_air(module: llvmlite.ir.Module, name: str) -> str:
+    fns = module.functions
+    assert len(fns) == 1 and fns[0].name == name and fns[0].blocks, "metal backend: expected a single kernel definition"
+    fn = fns[0]
+    types = [arg.type for arg in fn.args]
+    signature_ok = len(types) == 4 and all(is_opaque_ptr(t) for t in types[:3]) and types[3] == llvmlite.ir.IntType(32)
+    assert signature_ok, f"metal backend: unexpected kernel signature in\n{module}"
+    for block in fn.blocks:
+        for instr in block.instructions:
+            assert instr.opname in AIR_OPCODES, f"metal backend: unexpected llvm instruction {str(instr).strip()!r}"
+    lines: list[str] = []
+    fn.descr_body(lines)
+    # air needs typed device pointers. no allocas, so every ptr is a buffer
+    body = re.sub(r"\bptr\b", DEVICE_PTR, "".join(lines))
+    out, a, b, tid = (arg.get_reference() for arg in fn.args)
+    return AIR_MODULE.substitute(fn=fn.get_reference(), out=out, a=a, b=b, tid=tid, body=body)
 
 
 def kernel_to_air(proc: Procedure) -> str:
     _, cols, _, row, col = check_matmul(proc._loopir_proc)
     llvm_module = convert_module(to_mlir(proc, MetalIRGenerator(row, col, cols)), fallback_target_triple="air64-apple-macosx")
-    return to_air(str(llvm_module), proc.name())
+    return to_air(llvm_module, proc.name())
 
 
 # ===----------------------------------------------------------------------=== #
@@ -167,7 +185,7 @@ def has_metal(env: dict[str, str]) -> bool:
 
 
 def metal_toolchain_env() -> dict[str, str]:
-    # selected toolchain, else full xcode. clts lack metal. explicit DEVELOPER_DIR must work
+    # selected toolchain, else full xcode (clts may lack metal). explicit DEVELOPER_DIR must work
     env = {**os.environ, "MACOSX_DEPLOYMENT_TARGET": "15.0"}
     if has_metal(env):
         return env
@@ -178,23 +196,45 @@ def metal_toolchain_env() -> dict[str, str]:
     return fallback
 
 
+def run_tool(env: dict[str, str], tool: str, *args: str) -> None:
+    result = subprocess.run(["xcrun", "-sdk", "macosx", tool, *args], check=False, capture_output=True, text=True, env=env)
+    assert result.returncode == 0, f"metal backend: {tool} failed:\n{result.stdout}\n{result.stderr}"
+
+
+def build_metallib(air: str, workdir: Path, env: dict[str, str]) -> Path:
+    src, obj, lib = workdir / "kernel.ll", workdir / "kernel.air", workdir / "kernel.metallib"
+    src.write_text(air)
+    run_tool(env, "metal", "-x", "ir", "-c", str(src), "-o", str(obj))
+    run_tool(env, "metallib", str(obj), "-o", str(lib))
+    return lib
+
+
+def load_pipeline(device, metallib: Path, name: str):
+    url = import_module("Foundation").NSURL.fileURLWithPath_(str(metallib))
+    library, error = device.newLibraryWithURL_error_(url, None)
+    assert library, f"metal backend: failed to load metallib: {error}"
+    fn = library.newFunctionWithName_(name)
+    assert fn, f"metal backend: function {name} not found in metallib"
+    pso, error = device.newComputePipelineStateWithFunction_error_(fn, None)
+    assert pso, f"metal backend: failed to create pipeline: {error}"
+    return pso
+
+
 def create_pipeline(air: str, name: str):
     device = import_module("Metal").MTLCreateSystemDefaultDevice()
     assert device, "metal backend: no metal device"
     env = metal_toolchain_env()
     with tempfile.TemporaryDirectory() as d:
-        src, obj, lib = (os.path.join(d, f"kernel.{ext}") for ext in ("ll", "air", "metallib"))
-        Path(src).write_text(air)
-        for cmd in (["xcrun", "-sdk", "macosx", "metal", "-x", "ir", "-c", src, "-o", obj], ["xcrun", "-sdk", "macosx", "metallib", obj, "-o", lib]):
-            result = subprocess.run(cmd, check=False, capture_output=True, text=True, env=env)
-            assert result.returncode == 0, f"metal backend: {cmd[3]} failed:\n{result.stdout}\n{result.stderr}"
-        library, error = device.newLibraryWithURL_error_(import_module("Foundation").NSURL.fileURLWithPath_(lib), None)
-        assert library, f"metal backend: failed to load metallib: {error}"
-        fn = library.newFunctionWithName_(name)
-        assert fn, f"metal backend: function {name} not found in metallib"
-        pso, error = device.newComputePipelineStateWithFunction_error_(fn, None)
-        assert pso, f"metal backend: failed to create pipeline: {error}"
+        metallib = build_metallib(air, Path(d), env)
+        pso = load_pipeline(device, metallib, name)
     return device, pso
+
+
+def device_buffer(device, ffi: FFI, ptr: int, size: int):
+    data = ffi.buffer(ffi.cast("char *", ptr), size)[:]
+    buffer = device.newBufferWithBytes_length_options_(data, size, import_module("Metal").MTLResourceStorageModeShared)
+    assert buffer is not None, "metal backend: buffer allocation failed"
+    return buffer
 
 
 def execute_kernel(device, pso, grid, group, buffers) -> None:
@@ -215,27 +255,26 @@ def execute_kernel(device, pso, grid, group, buffers) -> None:
     assert cmd.status() == metal.MTLCommandBufferStatusCompleted, f"metal backend: command buffer failed with status {cmd.status()}: {cmd.error()}"
 
 
+def build_kernel(proc: Procedure, ffi: FFI, *, sizes: tuple[int, int, int], threads: int) -> Callable[..., None]:
+    metal = import_module("Metal")
+    device, pso = create_pipeline(kernel_to_air(proc), proc.name())
+    grid = metal.MTLSize(threads, 1, 1)
+    group = metal.MTLSize(min(threads, pso.maxTotalThreadsPerThreadgroup()), 1, 1)
+
+    def run(*ptrs: int) -> None:
+        buffers = [device_buffer(device, ffi, ptr, size) for ptr, size in zip(ptrs, sizes, strict=True)]
+        execute_kernel(device, pso, grid, group, buffers)
+        out_size = sizes[0]
+        ffi.memmove(ffi.cast("char *", ptrs[0]), buffers[0].contents().as_buffer(out_size), out_size)
+
+    return run
+
+
 def compile(proc: Procedure, raw: bool = False) -> Callable[..., None]:
-    if not __debug__:  # validation is assert-based
-        raise RuntimeError("metal backend: python -O disables kernel validation")
     assert not raw, "raw=True is not supported by the metal backend"
     # reject before optional imports
     assert not proc.is_instr(), f"metal backend: {proc.name()} is an instr, not a kernel"
     m, n, k, _, _ = check_matmul(proc._loopir_proc)
-    sizes = [4 * m * n, 4 * m * k, 4 * k * n]
-
-    def build(proc: Procedure, ffi: FFI) -> Callable[..., None]:
-        metal = import_module("Metal")
-        device, pso = create_pipeline(kernel_to_air(proc), proc.name())
-        grid = metal.MTLSize(m * n, 1, 1)
-        group = metal.MTLSize(min(m * n, pso.maxTotalThreadsPerThreadgroup()), 1, 1)
-
-        def run(*ptrs: int) -> None:
-            buffers = [device.newBufferWithBytes_length_options_(ffi.buffer(ffi.cast("char *", ptr), size)[:], size, metal.MTLResourceStorageModeShared) for ptr, size in zip(ptrs, sizes, strict=True)]
-            assert all(buffer is not None for buffer in buffers), "metal backend: buffer allocation failed"
-            execute_kernel(device, pso, grid, group, buffers)
-            ffi.memmove(ffi.cast("char *", ptrs[0]), buffers[0].contents().as_buffer(sizes[0]), sizes[0])
-
-        return run
-
-    return JITRuntime.compile(proc, compiler=build)
+    sizes = (4 * m * n, 4 * m * k, 4 * k * n)
+    compiler = partial(build_kernel, sizes=sizes, threads=m * n)
+    return JITRuntime.compile(proc, compiler=compiler)
