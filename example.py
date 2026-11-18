@@ -1,7 +1,7 @@
 # /// script
 # requires-python = "==3.14.*"
 # dependencies = [
-#   "exojit @ git+https://github.com/sueszli/exojit",
+#   "exojit @ git+https://github.com/sueszli/exojit@feat/metal-backend",
 # ]
 # ///
 

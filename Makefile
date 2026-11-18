@@ -31,6 +31,8 @@ precommit:
 	$(MAKE) precommit-hook
 	$(MAKE) fmt
 	$(MAKE) lint
+	uv run example.py
+	if [ "$$(uname -s)" = Darwin ]; then uv run example_metal.py; fi
 	$(MAKE) microgpt
 	$(MAKE) tests
 

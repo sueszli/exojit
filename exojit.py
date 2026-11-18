@@ -34,7 +34,6 @@ from xdsl.transforms.common_subexpression_elimination import cse
 from xdsl.transforms.reconcile_unrealized_casts import reconcile_unrealized_casts
 from xdsl.utils.hints import isa
 
-
 # ===----------------------------------------------------------------------=== #
 # exo patches
 # ===----------------------------------------------------------------------=== #
