@@ -636,7 +636,7 @@ class JITRuntime:
             raw_jit = JITRuntime._jit_backend.jit(mlir_module, proc.name(), Context())  # retained by call's closure to keep the MCJIT code alive
             call = lambda *args: raw_jit.c_func(*[arg if kind is None else ffi.cast("void *", arg) if isinstance(arg, int) else ffi.from_buffer(cast(Any, arg), require_writable=kind) for arg, kind in zip(args, kinds, strict=True)])
         else:
-            call = compiler(proc, ffi)  # other backends take the same buffer addresses the converters below produce
+            call = compiler(proc, ffi)  # reuse argument conversion
         names = [re.sub(r"_\d+$", "", str(arg.name)) for arg in ir_args]
         if raw:
             wrapped = lambda *args, **kwargs: call(*(tuple(kwargs[name] for name in names) if kwargs else args))
