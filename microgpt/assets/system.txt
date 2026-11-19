@@ -1,2 +1,4 @@
-Mac14,10 | Apple M2 Pro (arm64, 8P+4E) | 16 GiB RAM
-macOS 26.5.1 (25F80) | Python 3.14.5
+OS: macOS 26.5.1 (arm64)
+Host: Mac14,10
+CPU: Apple M2 Pro (12 cores)
+Memory: 16 GiB

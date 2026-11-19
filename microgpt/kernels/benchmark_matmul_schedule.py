@@ -1,8 +1,10 @@
 from functools import partial
+from pathlib import Path
 from statistics import median
 from timeit import Timer
 
 import numpy as np
+import polars as pl
 from exo.API import Procedure
 from exo.stdlib.scheduling import divide_loop, fission, reorder_loops, simplify, stage_mem, unroll_loop
 from matmul_exo import _matmul
@@ -12,6 +14,7 @@ from exojit import jit
 SIZE = 32
 CALLS = 10_000
 ROUNDS = 9
+OUTPUT = Path(__file__).resolve().parents[1] / "assets" / "matmul-scheduling.csv"
 
 
 def optimize_matmul(p: Procedure) -> Procedure:
@@ -46,10 +49,8 @@ def main() -> None:
             times[name].append(timers[name].timeit(number=CALLS) * 1e6 / CALLS)
 
     medians = {name: median(samples) for name, samples in times.items()}
-    print(f"{SIZE}x{SIZE} float32 matmul, median us per call")
-    for name, us in medians.items():
-        print(f"{name:<12} {us:.2f}")
-    print(f"speedup      {medians['unscheduled'] / medians['scheduled']:.2f}x")
+    rows = [(SIZE, str(a.dtype), name, us, medians["unscheduled"] / us) for name, us in medians.items()]
+    pl.DataFrame(rows, schema=["size", "dtype", "schedule", "median_us_per_call", "speedup"], orient="row").write_csv(OUTPUT, float_precision=2)
 
 
 if __name__ == "__main__":
