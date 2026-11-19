@@ -1,5 +1,7 @@
+import csv
 import ctypes
 import random
+import time
 from itertools import accumulate
 from math import prod
 from pathlib import Path
@@ -30,6 +32,8 @@ HEAD_DIM = N_EMBED // N_HEAD
 CAUSAL_MASK_VALUE = -1e10
 ATTN_SCALE = 1.0 / HEAD_DIM**0.5
 INV_N = 1.0 / N_EMBED
+
+TIMES_PATH = Path(__file__).resolve().parent / "times.csv"
 
 
 #
@@ -408,6 +412,18 @@ def train_loop(vocab_size: size, total_params: size, emb: f64[BLOCK_SIZE, N_EMBE
         adam(total_params, flat_params, flat_grads, opt_m, opt_v, lr, beta1_t, beta2_t)
 
 
+def assert_no_perf_regression(actual_us: float, tolerance: float = 0.20) -> None:
+    if not TIMES_PATH.exists():
+        return
+    with open(TIMES_PATH) as f:
+        times_us = [float(row["time_ms"]) * 1000 for row in csv.DictReader(f)]
+    if not times_us:
+        return
+    baseline_us = sum(times_us) / len(times_us)
+    max_allowed_us = baseline_us * (1 + tolerance)
+    assert actual_us <= max_allowed_us, f"perf regression: {actual_us:.0f}µs > {max_allowed_us:.0f}µs (baseline {baseline_us:.0f}µs, tolerance {tolerance:.0%})"
+
+
 #
 # main
 #
@@ -545,5 +561,8 @@ def weights() -> dict[str, list[list[float]]]:
 
 
 if __name__ == "__main__":
+    t0 = time.perf_counter()
     train()
+    elapsed_us = (time.perf_counter() - t0) / NUM_STEPS * 1e6
     assert_weights_match(weights())
+    assert_no_perf_regression(elapsed_us)

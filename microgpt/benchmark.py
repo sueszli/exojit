@@ -78,16 +78,11 @@ def format_table(report: dict) -> str:
 
 
 def hardware() -> dict:
-    chip = platform.processor()
+    chip = platform.processor() or platform.machine()
     if sys.platform == "darwin":
         result = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, check=False)
         if result.returncode == 0:
             chip = result.stdout.strip()
-    elif sys.platform == "linux":
-        for line in Path("/proc/cpuinfo").read_text().splitlines():
-            if line.startswith("model name"):
-                chip = line.partition(":")[2].strip()
-                break
     return {"cpu": chip, "architecture": platform.machine(), "logical_cores": os.cpu_count(), "os": platform.platform()}
 
 
@@ -96,7 +91,6 @@ def main() -> None:
     parser.add_argument("--runs", type=positive_int, default=5)
     parser.add_argument("--warmups", type=positive_int, default=1)
     parser.add_argument("--output", type=Path, help="Write run data to a new JSON file")
-    parser.add_argument("--table", action="store_true", help="Print a median and spread summary")
     parser.add_argument("--table-from", type=Path, help="Print the table for a saved JSON report without rerunning")
     parser.add_argument("--worker", choices=BACKENDS, help=argparse.SUPPRESS)
     parser.add_argument("--reference", type=Path, help=argparse.SUPPRESS)
@@ -132,14 +126,10 @@ def main() -> None:
             report["backends"][backend] = json.loads(process.stdout)
         report["reference_sha256"] = hashlib.sha256(reference.read_bytes()).hexdigest()
 
-    payload = json.dumps(report, indent=2) + "\n"
     if args.output:
         with args.output.open("x") as f:
-            f.write(payload)
-    if args.table:
-        print(format_table(report))
-    elif not args.output:
-        sys.stdout.write(payload)
+            f.write(json.dumps(report, indent=2) + "\n")
+    print(format_table(report))
 
 
 if __name__ == "__main__":

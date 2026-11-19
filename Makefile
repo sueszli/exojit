@@ -41,7 +41,7 @@ leaderboard:
 
 .PHONY: benchmark
 benchmark:
-	uv run --locked python microgpt/benchmark.py --table $(if $(OUTPUT),--output "$(OUTPUT)")
+	uv run --locked python microgpt/benchmark.py $(if $(OUTPUT),--output "$(OUTPUT)")
 
 .PHONY: benchmark-kernels
 benchmark-kernels:

@@ -228,7 +228,7 @@ v: list[float] = [0.0] * len(params)  # second moment buffer
 
 
 initial_params = tuple(p.data for p in params)
-batches = [[BOS, *[uchars.index(ch) for ch in doc], BOS][: BLOCK_SIZE + 1] for doc in docs[:NUM_STEPS]]
+batches = [[BOS, *[uchars.index(ch) for ch in doc], BOS][: BLOCK_SIZE + 1] for doc in (docs[step % len(docs)] for step in range(NUM_STEPS))]
 
 
 def reset() -> None:
