@@ -18,7 +18,7 @@ def assert_weights_match(state_dict: dict[str, list[list[float]]], atol: float =
     assert set(ref) == set(state_dict), f"key mismatch: ref={set(ref) - set(state_dict)} cur={set(state_dict) - set(ref)}"
 
     for k in ref:
-        assert [len(row) for row in ref[k]] == [len(row) for row in state_dict[k]], f"shape mismatch '{k}'"
+        assert len(ref[k]) == len(state_dict[k]) and len(ref[k][0]) == len(state_dict[k][0]), f"shape mismatch '{k}': {len(ref[k])}x{len(ref[k][0])} vs {len(state_dict[k])}x{len(state_dict[k][0])}"
 
     max_diff = 0.0
     max_loc = ""

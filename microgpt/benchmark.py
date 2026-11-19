@@ -35,11 +35,11 @@ def read_runs(source: Path | bytes) -> pl.DataFrame:
     return runs
 
 
-def collect_runs(backends: tuple[str, ...], runs: int) -> pl.DataFrame:
+def collect_runs(backends: tuple[str, ...]) -> pl.DataFrame:
     env = os.environ | dict.fromkeys(("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"), "1") | {"JAX_PLATFORMS": "cpu"}
     samples = []
     for backend in backends:
-        cmd = [sys.executable, __file__, "--worker", backend, "--runs", str(runs)]
+        cmd = [sys.executable, __file__, "--worker", backend]
         result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, env=env)
         assert result.returncode == 0, f"{backend}: benchmark failed"
         samples.append(read_runs(result.stdout))
@@ -53,17 +53,16 @@ def medians_in_us(samples: pl.DataFrame, backends: tuple[str, ...], runs: int, s
     return dict(samples.group_by("backend").agg(pl.col("elapsed_ns").median() / (steps * 1000)).iter_rows())
 
 
-def main(output: Path | None = None, from_csv: Path | None = None, plot: Path | None = None, worker: str | None = None, runs: int = 5) -> None:
+def main(output: Path | None = None, from_csv: Path | None = None, plot: Path | None = None, worker: str | None = None) -> None:
     backends = ("original", "plain", "numpy", "torch", "jax", "exojit")
-    steps = 1000
-    assert runs > 0, "expected at least one timed run"
+    runs, steps = 5, 1000
     if worker is not None:
         assert worker in backends
         measure(worker, runs, steps).write_csv(sys.stdout)
         return
 
     assets = Path(__file__).resolve().parent / "assets"
-    samples = collect_runs(backends, runs) if from_csv is None else read_runs(from_csv)
+    samples = collect_runs(backends) if from_csv is None else read_runs(from_csv)
     medians = medians_in_us(samples, backends, runs, steps)
     if from_csv is None or output is not None:
         samples.write_csv(output or assets / "benchmark.csv")
