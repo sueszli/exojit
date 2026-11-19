@@ -40,9 +40,9 @@ leaderboard:
 	uv run python microgpt/utils.py
 
 .PHONY: benchmark
-benchmark: benchmark-microgpt
-	uv run python microgpt/kernels/run.py
+benchmark:
+	uv run --locked python microgpt/benchmark.py --table $(if $(OUTPUT),--output "$(OUTPUT)")
 
-.PHONY: benchmark-microgpt
-benchmark-microgpt:
-	uv run --locked python microgpt/benchmark.py
+.PHONY: benchmark-kernels
+benchmark-kernels:
+	uv run --locked python microgpt/kernels/run.py

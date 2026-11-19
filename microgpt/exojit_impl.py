@@ -20,6 +20,12 @@ BLOCK_SIZE = 16
 N_HEAD = 4
 NUM_STEPS = 1000
 
+# The standalone parity check uses the Adam settings that produced weights.json.
+if __name__ == "__main__":
+    BETA1, BETA2, MIX1, MIX2 = 0.9, 0.999, 0.1, 0.001
+else:
+    BETA1, BETA2, MIX1, MIX2 = 0.85, 0.99, 0.15, 0.01
+
 HEAD_DIM = N_EMBED // N_HEAD
 CAUSAL_MASK_VALUE = -1e10
 ATTN_SCALE = 1.0 / HEAD_DIM**0.5
@@ -230,8 +236,8 @@ def adam(N: size, param: f64[N] @ DRAM, grad: f64[N] @ DRAM, m: f64[N] @ DRAM, v
         m_hat: f64 @ DRAM
         v_hat: f64 @ DRAM
         g = grad[i]
-        m_val = 0.85 * m[i] + 0.15 * g
-        v_val = 0.99 * v[i] + 0.01 * g * g
+        m_val = BETA1 * m[i] + MIX1 * g
+        v_val = BETA2 * v[i] + MIX2 * g * g
         m_hat = m_val * inv_beta1_t
         v_hat = v_val * inv_beta2_t
         param[i] = param[i] - lr[0] * m_hat / (sqrt(v_hat) + 1e-8)
@@ -487,8 +493,8 @@ opt_lr, opt_bc1, opt_bc2, cur_inv_sum_mask = ((ctypes.c_double * 1)() for _ in r
 cur_loss_mask = (ctypes.c_double * BLOCK_SIZE)()
 
 all_lr = (ctypes.c_double * NUM_STEPS)(*(0.01 * (1.0 - s / NUM_STEPS) for s in range(NUM_STEPS)))
-all_beta1_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - 0.85 ** (s + 1) for s in range(NUM_STEPS)))
-all_beta2_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - 0.99 ** (s + 1) for s in range(NUM_STEPS)))
+all_beta1_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - BETA1 ** (s + 1) for s in range(NUM_STEPS)))
+all_beta2_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - BETA2 ** (s + 1) for s in range(NUM_STEPS)))
 
 batches = [tokenized[s % len(tokenized)] for s in range(NUM_STEPS)]
 all_input_ids = (ctypes.c_int64 * (NUM_STEPS * BLOCK_SIZE))(*(v for b in batches for v in b["input_ids"]))

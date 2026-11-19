@@ -56,6 +56,27 @@ def measure(backend: str, warmups: int, runs: int, reference_path: Path) -> dict
     }
 
 
+def format_table(report: dict) -> str:
+    samples_us = {name: [ns / (result["steps_per_run"] * 1000) for ns in result["samples_ns"]] for name, result in report["backends"].items()}
+    medians = {name: statistics.median(samples) for name, samples in samples_us.items()}
+    baseline = medians["original"]
+    headings = ("name", "median μs", "IQR μs", "min μs", "max μs", "speedup")
+    rows = []
+    for name in sorted(medians, key=medians.get):
+        samples = samples_us[name]
+        q1, _, q3 = statistics.quantiles(samples, n=4, method="inclusive") if len(samples) > 1 else samples * 3
+        rows.append((name, f"{medians[name]:,.1f}", f"{q3 - q1:,.1f}", f"{min(samples):,.1f}", f"{max(samples):,.1f}", f"{baseline / medians[name]:,.1f}x"))
+
+    widths = [max(map(len, column)) for column in zip(headings, *rows)]
+
+    def render(row: tuple[str, ...]) -> str:
+        name, *values = row
+        return "  ".join((name.ljust(widths[0]), *(value.rjust(width) for value, width in zip(values, widths[1:]))))
+
+    header = render(headings)
+    return "\n".join((header, "─" * len(header), *(render(row) for row in rows)))
+
+
 def hardware() -> dict:
     chip = platform.processor()
     if sys.platform == "darwin":
@@ -75,6 +96,8 @@ def main() -> None:
     parser.add_argument("--runs", type=positive_int, default=5)
     parser.add_argument("--warmups", type=positive_int, default=1)
     parser.add_argument("--output", type=Path, help="Write run data to a new JSON file")
+    parser.add_argument("--table", action="store_true", help="Print a median and spread summary")
+    parser.add_argument("--table-from", type=Path, help="Print the table for a saved JSON report without rerunning")
     parser.add_argument("--worker", choices=BACKENDS, help=argparse.SUPPRESS)
     parser.add_argument("--reference", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -83,6 +106,10 @@ def main() -> None:
         if not args.reference:
             parser.error("--worker requires --reference")
         print(json.dumps(measure(args.worker, args.warmups, args.runs, args.reference)))
+        return
+
+    if args.table_from:
+        print(format_table(json.loads(args.table_from.read_text())))
         return
 
     if args.output and args.output.exists():
@@ -109,7 +136,9 @@ def main() -> None:
     if args.output:
         with args.output.open("x") as f:
             f.write(payload)
-    else:
+    if args.table:
+        print(format_table(report))
+    elif not args.output:
         sys.stdout.write(payload)
 
 
