@@ -1,28 +1,13 @@
 import itertools
 import json
 import math
-from collections.abc import Iterable
 from pathlib import Path
-from time import perf_counter_ns
 
 import polars as pl
 
 ROOT = Path(__file__).resolve().parent
 WEIGHTS_PATH = ROOT / "weights.json"
 TIMES_DIR = ROOT / "times"
-
-
-def timed_steps[T](steps: Iterable[T], samples_ns: list[int] | None) -> Iterable[T]:
-    if samples_ns is None:
-        return steps
-
-    def collect() -> Iterable[T]:
-        for step in steps:
-            start = perf_counter_ns()
-            yield step
-            samples_ns.append(perf_counter_ns() - start)
-
-    return collect()
 
 
 def assert_weights_match(state_dict: dict[str, list[list[float]]], atol: float = 1e-5, *, reference: dict[str, list[list[float]]] | None = None) -> None:

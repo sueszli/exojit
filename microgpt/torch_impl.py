@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from utils import assert_weights_match, timed_steps
+from utils import assert_weights_match
 
 random.seed(42)
 
@@ -114,9 +114,9 @@ def reset() -> None:
     state_dict, opt_state = initial_state
 
 
-def train(step_samples_ns: list[int] | None = None) -> None:
+def train() -> None:
     global state_dict, opt_state
-    for step, step_id in timed_steps(enumerate(step_ids), step_samples_ns):
+    for step, step_id in enumerate(step_ids):
         _, state_dict, opt_state = step_fn(state_dict, opt_state, train_inputs[step], train_targets[step], train_masks[step], step_id)
 
 

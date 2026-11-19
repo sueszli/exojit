@@ -6,7 +6,7 @@ import math
 import random
 from pathlib import Path
 
-from utils import assert_weights_match, timed_steps
+from utils import assert_weights_match
 
 random.seed(42)
 
@@ -239,8 +239,8 @@ def reset() -> None:
     v[:] = [0.0] * len(params)
 
 
-def train(step_samples_ns: list[int] | None = None) -> None:
-    for step, tokens in timed_steps(enumerate(batches), step_samples_ns):
+def train() -> None:
+    for step, tokens in enumerate(batches):
         n = len(tokens) - 1
         # forward
         keys: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
