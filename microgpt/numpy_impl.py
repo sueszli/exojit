@@ -3,7 +3,7 @@ from collections import namedtuple
 from pathlib import Path
 
 import numpy as np
-from utils import assert_weights_match
+from utils import assert_weights_match, timed_steps
 
 random.seed(42)
 
@@ -239,8 +239,8 @@ def reset() -> None:
         opt_state[name].fill(0.0)
 
 
-def train() -> None:
-    for step in range(NUM_STEPS):
+def train(step_samples_ns: list[int] | None = None) -> None:
+    for step in timed_steps(range(NUM_STEPS), step_samples_ns):
         input_ids, target_ids, loss_mask = tokenized[step % len(tokenized)]
         step_fn(state_dict, opt_state, grads, input_ids, target_ids, loss_mask, step)
 
