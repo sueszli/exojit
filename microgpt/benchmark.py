@@ -54,7 +54,6 @@ def medians_in_us(samples: pl.DataFrame, backends: tuple[str, ...], runs: int, s
 
 
 def main(output: Path | None = None, from_csv: Path | None = None, plot: Path | None = None, worker: str | None = None, runs: int = 5) -> None:
-    """Benchmark warmed 1,000-step MicroGPT runs and save the CSV and chart in assets/."""
     backends = ("original", "plain", "numpy", "torch", "jax", "exojit")
     steps = 1000
     assert runs > 0, "expected at least one timed run"
