@@ -10,17 +10,23 @@ import random
 
 from exo import *
 from exo.API import Procedure
-from exo.stdlib.scheduling import divide_loop, fission, reorder_loops, simplify, unroll_loop
+from exo.libs.memories import DRAM_STACK
+from exo.stdlib.scheduling import divide_loop, fission, lift_alloc, reorder_loops, set_memory, simplify, stage_mem
 
 from exojit import jit
 
 
 def optimize_matmul(p: Procedure) -> Procedure:
-    p = fission(p, p.find("for k in _: _").before(), n_lifts=2)
-    p = reorder_loops(p, "j k")
-    p = divide_loop(p, "j #1", 4, ["jo", "ji"], perfect=True)
-    p = unroll_loop(p, "ji")
-    return simplify(p)
+    # Found through LLM autoresearch.
+    p = divide_loop(p, "j", 32, ["jo", "ji"], perfect=True)
+    p = reorder_loops(p, "i jo")
+    p = divide_loop(p, "i", 2, ["io", "ii"], perfect=True)
+    p = stage_mem(p, p.find_loop("ii").as_block(), "out[2*io:2*io+2, 32*jo:32*jo+32]", "acc")
+    p = fission(p, p.find_loop("k").before(), n_lifts=2)
+    p = reorder_loops(p, "ji k")
+    p = reorder_loops(p, "ii k")
+    p = lift_alloc(simplify(p), "acc", n_lifts=2)
+    return set_memory(p, "acc", DRAM_STACK)
 
 
 @jit(optimize=optimize_matmul)
