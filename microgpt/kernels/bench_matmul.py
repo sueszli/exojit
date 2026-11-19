@@ -6,19 +6,23 @@ from timeit import Timer
 import numpy as np
 import polars as pl
 from exo.API import Procedure
-from exo.stdlib.scheduling import divide_loop, fission, reorder_loops, simplify, stage_mem, unroll_loop
+from exo.libs.memories import DRAM_STACK
+from exo.stdlib.scheduling import divide_loop, fission, lift_alloc, reorder_loops, set_memory, simplify, stage_mem
 from matmul_exo import _matmul
 
 from exojit import jit
 
 
 def optimize_matmul(p: Procedure) -> Procedure:
+    p = divide_loop(p, "j", 32, ["jo", "ji"], perfect=True)
+    p = reorder_loops(p, "i jo")
     p = divide_loop(p, "i", 2, ["io", "ii"], perfect=True)
-    p = stage_mem(p, p.find_loop("ii").as_block(), "C[2*io:2*io+2, 0:32]", "acc")
+    p = stage_mem(p, p.find_loop("ii").as_block(), "C[2*io:2*io+2, 32*jo:32*jo+32]", "acc")
     p = fission(p, p.find_loop("k").before(), n_lifts=2)
-    p = reorder_loops(p, "j k")
+    p = reorder_loops(p, "ji k")
     p = reorder_loops(p, "ii k")
-    return simplify(unroll_loop(p, "ii #1"))
+    p = lift_alloc(simplify(p), "acc", n_lifts=2)
+    return set_memory(p, "acc", DRAM_STACK)
 
 
 def main(calls: int = 10_000, rounds: int = 9, output: Path | None = None) -> None:
