@@ -34,14 +34,14 @@ in Exo and benchmarked it against NumPy, PyTorch, JAX,
 and karpathy's original scalar autograd.
 
 
-     name      mean μs  ±σ     min    max     speedup 
-    ──────────────────────────────────────────────────
-     exojit    35       0      35     35      1902    
-     numpy     176      133    140    3011    378     
-     torch     185      25     165    391     360     
-     jax       503      0      503    503     132     
-     plain     7042     720    6670   18530   9       
-     original  66601    20604  20522  179583  1       
+    name      median us  speedup
+    ────────────────────────────
+    exojit    46         1348x
+    jax       63         986x
+    numpy     177        350x
+    torch     180        344x
+    plain     6443       10x
+    original  61925      1x
 
 
 There's also an incomplete Apple Metal prototype.

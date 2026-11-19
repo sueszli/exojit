@@ -4,7 +4,6 @@
 
 import math
 import random
-import time
 from pathlib import Path
 
 from utils import assert_weights_match
@@ -23,14 +22,12 @@ NUM_STEPS = 1000  # num training steps
 # load
 docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
 random.shuffle(docs)
-print(f"num docs: {len(docs)}")
 
 
 # tokenize
 uchars = sorted(set("".join(docs)))  # unique chars as tokens
 BOS = len(uchars)  # beginning of sequence BOS token
 vocab_size = len(uchars) + 1
-print(f"vocab size: {vocab_size}")
 
 
 class Value:
@@ -123,7 +120,6 @@ for i in range(N_LAYER):
     state_dict[f"layer{i}.mlp_fc1"] = matrix(4 * N_EMBED, N_EMBED)  # fully connected 1
     state_dict[f"layer{i}.mlp_fc2"] = matrix(N_EMBED, 4 * N_EMBED)  # fully connected 2
 params: list[Value] = [p for mat in state_dict.values() for row in mat for p in row]  # flatten
-print(f"num params: {len(params)}")
 
 
 def linear(x: list[Value], w: list[list[Value]]) -> list[Value]:
@@ -222,75 +218,87 @@ def gpt(
     return logits
 
 
-# adam optimizer values
+# use the adam settings from the parity fixture
 learning_rate = 0.01
-beta1 = 0.85
-beta2 = 0.99
+beta1 = 0.9
+beta2 = 0.999
 eps_adam = 1e-8
 m: list[float] = [0.0] * len(params)  # first moment buffer
 v: list[float] = [0.0] * len(params)  # second moment buffer
 
 
-# train loop
-step_times = []
+initial_params = tuple(p.data for p in params)
+batches = []
 for step in range(NUM_STEPS):
-    t0 = time.perf_counter()
     doc = docs[step % len(docs)]
-    tokens = [BOS] + [uchars.index(ch) for ch in doc] + [BOS]  # turn to token ids
-    n = min(BLOCK_SIZE, len(tokens) - 1)  # num prediction steps
-
-    # forward
-    keys: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
-    values: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
-    losses = []
-    for pos_id in range(n):
-        # predict
-        token_id = tokens[pos_id]
-        target_id = tokens[pos_id + 1]
-        logits = gpt(token_id, pos_id, keys, values)
-        # compute loss
-        probs = softmax(logits)
-        loss_t = -probs[target_id].log()
-        losses.append(loss_t)
-    loss = (1 / n) * sum(losses)
-
-    # compute gradients (∂loss/∂p for every param p)
-    loss.backward()
-
-    # adam optimizer weight update
-    lr_t = learning_rate * (1 - step / NUM_STEPS)  # linear learning rate decay
-    for i, p in enumerate(params):
-        m[i] = beta1 * m[i] + (1 - beta1) * p.grad
-        v[i] = beta2 * v[i] + (1 - beta2) * p.grad**2
-        m_hat = m[i] / (1 - beta1 ** (step + 1))
-        v_hat = v[i] / (1 - beta2 ** (step + 1))
-        p.data -= lr_t * m_hat / (v_hat**0.5 + eps_adam)  # update weights
-        p.grad = 0  # reset gradients
-
-    step_times.append(time.perf_counter() - t0)
-    print(f"step {step + 1:4d} / {NUM_STEPS:4d} | loss {loss.data:.4f}", end="\r")
-
-assert_weights_match({k: [[v.data for v in row] for row in mat] for k, mat in state_dict.items()})
+    tokens = [BOS] + [uchars.index(ch) for ch in doc] + [BOS]
+    batches.append(tokens[: BLOCK_SIZE + 1])
 
 
-#
-# inference
-#
+def reset() -> None:
+    for p, data in zip(params, initial_params):
+        p.data = data
+        p.grad = 0
+    m[:] = [0.0] * len(params)
+    v[:] = [0.0] * len(params)
 
 
-print("\ninference:")
-temperature = 0.5
-for sample_idx in range(20):
-    keys: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
-    values: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
-    token_id = BOS
-    sample = []
-    for pos_id in range(BLOCK_SIZE):
-        logits = gpt(token_id, pos_id, keys, values)
-        probs = softmax([logit / temperature for logit in logits])
-        # sample from distribution
-        token_id = random.choices(range(vocab_size), weights=[p.data for p in probs])[0]
-        if token_id == BOS:
-            break
-        sample.append(uchars[token_id])
-    print(f"sample {sample_idx + 1:2d}: {''.join(sample)}")
+def train() -> None:
+    for step, tokens in enumerate(batches):
+        n = len(tokens) - 1
+        # forward
+        keys: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
+        values: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
+        losses = []
+        for pos_id in range(n):
+            # predict
+            token_id = tokens[pos_id]
+            target_id = tokens[pos_id + 1]
+            logits = gpt(token_id, pos_id, keys, values)
+            # compute loss
+            probs = softmax(logits)
+            loss_t = -probs[target_id].log()
+            losses.append(loss_t)
+        loss = (1 / n) * sum(losses)
+
+        # compute gradients (∂loss/∂p for every param p)
+        loss.backward()
+
+        # adam optimizer weight update
+        lr_t = learning_rate * (1 - step / NUM_STEPS)  # linear learning rate decay
+        for i, p in enumerate(params):
+            m[i] = beta1 * m[i] + (1 - beta1) * p.grad
+            v[i] = beta2 * v[i] + (1 - beta2) * p.grad**2
+            m_hat = m[i] / (1 - beta1 ** (step + 1))
+            v_hat = v[i] / (1 - beta2 ** (step + 1))
+            p.data -= lr_t * m_hat / (v_hat**0.5 + eps_adam)  # update weights
+            p.grad = 0  # reset gradients
+
+
+def check() -> None:
+    assert_weights_match({k: [[v.data for v in row] for row in mat] for k, mat in state_dict.items()})
+
+
+def inference() -> None:
+    print("\ninference:")
+    temperature = 0.5
+    for sample_idx in range(20):
+        keys: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
+        values: list[list[list[Value]]] = [[] for _ in range(N_LAYER)]
+        token_id = BOS
+        sample = []
+        for pos_id in range(BLOCK_SIZE):
+            logits = gpt(token_id, pos_id, keys, values)
+            probs = softmax([logit / temperature for logit in logits])
+            # sample from distribution
+            token_id = random.choices(range(vocab_size), weights=[p.data for p in probs])[0]
+            if token_id == BOS:
+                break
+            sample.append(uchars[token_id])
+        print(f"sample {sample_idx + 1:2d}: {''.join(sample)}")
+
+
+if __name__ == "__main__":
+    train()
+    check()
+    inference()

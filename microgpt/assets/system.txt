@@ -1,0 +1,4 @@
+OS: macOS 26.5.1 (arm64)
+Host: Mac14,10
+CPU: Apple M2 Pro (12 cores)
+Memory: 16 GiB

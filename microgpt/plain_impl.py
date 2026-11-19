@@ -1,11 +1,10 @@
 import math
 import random
-import time
 from collections import namedtuple
+from copy import deepcopy
 from operator import mul
 from pathlib import Path
 
-from tqdm import tqdm
 from utils import assert_weights_match
 
 random.seed(42)
@@ -263,7 +262,7 @@ def step_fn(params: dict, opt_state: dict, input_ids: list[int], target_ids: lis
     grads = backward(params, cache)
 
     lr = 0.01 * (1 - step / NUM_STEPS)
-    beta1, beta2, eps = 0.85, 0.99, 1e-8
+    beta1, beta2, eps = 0.9, 0.999, 1e-8
     inv_bias1 = 1.0 / (1 - beta1 ** (step + 1))
     inv_bias2 = 1.0 / (1 - beta2 ** (step + 1))
     lr_scaled = lr * inv_bias1
@@ -326,11 +325,24 @@ opt_state = {
 
 tokenized = [tokenize(doc, uchars) for doc in docs]
 
-step_times = []
-for step in tqdm(range(NUM_STEPS)):
-    t0 = time.perf_counter()
-    input_ids, target_ids, loss_mask = tokenized[step % len(tokenized)]
-    loss, state_dict, opt_state = step_fn(state_dict, opt_state, input_ids, target_ids, loss_mask, step)
-    step_times.append(time.perf_counter() - t0)
+initial_state = deepcopy(state_dict), deepcopy(opt_state)
 
-assert_weights_match({k: [[float(v) for v in row] for row in mat] for k, mat in state_dict.items()})
+
+def reset() -> None:
+    global state_dict, opt_state
+    state_dict, opt_state = deepcopy(initial_state)
+
+
+def train() -> None:
+    for step in range(NUM_STEPS):
+        input_ids, target_ids, loss_mask = tokenized[step % len(tokenized)]
+        step_fn(state_dict, opt_state, input_ids, target_ids, loss_mask, step)
+
+
+def check() -> None:
+    assert_weights_match(state_dict)
+
+
+if __name__ == "__main__":
+    train()
+    check()

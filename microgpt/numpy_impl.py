@@ -1,5 +1,4 @@
 import random
-import time
 from collections import namedtuple
 from pathlib import Path
 
@@ -133,8 +132,8 @@ def backward(params: dict, grads: dict, cache: FwdCache) -> None:
 
 ADAM_PARAMS = {
     "LR_T": 0.01 * (1 - np.arange(NUM_STEPS) / NUM_STEPS),
-    "BC1": 1.0 - 0.85 ** (np.arange(NUM_STEPS) + 1),
-    "BC2": 1.0 - 0.99 ** (np.arange(NUM_STEPS) + 1),
+    "BC1": 1.0 - 0.9 ** (np.arange(NUM_STEPS) + 1),
+    "BC2": 1.0 - 0.999 ** (np.arange(NUM_STEPS) + 1),
 }
 
 
@@ -152,12 +151,12 @@ def step_fn(params: dict, opt_state: dict, grads: dict, input_ids: np.ndarray, t
     buf = opt_state["buf"]
     tmp = opt_state["tmp"]
 
-    np.multiply(buf, 0.15, out=tmp)
-    flat_m *= 0.85
+    np.multiply(buf, 0.1, out=tmp)
+    flat_m *= 0.9
     flat_m += tmp
     np.multiply(buf, buf, out=tmp)
-    tmp *= 0.01
-    flat_v *= 0.99
+    tmp *= 0.001
+    flat_v *= 0.999
     flat_v += tmp
 
     np.divide(flat_m, bc1, out=tmp)
@@ -231,11 +230,25 @@ opt_state = {
 
 tokenized = [tokenize(doc, uchars) for doc in docs]
 
-step_times = []
-for step in range(NUM_STEPS):
-    t0 = time.perf_counter()
-    input_ids, target_ids, loss_mask = tokenized[step % len(tokenized)]
-    loss, state_dict, opt_state = step_fn(state_dict, opt_state, grads, input_ids, target_ids, loss_mask, step)
-    step_times.append(time.perf_counter() - t0)
+initial_params = flat_params.copy()
 
-assert_weights_match({k: [[float(v) for v in row] for row in mat] for k, mat in state_dict.items()})
+
+def reset() -> None:
+    flat_params[:] = initial_params
+    for name in ("flat_m", "flat_v"):
+        opt_state[name].fill(0.0)
+
+
+def train() -> None:
+    for step in range(NUM_STEPS):
+        input_ids, target_ids, loss_mask = tokenized[step % len(tokenized)]
+        step_fn(state_dict, opt_state, grads, input_ids, target_ids, loss_mask, step)
+
+
+def check() -> None:
+    assert_weights_match({k: mat.tolist() for k, mat in state_dict.items()})
+
+
+if __name__ == "__main__":
+    train()
+    check()

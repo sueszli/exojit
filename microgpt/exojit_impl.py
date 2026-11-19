@@ -535,11 +535,27 @@ static_args = {
     "all_beta2_t": ctypes.addressof(all_beta2_t),
 }
 
-t0 = time.perf_counter()
-train_loop(**static_args)
-total_time = time.perf_counter() - t0
-mean_us = total_time / NUM_STEPS * 1e6
+initial_params = flat_params[:]
 
-display = lambda k: ("layer0." + k) if k.startswith(("attn", "mlp")) else k
-assert_weights_match({display(k): [[float(params[k][i * s[1] + j]) for j in range(s[1])] for i in range(len(params[k]) // s[1])] for k, s in PARAMS_SHAPES.items()})
-assert_no_perf_regression(mean_us)
+
+def reset() -> None:
+    flat_params[:] = initial_params
+    for buf in (opt_m, opt_v):
+        ctypes.memset(buf, 0, ctypes.sizeof(buf))
+
+
+def train() -> None:
+    train_loop(**static_args)
+
+
+def check() -> None:
+    display = lambda k: ("layer0." + k) if k.startswith(("attn", "mlp")) else k
+    assert_weights_match({display(k): [[float(params[k][i * s[1] + j]) for j in range(s[1])] for i in range(len(params[k]) // s[1])] for k, s in PARAMS_SHAPES.items()})
+
+
+if __name__ == "__main__":
+    t0 = time.perf_counter()
+    train()
+    elapsed_us = (time.perf_counter() - t0) / NUM_STEPS * 1e6
+    check()
+    assert_no_perf_regression(elapsed_us)

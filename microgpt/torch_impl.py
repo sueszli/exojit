@@ -1,5 +1,4 @@
 import random
-import time
 from pathlib import Path
 
 import torch
@@ -45,15 +44,15 @@ def step_fn(params: dict[str, torch.Tensor], opt_state: dict[str, dict[str, torc
     grads, loss = torch.func.grad_and_value(forward)(params, input_ids, target_ids, loss_mask)
 
     lr = 0.01 * (1 - step / NUM_STEPS)
-    bc1 = 1 - 0.85 ** (step + 1)
-    bc2 = 1 - 0.99 ** (step + 1)
+    bc1 = 1 - 0.9 ** (step + 1)
+    bc2 = 1 - 0.999 ** (step + 1)
 
     new_opt_state = {"m": {}, "v": {}}
     new_params = {}
 
     for k in params:
-        new_m = 0.85 * m[k] + 0.15 * grads[k]
-        new_v = 0.99 * v[k] + 0.01 * grads[k].pow(2)
+        new_m = 0.9 * m[k] + 0.1 * grads[k]
+        new_v = 0.999 * v[k] + 0.001 * grads[k].pow(2)
         new_opt_state["m"][k] = new_m
         new_opt_state["v"][k] = new_v
         new_params[k] = params[k] - lr * (new_m / bc1) / ((new_v / bc2).sqrt() + 1e-8)
@@ -106,14 +105,25 @@ opt_state = {
 
 train_inputs, train_targets, train_masks = tokenize(docs, uchars)
 
-# precompile
-step_fn(state_dict, opt_state, train_inputs[0], train_targets[0], train_masks[0], torch.tensor(0, dtype=torch.float64))
+step_ids = tuple(torch.tensor(step, dtype=torch.float64) for step in range(NUM_STEPS))
+initial_state = state_dict, opt_state
 
-step_times = []
-for step in range(NUM_STEPS):
-    t0 = time.perf_counter()
-    loss, state_dict, opt_state = step_fn(state_dict, opt_state, train_inputs[step], train_targets[step], train_masks[step], torch.tensor(step, dtype=torch.float64))
-    step_times.append(time.perf_counter() - t0)
-    print(f"step {step + 1:4d} / {NUM_STEPS:4d} | loss {loss.item():.4f}", end="\r")
 
-assert_weights_match({k: [[float(v) for v in row] for row in mat] for k, mat in state_dict.items()})
+def reset() -> None:
+    global state_dict, opt_state
+    state_dict, opt_state = initial_state
+
+
+def train() -> None:
+    global state_dict, opt_state
+    for step, step_id in enumerate(step_ids):
+        _, state_dict, opt_state = step_fn(state_dict, opt_state, train_inputs[step], train_targets[step], train_masks[step], step_id)
+
+
+def check() -> None:
+    assert_weights_match({k: mat.tolist() for k, mat in state_dict.items()})
+
+
+if __name__ == "__main__":
+    train()
+    check()

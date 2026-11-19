@@ -1,5 +1,4 @@
 import random
-import time
 from pathlib import Path
 
 import jax
@@ -94,15 +93,29 @@ state_dict: dict[str, jax.Array] = {
     **{f"layer{i}.mlp_fc2": matrix(N_EMBED, 4 * N_EMBED) for i in range(N_LAYER)},
 }
 
-optimizer = optax.adam(optax.linear_schedule(0.01, 0.0, NUM_STEPS), b1=0.85, b2=0.99, eps=1e-8)
+optimizer = optax.adam(optax.linear_schedule(0.01, 0.0, NUM_STEPS), b1=0.9, b2=0.999, eps=1e-8)
 opt_state = optimizer.init(state_dict)
 
 train_inputs, train_targets, train_masks = tokenize(docs, uchars)
 
-t0 = time.perf_counter()
-state_dict, losses = train_fn(state_dict, opt_state, train_inputs, train_targets, train_masks)
-jax.block_until_ready(losses)
-total_time = time.perf_counter() - t0
-step_times = [total_time / NUM_STEPS] * NUM_STEPS  # we cant measure individual steps, everything is jitted at once
+initial_params = state_dict
 
-assert_weights_match({k: [[float(v) for v in row] for row in mat.tolist()] for k, mat in state_dict.items()})
+
+def reset() -> None:
+    global state_dict
+    state_dict = initial_params
+
+
+def train() -> None:
+    global state_dict
+    state_dict, losses = train_fn(state_dict, opt_state, train_inputs, train_targets, train_masks)
+    jax.block_until_ready((state_dict, losses))
+
+
+def check() -> None:
+    assert_weights_match({k: mat.tolist() for k, mat in state_dict.items()})
+
+
+if __name__ == "__main__":
+    train()
+    check()
