@@ -262,7 +262,7 @@ def step_fn(params: dict, opt_state: dict, input_ids: list[int], target_ids: lis
     grads = backward(params, cache)
 
     lr = 0.01 * (1 - step / NUM_STEPS)
-    beta1, beta2, eps = 0.85, 0.99, 1e-8
+    beta1, beta2, eps = 0.9, 0.999, 1e-8
     inv_bias1 = 1.0 / (1 - beta1 ** (step + 1))
     inv_bias2 = 1.0 / (1 - beta2 ** (step + 1))
     lr_scaled = lr * inv_bias1
@@ -339,10 +339,10 @@ def train() -> None:
         step_fn(state_dict, opt_state, input_ids, target_ids, loss_mask, step)
 
 
-def weights() -> dict[str, list[list[float]]]:
-    return state_dict
+def check() -> None:
+    assert_weights_match(state_dict)
 
 
 if __name__ == "__main__":
     train()
-    assert_weights_match(weights())
+    check()

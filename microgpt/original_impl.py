@@ -221,10 +221,10 @@ def gpt(
     return logits
 
 
-# adam optimizer values
+# use the adam settings from the parity fixture
 learning_rate = 0.01
-beta1 = 0.85
-beta2 = 0.99
+beta1 = 0.9
+beta2 = 0.999
 eps_adam = 1e-8
 m: list[float] = [0.0] * len(params)  # first moment buffer
 v: list[float] = [0.0] * len(params)  # second moment buffer
@@ -278,13 +278,13 @@ def train() -> None:
             p.grad = 0  # reset gradients
 
 
-def weights() -> dict[str, list[list[float]]]:
-    return {k: [[v.data for v in row] for row in mat] for k, mat in state_dict.items()}
+def check() -> None:
+    assert_weights_match({k: [[v.data for v in row] for row in mat] for k, mat in state_dict.items()})
 
 
 if __name__ == "__main__":
     train()
-    assert_weights_match(weights())
+    check()
 
     print("\ninference:")
     temperature = 0.5

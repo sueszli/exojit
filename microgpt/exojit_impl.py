@@ -22,12 +22,6 @@ BLOCK_SIZE = 16
 N_HEAD = 4
 NUM_STEPS = 1000
 
-# the standalone parity check uses the adam settings that produced weights.json
-if __name__ == "__main__":
-    BETA1, BETA2, MIX1, MIX2 = 0.9, 0.999, 0.1, 0.001
-else:
-    BETA1, BETA2, MIX1, MIX2 = 0.85, 0.99, 0.15, 0.01
-
 HEAD_DIM = N_EMBED // N_HEAD
 CAUSAL_MASK_VALUE = -1e10
 ATTN_SCALE = 1.0 / HEAD_DIM**0.5
@@ -240,8 +234,8 @@ def adam(N: size, param: f64[N] @ DRAM, grad: f64[N] @ DRAM, m: f64[N] @ DRAM, v
         m_hat: f64 @ DRAM
         v_hat: f64 @ DRAM
         g = grad[i]
-        m_val = BETA1 * m[i] + MIX1 * g
-        v_val = BETA2 * v[i] + MIX2 * g * g
+        m_val = 0.9 * m[i] + 0.1 * g
+        v_val = 0.999 * v[i] + 0.001 * g * g
         m_hat = m_val * inv_beta1_t
         v_hat = v_val * inv_beta2_t
         param[i] = param[i] - lr[0] * m_hat / (sqrt(v_hat) + 1e-8)
@@ -503,14 +497,13 @@ flat_params = (ctypes.c_double * n)(*(random.gauss(0.0, 0.08) for _ in range(n))
 params = partition(PARAMS_SHAPES, flat_params)
 flat_grads, opt_m, opt_v = ((ctypes.c_double * n)() for _ in range(3))
 grads = partition(PARAMS_SHAPES, flat_grads)
-scratch_buffer = (ctypes.c_double * sum(prod(s) for s in SCRATCH_SHAPES.values()))()
-scratch = partition(SCRATCH_SHAPES, scratch_buffer)
+scratch = partition(SCRATCH_SHAPES, (ctypes.c_double * sum(prod(s) for s in SCRATCH_SHAPES.values()))())
 opt_lr, opt_bc1, opt_bc2, cur_inv_sum_mask = ((ctypes.c_double * 1)() for _ in range(4))
 cur_loss_mask = (ctypes.c_double * BLOCK_SIZE)()
 
 all_lr = (ctypes.c_double * NUM_STEPS)(*(0.01 * (1.0 - s / NUM_STEPS) for s in range(NUM_STEPS)))
-all_beta1_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - BETA1 ** (s + 1) for s in range(NUM_STEPS)))
-all_beta2_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - BETA2 ** (s + 1) for s in range(NUM_STEPS)))
+all_beta1_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - 0.9 ** (s + 1) for s in range(NUM_STEPS)))
+all_beta2_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - 0.999 ** (s + 1) for s in range(NUM_STEPS)))
 
 batches = [tokenized[s % len(tokenized)] for s in range(NUM_STEPS)]
 all_input_ids = (ctypes.c_int64 * (NUM_STEPS * BLOCK_SIZE))(*(v for b in batches for v in b["input_ids"]))
@@ -547,7 +540,7 @@ initial_params = flat_params[:]
 
 def reset() -> None:
     flat_params[:] = initial_params
-    for buf in (flat_grads, opt_m, opt_v, scratch_buffer):
+    for buf in (opt_m, opt_v):
         ctypes.memset(buf, 0, ctypes.sizeof(buf))
 
 
@@ -555,14 +548,14 @@ def train() -> None:
     train_loop(**static_args)
 
 
-def weights() -> dict[str, list[list[float]]]:
+def check() -> None:
     display = lambda k: ("layer0." + k) if k.startswith(("attn", "mlp")) else k
-    return {display(k): [[float(params[k][i * s[1] + j]) for j in range(s[1])] for i in range(len(params[k]) // s[1])] for k, s in PARAMS_SHAPES.items()}
+    assert_weights_match({display(k): [[float(params[k][i * s[1] + j]) for j in range(s[1])] for i in range(len(params[k]) // s[1])] for k, s in PARAMS_SHAPES.items()})
 
 
 if __name__ == "__main__":
     t0 = time.perf_counter()
     train()
     elapsed_us = (time.perf_counter() - t0) / NUM_STEPS * 1e6
-    assert_weights_match(weights())
+    check()
     assert_no_perf_regression(elapsed_us)

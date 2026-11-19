@@ -10,8 +10,9 @@ WEIGHTS_PATH = ROOT / "weights.json"
 TIMES_DIR = ROOT / "times"
 
 
-def assert_weights_match(state_dict: dict[str, list[list[float]]], atol: float = 1e-5, *, reference: dict[str, list[list[float]]] | None = None) -> None:
-    ref = reference if reference is not None else json.loads(WEIGHTS_PATH.read_text())
+def assert_weights_match(state_dict: dict[str, list[list[float]]], atol: float = 1e-5) -> None:
+    assert WEIGHTS_PATH.is_file(), f"weights file not found: {WEIGHTS_PATH}"
+    ref = json.loads(WEIGHTS_PATH.read_text())
     assert set(ref) == set(state_dict), f"key mismatch: ref={set(ref) - set(state_dict)} cur={set(state_dict) - set(ref)}"
 
     for k in ref:

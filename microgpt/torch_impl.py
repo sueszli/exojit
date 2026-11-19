@@ -44,15 +44,15 @@ def step_fn(params: dict[str, torch.Tensor], opt_state: dict[str, dict[str, torc
     grads, loss = torch.func.grad_and_value(forward)(params, input_ids, target_ids, loss_mask)
 
     lr = 0.01 * (1 - step / NUM_STEPS)
-    bc1 = 1 - 0.85 ** (step + 1)
-    bc2 = 1 - 0.99 ** (step + 1)
+    bc1 = 1 - 0.9 ** (step + 1)
+    bc2 = 1 - 0.999 ** (step + 1)
 
     new_opt_state = {"m": {}, "v": {}}
     new_params = {}
 
     for k in params:
-        new_m = 0.85 * m[k] + 0.15 * grads[k]
-        new_v = 0.99 * v[k] + 0.01 * grads[k].pow(2)
+        new_m = 0.9 * m[k] + 0.1 * grads[k]
+        new_v = 0.999 * v[k] + 0.001 * grads[k].pow(2)
         new_opt_state["m"][k] = new_m
         new_opt_state["v"][k] = new_v
         new_params[k] = params[k] - lr * (new_m / bc1) / ((new_v / bc2).sqrt() + 1e-8)
@@ -120,10 +120,10 @@ def train() -> None:
         _, state_dict, opt_state = step_fn(state_dict, opt_state, train_inputs[step], train_targets[step], train_masks[step], step_id)
 
 
-def weights() -> dict[str, list[list[float]]]:
-    return {k: mat.tolist() for k, mat in state_dict.items()}
+def check() -> None:
+    assert_weights_match({k: mat.tolist() for k, mat in state_dict.items()})
 
 
 if __name__ == "__main__":
     train()
-    assert_weights_match(weights())
+    check()

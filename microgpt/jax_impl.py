@@ -93,7 +93,7 @@ state_dict: dict[str, jax.Array] = {
     **{f"layer{i}.mlp_fc2": matrix(N_EMBED, 4 * N_EMBED) for i in range(N_LAYER)},
 }
 
-optimizer = optax.adam(optax.linear_schedule(0.01, 0.0, NUM_STEPS), b1=0.85, b2=0.99, eps=1e-8)
+optimizer = optax.adam(optax.linear_schedule(0.01, 0.0, NUM_STEPS), b1=0.9, b2=0.999, eps=1e-8)
 opt_state = optimizer.init(state_dict)
 
 train_inputs, train_targets, train_masks = tokenize(docs, uchars)
@@ -112,10 +112,10 @@ def train() -> None:
     jax.block_until_ready((state_dict, losses))
 
 
-def weights() -> dict[str, list[list[float]]]:
-    return {k: mat.tolist() for k, mat in state_dict.items()}
+def check() -> None:
+    assert_weights_match({k: mat.tolist() for k, mat in state_dict.items()})
 
 
 if __name__ == "__main__":
     train()
-    assert_weights_match(weights())
+    check()
