@@ -9,6 +9,7 @@ from time import perf_counter_ns
 import polars as pl
 import tyro
 
+ASSETS = Path(__file__).resolve().parent / "assets"
 BACKENDS = ("original", "plain", "numpy", "torch", "jax", "exojit")
 RUNS = 5
 STEPS = 1000
@@ -68,7 +69,7 @@ def format_table(medians: dict[str, float]) -> str:
 
 
 def main(output: Path | None = None, table_from: Path | None = None, plot: Path | None = None, worker: str | None = None) -> None:
-    """Benchmark warmed 1,000-step MicroGPT runs."""
+    """Benchmark warmed 1,000-step MicroGPT runs and save the CSV and chart in assets/."""
     if worker is not None:
         # keep backend diagnostics out of the timing csv
         with redirect_stdout(sys.stderr):
@@ -76,7 +77,12 @@ def main(output: Path | None = None, table_from: Path | None = None, plot: Path 
         runs.write_csv(sys.stdout)
         return
 
-    runs = collect_runs() if table_from is None else read_runs(table_from)
+    if table_from is None:
+        output = output or ASSETS / "benchmark.csv"
+        plot = plot or ASSETS / "benchmark.svg"
+        runs = collect_runs()
+    else:
+        runs = read_runs(table_from)
     medians = medians_in_us(runs)
     if output is not None:
         runs.write_csv(output)

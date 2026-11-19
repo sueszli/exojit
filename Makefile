@@ -41,7 +41,7 @@ leaderboard:
 
 .PHONY: benchmark
 benchmark:
-	uv run --locked python microgpt/benchmark.py --plot microgpt/assets/benchmark.svg --output "$(or $(OUTPUT),microgpt/assets/benchmark.csv)"
+	uv run --locked python microgpt/benchmark.py
 
 .PHONY: benchmark-archived
 # match the renderer used for the original chart
