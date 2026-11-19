@@ -22,12 +22,14 @@ NUM_STEPS = 1000  # num training steps
 # load
 docs = (Path(__file__).parent / "input.txt").read_text().splitlines()
 random.shuffle(docs)
+print(f"num docs: {len(docs)}")
 
 
 # tokenize
 uchars = sorted(set("".join(docs)))  # unique chars as tokens
 BOS = len(uchars)  # beginning of sequence BOS token
 vocab_size = len(uchars) + 1
+print(f"vocab size: {vocab_size}")
 
 
 class Value:
@@ -120,6 +122,7 @@ for i in range(N_LAYER):
     state_dict[f"layer{i}.mlp_fc1"] = matrix(4 * N_EMBED, N_EMBED)  # fully connected 1
     state_dict[f"layer{i}.mlp_fc2"] = matrix(N_EMBED, 4 * N_EMBED)  # fully connected 2
 params: list[Value] = [p for mat in state_dict.values() for row in mat for p in row]  # flatten
+print(f"num params: {len(params)}")
 
 
 def linear(x: list[Value], w: list[list[Value]]) -> list[Value]:
@@ -228,7 +231,11 @@ v: list[float] = [0.0] * len(params)  # second moment buffer
 
 
 initial_params = tuple(p.data for p in params)
-batches = [[BOS, *[uchars.index(ch) for ch in doc], BOS][: BLOCK_SIZE + 1] for doc in (docs[step % len(docs)] for step in range(NUM_STEPS))]
+batches = []
+for step in range(NUM_STEPS):
+    doc = docs[step % len(docs)]
+    tokens = [BOS] + [uchars.index(ch) for ch in doc] + [BOS]
+    batches.append(tokens[: BLOCK_SIZE + 1])
 
 
 def reset() -> None:

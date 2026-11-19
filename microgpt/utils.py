@@ -11,13 +11,13 @@ TIMES_DIR = ROOT / "times"
 
 
 def assert_weights_match(state_dict: dict[str, list[list[float]]], atol: float = 1e-5, *, reference: dict[str, list[list[float]]] | None = None) -> None:
-    ref = reference
-    if ref is None:
-        ref = json.loads(WEIGHTS_PATH.read_text())
+    ref = reference if reference is not None else json.loads(WEIGHTS_PATH.read_text())
     assert set(ref) == set(state_dict), f"key mismatch: ref={set(ref) - set(state_dict)} cur={set(state_dict) - set(ref)}"
 
     for k in ref:
-        assert len(ref[k]) == len(state_dict[k]) and len(ref[k][0]) == len(state_dict[k][0]), f"shape mismatch '{k}': {len(ref[k])}x{len(ref[k][0])} vs {len(state_dict[k])}x{len(state_dict[k][0])}"
+        expected = ref[k]
+        actual = state_dict[k]
+        assert len(expected) == len(actual) and all(len(r) == len(c) for r, c in zip(expected, actual)), f"shape mismatch '{k}'"
 
     max_diff = 0.0
     max_loc = ""

@@ -1,0 +1,99 @@
+{
+  "hardware": {
+    "cpu": "Apple M2 Pro",
+    "architecture": "arm64",
+    "logical_cores": 12,
+    "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O"
+  },
+  "python": "3.14.5",
+  "versions": {
+    "exojit": "0.1.0",
+    "exo-lang": "1.0.0",
+    "xdsl": "0.70.1.dev28+gad4fb9c27",
+    "llvmlite": "0.46.0",
+    "numpy": "2.4.2",
+    "torch": "2.10.0",
+    "jax": "0.9.1",
+    "jaxlib": "0.9.1",
+    "optax": "0.2.9"
+  },
+  "input_sha256": "0a30b5557f192f32ab962680889aac5f6fda0f4cecf40a6d0b5694f58ea8cc4d",
+  "environment": {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "VECLIB_MAXIMUM_THREADS": "1",
+    "JAX_PLATFORMS": "cpu"
+  },
+  "warmup_runs": 1,
+  "measured_runs": 5,
+  "backends": {
+    "original": {
+      "steps_per_run": 1000,
+      "samples_ns": [
+        63691181250,
+        65302942417,
+        64973973667,
+        63558778375,
+        64944869708
+      ],
+      "median_step_us": 64944.869708
+    },
+    "plain": {
+      "steps_per_run": 1000,
+      "samples_ns": [
+        6462826292,
+        6417080750,
+        6450542791,
+        6615766584,
+        6431067083
+      ],
+      "median_step_us": 6450.542791
+    },
+    "numpy": {
+      "steps_per_run": 1000,
+      "samples_ns": [
+        161032667,
+        161950958,
+        167291458,
+        165375000,
+        164326500
+      ],
+      "median_step_us": 164.3265
+    },
+    "torch": {
+      "steps_per_run": 1000,
+      "samples_ns": [
+        194551958,
+        195485125,
+        195123709,
+        193749167,
+        190118458
+      ],
+      "median_step_us": 194.551958
+    },
+    "jax": {
+      "steps_per_run": 1000,
+      "samples_ns": [
+        79871750,
+        79346000,
+        79641958,
+        80447042,
+        81149000
+      ],
+      "median_step_us": 79.87175
+    },
+    "exojit": {
+      "steps_per_run": 1000,
+      "samples_ns": [
+        46698792,
+        46669083,
+        45933666,
+        46421959,
+        46586250
+      ],
+      "median_step_us": 46.58625
+    }
+  },
+  "reference_sha256": "fdc146b376bae64dac02d1c617bdb01afa688f620dcb98fab73980059715f5ca"
+}

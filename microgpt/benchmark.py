@@ -40,12 +40,10 @@ def measure(backend: str, warmups: int, runs: int, reference_path: Path) -> dict
         impl.train()
         elapsed = time.perf_counter_ns() - t0
         actual = impl.weights()
+        assert_weights_match(actual, reference=actual if reference is None else reference)
         if reference is None:
-            assert_weights_match(actual, reference=actual)
             reference = actual
             reference_path.write_text(json.dumps(reference, separators=(",", ":")))
-        else:
-            assert_weights_match(actual, reference=reference)
         if i < warmups:
             print(f"{backend}: warm-up {i + 1}/{warmups} passed", file=sys.stderr, flush=True)
         else:
@@ -117,7 +115,7 @@ def save_plot(samples: dict[str, list[float]], path: Path, *, archived: bool = F
         for row, name in enumerate(order):
             if name in whole_loop:
                 # The archived CSV repeats one whole-loop mean, not individual samples.
-                if set(samples[name]) != {centers[name]}:
+                if len(set(samples[name])) != 1:
                     raise ValueError(f"{name}: expected a repeated whole-loop mean")
                 ax.scatter([centers[name]], [row], s=11, facecolors="none", edgecolors=blue, linewidths=0.63, zorder=3)
             else:
@@ -185,7 +183,7 @@ def save_plot(samples: dict[str, list[float]], path: Path, *, archived: bool = F
             },
         )
         if path.suffix.lower() == ".svg":
-            path.write_text("\n".join(line.rstrip() for line in path.read_text().splitlines()) + "\n")
+            path.write_text("\n".join(line.rstrip() for line in path.read_text(encoding="utf-8").splitlines()) + "\n", encoding="utf-8")
 
 
 def show_report(report: dict, plot: Path | None) -> None:
@@ -217,9 +215,11 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.worker:
-        if not args.reference:
-            parser.error("--worker requires --reference")
-        print(json.dumps(measure(args.worker, args.warmups, args.runs, args.reference)))
+        if not args.reference or not args.output:
+            parser.error("--worker requires --reference and --output")
+        result = measure(args.worker, args.warmups, args.runs, args.reference)
+        with args.output.open("x") as f:
+            json.dump(result, f)
         return
 
     if args.archived_plot:
@@ -246,9 +246,10 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="exojit-microgpt-") as temp:
         reference = Path(temp) / "weights.json"
         for backend in BACKENDS:
-            command = [sys.executable, __file__, "--worker", backend, "--warmups", str(args.warmups), "--runs", str(args.runs), "--reference", str(reference)]
-            process = subprocess.run(command, stdout=subprocess.PIPE, text=True, env={**os.environ, **BENCH_ENV}, check=True)
-            report["backends"][backend] = json.loads(process.stdout)
+            result = reference.with_name(f"{backend}.json")
+            command = [sys.executable, __file__, "--worker", backend, "--warmups", str(args.warmups), "--runs", str(args.runs), "--reference", str(reference), "--output", str(result)]
+            subprocess.run(command, stdout=sys.stderr, env={**os.environ, **BENCH_ENV}, check=True)
+            report["backends"][backend] = json.loads(result.read_text())
         report["reference_sha256"] = hashlib.sha256(reference.read_bytes()).hexdigest()
 
     if args.output:
