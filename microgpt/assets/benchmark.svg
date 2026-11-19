@@ -19,7 +19,13 @@
   </rdf:RDF>
  </metadata>
  <defs>
-  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}
+@media (prefers-color-scheme: dark) {
+  g[id^="text_"] { fill: #e5eafa }
+  path[style*="stroke: #d9d9d9"] { stroke: #596175 !important }
+  path[style*="fill: #2459b5"] { fill: #78a9ff !important }
+}
+</style>
  </defs>
  <g id="figure_1">
   <g id="patch_1">
@@ -27,8 +33,9 @@
 L 360 126
 L 360 0
 L 0 0
+L 0 126
 z
-" style="fill: #ffffff"/>
+" style="fill: none"/>
   </g>
   <g id="axes_1">
    <g id="patch_2">
@@ -36,8 +43,9 @@ z
 L 297 97
 L 297 16
 L 96 16
+L 96 97
 z
-" style="fill: #ffffff"/>
+" style="fill: none"/>
    </g>
    <g id="matplotlib.axis_1">
     <g id="xtick_1">
