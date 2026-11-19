@@ -19,10 +19,11 @@ def save_benchmark_plot(medians: dict[str, float], path: Path) -> None:
 
     with rc_context({"font.family": "cmr10", "font.size": 7.5, "mathtext.fontset": "cm", "axes.formatter.use_mathtext": True, "svg.fonttype": "path", "svg.hashsalt": "microgpt-benchmark"}):
         width, height = 360, 126
+        bar_color, grid_color = "#2459b5", "#d9d9d9"
         fig = Figure(figsize=(width / 72, height / 72), facecolor="white")
         ax = fig.add_axes((96 / width, 29 / height, 201 / width, 81 / height))
         ax.set_xscale("log")
-        ax.barh(range(len(order)), [time - left for time in times], left=left, height=0.48, color="#2459b5")
+        ax.barh(range(len(order)), [time - left for time in times], left=left, height=0.48, color=bar_color)
         ax.set_xlim(left, ticks[-1])
         ax.set_xticks(ticks, [f"{tick / 1000:g} ms" if tick >= 1000 else "$" + rf"{tick:g}\,\mu\mathrm{{s}}" + "$" for tick in ticks])
         ax.set_yticks(range(len(order)), [labels[name] for name in order])
@@ -30,7 +31,7 @@ def save_benchmark_plot(medians: dict[str, float], path: Path) -> None:
         ax.set_xlabel("median time per training step (log scale, lower is better)", fontsize=7, labelpad=6)
         ax.tick_params(axis="both", which="both", length=0, pad=4)
         ax.set_axisbelow(True)
-        ax.grid(axis="x", which="major", color="#d9d9d9", linewidth=0.3)
+        ax.grid(axis="x", which="major", color=grid_color, linewidth=0.3)
         for spine in ax.spines.values():
             spine.set_visible(False)
 
@@ -42,6 +43,15 @@ def save_benchmark_plot(medians: dict[str, float], path: Path) -> None:
 
         description = "Horizontal bars show median runtime per training step on a logarithmic scale. Each bar starts at the smallest labeled tick, not zero. Shorter is faster."
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, dpi=216, metadata={"Title": "MicroGPT training time", "Description": description, "Date": None})
-        if path.suffix.lower() == ".svg":
-            path.write_text("\n".join(line.rstrip() for line in path.read_text(encoding="utf-8").splitlines()) + "\n", encoding="utf-8")
+        svg_output = path.suffix.lower() == ".svg"
+        fig.savefig(path, dpi=216, transparent=svg_output, metadata={"Title": "MicroGPT training time", "Description": description, "Date": None})
+        if svg_output:
+            dark = f"""
+@media (prefers-color-scheme: dark) {{
+  g[id^="text_"] {{ fill: #e5eafa }}
+  path[style*="stroke: {grid_color}"] {{ stroke: #596175 !important }}
+  path[style*="fill: {bar_color}"] {{ fill: #78a9ff !important }}
+}}
+"""
+            svg = path.read_text(encoding="utf-8").replace("</style>", dark + "</style>", 1)
+            path.write_text("\n".join(line.rstrip() for line in svg.splitlines()) + "\n", encoding="utf-8")
