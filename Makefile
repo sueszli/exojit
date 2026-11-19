@@ -49,4 +49,4 @@ benchmark-kernels:
 
 .PHONY: benchmark-matmul
 benchmark-matmul:
-	@uv run --locked python microgpt/kernels/benchmark_matmul_schedule.py
+	@uv run --locked python microgpt/kernels/bench_matmul.py

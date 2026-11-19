@@ -7,6 +7,7 @@ from time import perf_counter_ns
 
 import polars as pl
 import tyro
+from benchmark_plot import save_benchmark_plot
 
 
 def measure(backend: str, runs: int, steps: int) -> pl.DataFrame:
@@ -29,9 +30,9 @@ def measure(backend: str, runs: int, steps: int) -> pl.DataFrame:
 
 def read_runs(source: Path | bytes) -> pl.DataFrame:
     schema = {"backend": pl.String, "run": pl.Int64, "steps": pl.Int64, "elapsed_ns": pl.Int64}
-    runs = pl.read_csv(source, infer_schema=False, raise_if_empty=False, glob=False)
+    runs = pl.read_csv(source, schema_overrides=schema, ignore_errors=True, raise_if_empty=False, glob=False)
     assert runs.columns == list(schema), "invalid timing csv header"
-    return runs.cast(schema, strict=False)
+    return runs
 
 
 def collect_runs(backends: tuple[str, ...], runs: int) -> pl.DataFrame:
@@ -63,16 +64,10 @@ def main(output: Path | None = None, from_csv: Path | None = None, plot: Path | 
         return
 
     assets = Path(__file__).resolve().parent / "assets"
-    if from_csv is None:
-        output = output or assets / "benchmark.csv"
-        samples = collect_runs(backends, runs)
-    else:
-        samples = read_runs(from_csv)
+    samples = collect_runs(backends, runs) if from_csv is None else read_runs(from_csv)
     medians = medians_in_us(samples, backends, runs, steps)
-    if output is not None:
-        samples.write_csv(output)
-    from benchmark_plot import save_benchmark_plot
-
+    if from_csv is None or output is not None:
+        samples.write_csv(output or assets / "benchmark.csv")
     save_benchmark_plot(medians, plot or assets / "benchmark.svg")
 
 

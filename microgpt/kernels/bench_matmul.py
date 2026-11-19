@@ -30,23 +30,20 @@ def main(calls: int = 10_000, rounds: int = 9, output: Path | None = None) -> No
     expected = a @ b
     kernel = _matmul.partial_eval(M=size, K=size, N=size)
     out = np.empty_like(a)
-    timers = {}
+    benches = []
     for name, schedule in (("unscheduled", None), ("scheduled", optimize_matmul)):
         out.fill(np.nan)
         call = partial(jit(kernel, optimize=schedule, raw=True), out.ctypes.data, a.ctypes.data, b.ctypes.data)
         timer = Timer(call)
         timer.timeit(number=calls)
         np.testing.assert_allclose(out, expected, rtol=1e-5, atol=1e-5)
-        timers[name] = timer
-
-    times = {name: [] for name in timers}
-    order = tuple(timers)
+        benches.append((name, timer, []))
     # alternate order so either schedule can run first
     for i in range(rounds):
-        for name in order if i % 2 == 0 else order[::-1]:
-            times[name].append(timers[name].timeit(number=calls) * 1e6 / calls)
+        for _, timer, samples in benches if i % 2 == 0 else reversed(benches):
+            samples.append(timer.timeit(number=calls) * 1e6 / calls)
 
-    medians = {name: median(samples) for name, samples in times.items()}
+    medians = {name: median(samples) for name, _, samples in benches}
     rows = [(size, str(a.dtype), name, us, medians["unscheduled"] / us) for name, us in medians.items()]
     pl.DataFrame(rows, schema=["size", "dtype", "schedule", "median_us_per_call", "speedup"], orient="row").write_csv(output, float_precision=2)
 
