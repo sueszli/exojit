@@ -56,30 +56,15 @@ def measure(backend: str, warmups: int, runs: int, reference_path: Path) -> dict
     }
 
 
-def samples_in_us(report: dict) -> dict[str, list[float]]:
-    return {name: [ns / (result["steps_per_run"] * 1000) for ns in result["samples_ns"]] for name, result in report["backends"].items()}
+def medians_in_us(report: dict) -> dict[str, float]:
+    return {name: statistics.median(result["samples_ns"]) / result["steps_per_run"] / 1000 for name, result in report["backends"].items()}
 
 
-def format_table(report: dict) -> str:
-    samples_us = samples_in_us(report)
-    medians = {name: statistics.median(samples) for name, samples in samples_us.items()}
+def format_table(medians: dict[str, float]) -> str:
+    header = f"{'name':<8}  {'median us':<9}  speedup"
     baseline = medians["original"]
-    headings = ("name", "median us", "IQR", "min", "max", "speedup")
-    rows = []
-    for name in sorted(medians, key=medians.get):
-        samples = samples_us[name]
-        q1, _, q3 = statistics.quantiles(samples, n=4, method="inclusive") if len(samples) > 1 else samples * 3
-        iqr = q3 - q1
-        spread = "<1" if 0 < iqr < 1 else f"{iqr:.0f}"
-        rows.append((name, f"{medians[name]:.0f}", spread, f"{min(samples):.0f}", f"{max(samples):.0f}", f"{baseline / medians[name]:.0f}x"))
-
-    widths = [max(map(len, column)) for column in zip(headings, *rows)]
-
-    def render(row: tuple[str, ...]) -> str:
-        return "  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip()
-
-    header = render(headings)
-    return "\n".join((header, "─" * len(header), *(render(row) for row in rows)))
+    rows = [f"{name:<8}  {medians[name]:<9.0f}  {baseline / medians[name]:.0f}x" for name in sorted(medians, key=medians.get)]
+    return "\n".join((header, "─" * len(header), *rows))
 
 
 def archived_samples_in_us() -> dict[str, list[float]]:
@@ -90,24 +75,28 @@ def archived_samples_in_us() -> dict[str, list[float]]:
     return samples
 
 
-def save_plot(samples: dict[str, list[float]], path: Path, *, archived: bool = False) -> None:
+PLOT_NAMES = {"exojit": "ExoJIT", "jax": "JAX", "numpy": "NumPy", "torch": "PyTorch", "plain": "Python (Optimized)", "original": "Python (Original)"}
+PLOT_BLUE = "#2459b5"
+PLOT_STYLE = {"font.family": "cmr10", "font.size": 7.5, "mathtext.fontset": "cm", "axes.formatter.use_mathtext": True, "svg.fonttype": "path"}
+
+
+def save_figure(fig, path: Path, title: str, description: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=216, metadata={"Title": title, "Description": description, "Date": None})
+    if path.suffix.lower() == ".svg":
+        path.write_text("\n".join(line.rstrip() for line in path.read_text(encoding="utf-8").splitlines()) + "\n", encoding="utf-8")
+
+
+def save_archived_plot(samples: dict[str, list[float]], path: Path) -> None:
     from matplotlib import rc_context
     from matplotlib.figure import Figure
     from matplotlib.transforms import blended_transform_factory
 
-    names = {"exojit": "ExoJIT", "jax": "JAX", "numpy": "NumPy", "torch": "PyTorch", "plain": "Python (Optimized)", "original": "Python (Original)"}
-    if archived:
-        centers = {name: int(statistics.mean(values)) for name, values in samples.items()}
-        whole_loop = {"exojit", "jax"}
-    else:
-        centers = {name: statistics.median(values) for name, values in samples.items()}
-        whole_loop = set()
+    centers = {name: int(statistics.mean(values)) for name, values in samples.items()}
     order = sorted(centers, key=centers.get)
-    data = [samples[name] for name in order]
-    blue = "#2459b5"
+    whole_loop = {"exojit", "jax"}
 
-    salt = "exojit-microgpt-training" if archived else "microgpt-benchmark"
-    with rc_context({"font.family": "cmr10", "font.size": 7.5, "mathtext.fontset": "cm", "axes.formatter.use_mathtext": True, "svg.fonttype": "path", "svg.hashsalt": salt}):
+    with rc_context(PLOT_STYLE | {"svg.hashsalt": "exojit-microgpt-training"}):
         width, height = 360, 126
         fig = Figure(figsize=(width / 72, height / 72), facecolor="white")
         ax = fig.add_axes((96 / width, 29 / height, 175 / width, 81 / height))
@@ -117,35 +106,28 @@ def save_plot(samples: dict[str, list[float]], path: Path, *, archived: bool = F
                 # The archived CSV repeats one whole-loop mean, not individual samples.
                 if len(set(samples[name])) != 1:
                     raise ValueError(f"{name}: expected a repeated whole-loop mean")
-                ax.scatter([centers[name]], [row], s=11, facecolors="none", edgecolors=blue, linewidths=0.63, zorder=3)
+                ax.scatter([centers[name]], [row], s=11, facecolors="none", edgecolors=PLOT_BLUE, linewidths=0.63, zorder=3)
             else:
                 step_rows.append(row)
         ax.boxplot(
-            [data[row] for row in step_rows],
+            [samples[order[row]] for row in step_rows],
             orientation="horizontal",
             manage_ticks=False,
             positions=step_rows,
             widths=0.46,
-            showfliers=archived,
+            showfliers=True,
             patch_artist=True,
-            boxprops={"facecolor": "#e7eef9", "edgecolor": blue, "linewidth": 0.55},
+            boxprops={"facecolor": "#e7eef9", "edgecolor": PLOT_BLUE, "linewidth": 0.55},
             medianprops={"color": "#173d83", "linewidth": 0.65},
-            whiskerprops={"color": blue, "linewidth": 0.45},
-            capprops={"color": blue, "linewidth": 0.45},
-            flierprops={"marker": ".", "markersize": 1.6, "markerfacecolor": blue, "markeredgewidth": 0, "alpha": 0.28, "zorder": 2},
+            whiskerprops={"color": PLOT_BLUE, "linewidth": 0.45},
+            capprops={"color": PLOT_BLUE, "linewidth": 0.45},
+            flierprops={"marker": ".", "markersize": 1.6, "markerfacecolor": PLOT_BLUE, "markeredgewidth": 0, "alpha": 0.28, "zorder": 2},
         )
-        if not archived:
-            for row, values in enumerate(data):
-                offsets = [row + 0.3 * (i - (len(values) - 1) / 2) / max(len(values) - 1, 1) for i in range(len(values))]
-                ax.scatter(sorted(values), offsets, s=2.4, color=blue, linewidths=0, alpha=0.55, zorder=3)
-
-        lo = 1 if archived else math.floor(math.log10(min(map(min, data))))
-        hi = 5 if archived else max(lo + 1, math.ceil(math.log10(max(map(max, data)))))
-        ticks = [10**exponent for exponent in range(lo, hi + 1)]
+        ticks = [10, 100, 1000, 10_000, 100_000]
         ax.set_xscale("log")
         ax.set_xlim(ticks[0], 2 * ticks[-1])
         ax.set_xticks(ticks, [f"{tick / 1000:g} ms" if tick >= 1000 else "$" + rf"{tick:g}\,\mu\mathrm{{s}}" + "$" for tick in ticks])
-        ax.set_yticks(range(len(order)), [names[name] for name in order])
+        ax.set_yticks(range(len(order)), [PLOT_NAMES[name] for name in order])
         ax.set_ylim(len(order) - 0.45, -0.55)
         ax.set_xlabel("time per training step (log scale)", fontsize=7, labelpad=6)
         ax.tick_params(axis="both", which="both", length=0)
@@ -156,7 +138,7 @@ def save_plot(samples: dict[str, list[float]], path: Path, *, archived: bool = F
         for spine in ax.spines.values():
             spine.set_visible(False)
 
-        columns = [(306, "mean" if archived else "median"), (348, "vs. original")]
+        columns = [(306, "mean"), (348, "vs. original")]
         row_text = blended_transform_factory(fig.transFigure, ax.transData)
         for x, heading in columns:
             fig.text(x / width, 1 - 10.5 / height, heading, ha="right", va="center")
@@ -167,29 +149,56 @@ def save_plot(samples: dict[str, list[float]], path: Path, *, archived: bool = F
             for (x, _), label in zip(columns, (elapsed, speedup)):
                 ax.text(x / width, row, label, transform=row_text, ha="right", va="center")
 
-        if archived:
-            description = "Four horizontal boxplots summarize individual training steps. Hollow circles mark the whole-loop means for ExoJIT and JAX. Durations are shown on a logarithmic axis. " + "; ".join(f"{names[name]}: {centers[name]} microseconds" for name in order) + f". The ExoJIT port is about {centers['original'] / centers['exojit']:,.0f} times faster than the original implementation."
-        else:
-            description = "Horizontal boxplots of time per training step on a log scale. Each dot is one measured run. Columns show the median and its speedup relative to the original Python implementation."
+        description = "Four horizontal boxplots summarize individual training steps. Hollow circles mark the whole-loop means for ExoJIT and JAX. Durations are shown on a logarithmic axis. " + "; ".join(f"{PLOT_NAMES[name]}: {centers[name]} microseconds" for name in order) + f". The ExoJIT port is about {centers['original'] / centers['exojit']:,.0f} times faster than the original implementation."
+        save_figure(fig, path, "MicroGPT training time", description)
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(
-            path,
-            dpi=216,
-            metadata={
-                "Title": "MicroGPT training time" if archived else "MicroGPT training times",
-                "Description": description,
-                "Date": None,
-            },
-        )
-        if path.suffix.lower() == ".svg":
-            path.write_text("\n".join(line.rstrip() for line in path.read_text(encoding="utf-8").splitlines()) + "\n", encoding="utf-8")
+
+def save_median_plot(medians: dict[str, float], path: Path) -> None:
+    from matplotlib import rc_context
+    from matplotlib.figure import Figure
+    from matplotlib.transforms import blended_transform_factory
+
+    names = PLOT_NAMES | {"plain": "Optimized Python", "original": "Original Python"}
+    order = sorted(medians, key=medians.get)
+    times = [medians[name] for name in order]
+    lo = math.floor(math.log10(min(times)))
+    if 10**lo == min(times):
+        lo -= 1
+    hi = max(lo + 1, math.ceil(math.log10(max(times))))
+    ticks = [10**exponent for exponent in range(lo, hi + 1)]
+    left = ticks[0]
+
+    with rc_context(PLOT_STYLE | {"svg.hashsalt": "microgpt-benchmark"}):
+        width, height = 360, 126
+        fig = Figure(figsize=(width / 72, height / 72), facecolor="white")
+        ax = fig.add_axes((96 / width, 29 / height, 201 / width, 81 / height))
+        ax.set_xscale("log")
+        ax.barh(range(len(order)), [time - left for time in times], left=left, height=0.48, color=PLOT_BLUE)
+        ax.set_xlim(left, ticks[-1])
+        ax.set_xticks(ticks, [f"{tick / 1000:g} ms" if tick >= 1000 else "$" + rf"{tick:g}\,\mu\mathrm{{s}}" + "$" for tick in ticks])
+        ax.set_yticks(range(len(order)), [names[name] for name in order])
+        ax.set_ylim(len(order) - 0.45, -0.55)
+        ax.set_xlabel("median time per training step (log scale, lower is better)", fontsize=7, labelpad=6)
+        ax.tick_params(axis="both", which="both", length=0, pad=4)
+        ax.set_axisbelow(True)
+        ax.grid(axis="x", which="major", color="#d9d9d9", linewidth=0.3)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        row_text = blended_transform_factory(fig.transFigure, ax.transData)
+        fig.text(348 / width, 1 - 10.5 / height, "median", ha="right", va="center")
+        for row, us in enumerate(times):
+            elapsed = "$" + (rf"{us:.0f}\,\mu\mathrm{{s}}" if us < 1000 else rf"{us / 1000:.1f}\,\mathrm{{ms}}") + "$"
+            ax.text(348 / width, row, elapsed, transform=row_text, ha="right", va="center")
+
+        save_figure(fig, path, "MicroGPT training time", "Horizontal bars show median runtime per training step on a logarithmic scale. Each bar starts at the smallest labeled tick, not zero. Shorter is faster.")
 
 
 def show_report(report: dict, plot: Path | None) -> None:
-    print(format_table(report))
+    medians = medians_in_us(report)
+    print(format_table(medians))
     if plot is not None:
-        save_plot(samples_in_us(report), plot)
+        save_median_plot(medians, plot)
         print(f"Plot: {plot}", file=sys.stderr)
 
 
@@ -223,7 +232,7 @@ def main() -> None:
         return
 
     if args.archived_plot:
-        save_plot(archived_samples_in_us(), args.archived_plot, archived=True)
+        save_archived_plot(archived_samples_in_us(), args.archived_plot)
         print(f"Plot: {args.archived_plot}", file=sys.stderr)
         return
 

@@ -34,14 +34,14 @@ in Exo and benchmarked it against NumPy, PyTorch, JAX,
 and karpathy's original scalar autograd.
 
 
-    name      median us  IQR   min    max    speedup
-    ────────────────────────────────────────────────
-    exojit    47         <1    46     47     1394x
-    jax       80         <1    79     81     813x
-    numpy     164        3     161    167    395x
-    torch     195        1     190    195    334x
-    plain     6451       32    6417   6616   10x
-    original  64945      1283  63559  65303  1x
+    name      median us  speedup
+    ────────────────────────────
+    exojit    47         1394x
+    jax       80         813x
+    numpy     164        395x
+    torch     195        334x
+    plain     6451       10x
+    original  64945      1x
 
 
 There's also an incomplete Apple Metal prototype.

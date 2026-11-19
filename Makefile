@@ -51,3 +51,7 @@ benchmark-archived:
 .PHONY: benchmark-kernels
 benchmark-kernels:
 	uv run --locked python microgpt/kernels/run.py
+
+.PHONY: benchmark-matmul
+benchmark-matmul:
+	uv run --locked python microgpt/kernels/benchmark_matmul_schedule.py
