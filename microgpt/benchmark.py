@@ -1,6 +1,8 @@
 import argparse
+import csv
 import hashlib
 import json
+import math
 import os
 import platform
 import statistics
@@ -10,8 +12,6 @@ import tempfile
 import time
 from importlib import import_module, metadata
 from pathlib import Path
-
-from utils import assert_weights_match
 
 BACKENDS = ("original", "plain", "numpy", "torch", "jax", "exojit")
 THREAD_ENV = dict.fromkeys(("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"), "1")
@@ -27,6 +27,8 @@ def positive_int(value: str) -> int:
 
 
 def measure(backend: str, warmups: int, runs: int, reference_path: Path) -> dict:
+    from utils import assert_weights_match
+
     impl = import_module(f"{backend}_impl")
     reference = json.loads(reference_path.read_text()) if reference_path.exists() else None
     if reference is None and backend != "original":
@@ -56,25 +58,141 @@ def measure(backend: str, warmups: int, runs: int, reference_path: Path) -> dict
     }
 
 
+def samples_in_us(report: dict) -> dict[str, list[float]]:
+    return {name: [ns / (result["steps_per_run"] * 1000) for ns in result["samples_ns"]] for name, result in report["backends"].items()}
+
+
 def format_table(report: dict) -> str:
-    samples_us = {name: [ns / (result["steps_per_run"] * 1000) for ns in result["samples_ns"]] for name, result in report["backends"].items()}
+    samples_us = samples_in_us(report)
     medians = {name: statistics.median(samples) for name, samples in samples_us.items()}
     baseline = medians["original"]
-    headings = ("name", "median μs", "IQR μs", "min μs", "max μs", "speedup")
+    headings = ("name", "median us", "IQR", "min", "max", "speedup")
     rows = []
     for name in sorted(medians, key=medians.get):
         samples = samples_us[name]
         q1, _, q3 = statistics.quantiles(samples, n=4, method="inclusive") if len(samples) > 1 else samples * 3
-        rows.append((name, f"{medians[name]:,.1f}", f"{q3 - q1:,.1f}", f"{min(samples):,.1f}", f"{max(samples):,.1f}", f"{baseline / medians[name]:,.1f}x"))
+        iqr = q3 - q1
+        spread = "<1" if 0 < iqr < 1 else f"{iqr:.0f}"
+        rows.append((name, f"{medians[name]:.0f}", spread, f"{min(samples):.0f}", f"{max(samples):.0f}", f"{baseline / medians[name]:.0f}x"))
 
     widths = [max(map(len, column)) for column in zip(headings, *rows)]
 
     def render(row: tuple[str, ...]) -> str:
-        name, *values = row
-        return "  ".join((name.ljust(widths[0]), *(value.rjust(width) for value, width in zip(values, widths[1:]))))
+        return "  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip()
 
     header = render(headings)
     return "\n".join((header, "─" * len(header), *(render(row) for row in rows)))
+
+
+def archived_samples_in_us() -> dict[str, list[float]]:
+    samples = {}
+    for name in BACKENDS:
+        with (ROOT / "times" / f"{name}.csv").open(newline="") as f:
+            samples[name] = [float(row["time_ms"]) * 1000 for row in csv.DictReader(f)]
+    return samples
+
+
+def save_plot(samples: dict[str, list[float]], path: Path, *, archived: bool = False) -> None:
+    from matplotlib import rc_context
+    from matplotlib.figure import Figure
+    from matplotlib.transforms import blended_transform_factory
+
+    names = {"exojit": "ExoJIT", "jax": "JAX", "numpy": "NumPy", "torch": "PyTorch", "plain": "Python (Optimized)", "original": "Python (Original)"}
+    if archived:
+        centers = {name: int(statistics.mean(values)) for name, values in samples.items()}
+        whole_loop = {"exojit", "jax"}
+    else:
+        centers = {name: statistics.median(values) for name, values in samples.items()}
+        whole_loop = set()
+    order = sorted(centers, key=centers.get)
+    data = [samples[name] for name in order]
+    blue = "#2459b5"
+
+    salt = "exojit-microgpt-training" if archived else "microgpt-benchmark"
+    with rc_context({"font.family": "cmr10", "font.size": 7.5, "mathtext.fontset": "cm", "axes.formatter.use_mathtext": True, "svg.fonttype": "path", "svg.hashsalt": salt}):
+        width, height = 360, 126
+        fig = Figure(figsize=(width / 72, height / 72), facecolor="white")
+        ax = fig.add_axes((96 / width, 29 / height, 175 / width, 81 / height))
+        step_rows = []
+        for row, name in enumerate(order):
+            if name in whole_loop:
+                # The archived CSV repeats one whole-loop mean, not individual samples.
+                if set(samples[name]) != {centers[name]}:
+                    raise ValueError(f"{name}: expected a repeated whole-loop mean")
+                ax.scatter([centers[name]], [row], s=11, facecolors="none", edgecolors=blue, linewidths=0.63, zorder=3)
+            else:
+                step_rows.append(row)
+        ax.boxplot(
+            [data[row] for row in step_rows],
+            orientation="horizontal",
+            manage_ticks=False,
+            positions=step_rows,
+            widths=0.46,
+            showfliers=archived,
+            patch_artist=True,
+            boxprops={"facecolor": "#e7eef9", "edgecolor": blue, "linewidth": 0.55},
+            medianprops={"color": "#173d83", "linewidth": 0.65},
+            whiskerprops={"color": blue, "linewidth": 0.45},
+            capprops={"color": blue, "linewidth": 0.45},
+            flierprops={"marker": ".", "markersize": 1.6, "markerfacecolor": blue, "markeredgewidth": 0, "alpha": 0.28, "zorder": 2},
+        )
+        if not archived:
+            for row, values in enumerate(data):
+                offsets = [row + 0.3 * (i - (len(values) - 1) / 2) / max(len(values) - 1, 1) for i in range(len(values))]
+                ax.scatter(sorted(values), offsets, s=2.4, color=blue, linewidths=0, alpha=0.55, zorder=3)
+
+        lo = 1 if archived else math.floor(math.log10(min(map(min, data))))
+        hi = 5 if archived else max(lo + 1, math.ceil(math.log10(max(map(max, data)))))
+        ticks = [10**exponent for exponent in range(lo, hi + 1)]
+        ax.set_xscale("log")
+        ax.set_xlim(ticks[0], 2 * ticks[-1])
+        ax.set_xticks(ticks, [f"{tick / 1000:g} ms" if tick >= 1000 else "$" + rf"{tick:g}\,\mu\mathrm{{s}}" + "$" for tick in ticks])
+        ax.set_yticks(range(len(order)), [names[name] for name in order])
+        ax.set_ylim(len(order) - 0.45, -0.55)
+        ax.set_xlabel("time per training step (log scale)", fontsize=7, labelpad=6)
+        ax.tick_params(axis="both", which="both", length=0)
+        ax.tick_params(axis="x", pad=3)
+        ax.tick_params(axis="y", pad=5)
+        ax.set_axisbelow(True)
+        ax.grid(axis="x", which="major", color="#d9d9d9", linewidth=0.3)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        columns = [(306, "mean" if archived else "median"), (348, "vs. original")]
+        row_text = blended_transform_factory(fig.transFigure, ax.transData)
+        for x, heading in columns:
+            fig.text(x / width, 1 - 10.5 / height, heading, ha="right", va="center")
+        for row, name in enumerate(order):
+            us = centers[name]
+            elapsed = "$" + (rf"{us:.0f}\,\mu\mathrm{{s}}" if us < 1000 else rf"{us / 1000:.3f}\,\mathrm{{ms}}") + "$"
+            speedup = f"{centers['original'] / us:,.0f}x"
+            for (x, _), label in zip(columns, (elapsed, speedup)):
+                ax.text(x / width, row, label, transform=row_text, ha="right", va="center")
+
+        if archived:
+            description = "Four horizontal boxplots summarize individual training steps. Hollow circles mark the whole-loop means for ExoJIT and JAX. Durations are shown on a logarithmic axis. " + "; ".join(f"{names[name]}: {centers[name]} microseconds" for name in order) + f". The ExoJIT port is about {centers['original'] / centers['exojit']:,.0f} times faster than the original implementation."
+        else:
+            description = "Horizontal boxplots of time per training step on a log scale. Each dot is one measured run. Columns show the median and its speedup relative to the original Python implementation."
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(
+            path,
+            dpi=216,
+            metadata={
+                "Title": "MicroGPT training time" if archived else "MicroGPT training times",
+                "Description": description,
+                "Date": None,
+            },
+        )
+        if path.suffix.lower() == ".svg":
+            path.write_text("\n".join(line.rstrip() for line in path.read_text().splitlines()) + "\n")
+
+
+def show_report(report: dict, plot: Path | None) -> None:
+    print(format_table(report))
+    if plot is not None:
+        save_plot(samples_in_us(report), plot)
+        print(f"Plot: {plot}", file=sys.stderr)
 
 
 def hardware() -> dict:
@@ -92,6 +210,8 @@ def main() -> None:
     parser.add_argument("--warmups", type=positive_int, default=1)
     parser.add_argument("--output", type=Path, help="Write run data to a new JSON file")
     parser.add_argument("--table-from", type=Path, help="Print the table for a saved JSON report without rerunning")
+    parser.add_argument("--plot", type=Path, help="Save a horizontal boxplot after printing the table")
+    parser.add_argument("--archived-plot", type=Path, help="Rebuild the original chart from the archived per-step CSVs")
     parser.add_argument("--worker", choices=BACKENDS, help=argparse.SUPPRESS)
     parser.add_argument("--reference", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -102,8 +222,13 @@ def main() -> None:
         print(json.dumps(measure(args.worker, args.warmups, args.runs, args.reference)))
         return
 
+    if args.archived_plot:
+        save_plot(archived_samples_in_us(), args.archived_plot, archived=True)
+        print(f"Plot: {args.archived_plot}", file=sys.stderr)
+        return
+
     if args.table_from:
-        print(format_table(json.loads(args.table_from.read_text())))
+        show_report(json.loads(args.table_from.read_text()), args.plot)
         return
 
     if args.output and args.output.exists():
@@ -129,7 +254,7 @@ def main() -> None:
     if args.output:
         with args.output.open("x") as f:
             f.write(json.dumps(report, indent=2) + "\n")
-    print(format_table(report))
+    show_report(report, args.plot)
 
 
 if __name__ == "__main__":
