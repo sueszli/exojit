@@ -1,7 +1,5 @@
-import csv
 import ctypes
 import random
-import time
 from itertools import accumulate
 from math import prod
 from pathlib import Path
@@ -26,8 +24,6 @@ HEAD_DIM = N_EMBED // N_HEAD
 CAUSAL_MASK_VALUE = -1e10
 ATTN_SCALE = 1.0 / HEAD_DIM**0.5
 INV_N = 1.0 / N_EMBED
-
-TIMES_PATH = Path(__file__).resolve().parent / "times.csv"
 
 
 #
@@ -234,8 +230,8 @@ def adam(N: size, param: f64[N] @ DRAM, grad: f64[N] @ DRAM, m: f64[N] @ DRAM, v
         m_hat: f64 @ DRAM
         v_hat: f64 @ DRAM
         g = grad[i]
-        m_val = 0.9 * m[i] + 0.1 * g
-        v_val = 0.999 * v[i] + 0.001 * g * g
+        m_val = 0.85 * m[i] + 0.15 * g
+        v_val = 0.99 * v[i] + 0.01 * g * g
         m_hat = m_val * inv_beta1_t
         v_hat = v_val * inv_beta2_t
         param[i] = param[i] - lr[0] * m_hat / (sqrt(v_hat) + 1e-8)
@@ -406,18 +402,6 @@ def train_loop(vocab_size: size, total_params: size, emb: f64[BLOCK_SIZE, N_EMBE
         adam(total_params, flat_params, flat_grads, opt_m, opt_v, lr, beta1_t, beta2_t)
 
 
-def assert_no_perf_regression(actual_us: float, tolerance: float = 0.20) -> None:
-    if not TIMES_PATH.exists():
-        return
-    with open(TIMES_PATH) as f:
-        times_us = [float(row["time_ms"]) * 1000 for row in csv.DictReader(f)]
-    if not times_us:
-        return
-    baseline_us = sum(times_us) / len(times_us)
-    max_allowed_us = baseline_us * (1 + tolerance)
-    assert actual_us <= max_allowed_us, f"perf regression: {actual_us:.0f}µs > {max_allowed_us:.0f}µs (baseline {baseline_us:.0f}µs, tolerance {tolerance:.0%})"
-
-
 #
 # main
 #
@@ -497,13 +481,14 @@ flat_params = (ctypes.c_double * n)(*(random.gauss(0.0, 0.08) for _ in range(n))
 params = partition(PARAMS_SHAPES, flat_params)
 flat_grads, opt_m, opt_v = ((ctypes.c_double * n)() for _ in range(3))
 grads = partition(PARAMS_SHAPES, flat_grads)
-scratch = partition(SCRATCH_SHAPES, (ctypes.c_double * sum(prod(s) for s in SCRATCH_SHAPES.values()))())
+scratch_buffer = (ctypes.c_double * sum(prod(s) for s in SCRATCH_SHAPES.values()))()
+scratch = partition(SCRATCH_SHAPES, scratch_buffer)
 opt_lr, opt_bc1, opt_bc2, cur_inv_sum_mask = ((ctypes.c_double * 1)() for _ in range(4))
 cur_loss_mask = (ctypes.c_double * BLOCK_SIZE)()
 
 all_lr = (ctypes.c_double * NUM_STEPS)(*(0.01 * (1.0 - s / NUM_STEPS) for s in range(NUM_STEPS)))
-all_beta1_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - 0.9 ** (s + 1) for s in range(NUM_STEPS)))
-all_beta2_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - 0.999 ** (s + 1) for s in range(NUM_STEPS)))
+all_beta1_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - 0.85 ** (s + 1) for s in range(NUM_STEPS)))
+all_beta2_t = (ctypes.c_double * NUM_STEPS)(*(1.0 - 0.99 ** (s + 1) for s in range(NUM_STEPS)))
 
 batches = [tokenized[s % len(tokenized)] for s in range(NUM_STEPS)]
 all_input_ids = (ctypes.c_int64 * (NUM_STEPS * BLOCK_SIZE))(*(v for b in batches for v in b["input_ids"]))
@@ -535,11 +520,24 @@ static_args = {
     "all_beta2_t": ctypes.addressof(all_beta2_t),
 }
 
-t0 = time.perf_counter()
-train_loop(**static_args)
-total_time = time.perf_counter() - t0
-mean_us = total_time / NUM_STEPS * 1e6
+initial_params = flat_params[:]
 
-display = lambda k: ("layer0." + k) if k.startswith(("attn", "mlp")) else k
-assert_weights_match({display(k): [[float(params[k][i * s[1] + j]) for j in range(s[1])] for i in range(len(params[k]) // s[1])] for k, s in PARAMS_SHAPES.items()})
-assert_no_perf_regression(mean_us)
+
+def reset() -> None:
+    flat_params[:] = initial_params
+    for buf in (flat_grads, opt_m, opt_v, scratch_buffer):
+        ctypes.memset(buf, 0, ctypes.sizeof(buf))
+
+
+def train() -> None:
+    train_loop(**static_args)
+
+
+def weights() -> dict[str, list[list[float]]]:
+    display = lambda k: ("layer0." + k) if k.startswith(("attn", "mlp")) else k
+    return {display(k): [[float(params[k][i * s[1] + j]) for j in range(s[1])] for i in range(len(params[k]) // s[1])] for k, s in PARAMS_SHAPES.items()}
+
+
+if __name__ == "__main__":
+    train()
+    assert_weights_match(weights())

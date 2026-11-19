@@ -1,5 +1,4 @@
 import random
-import time
 from pathlib import Path
 
 import torch
@@ -106,14 +105,25 @@ opt_state = {
 
 train_inputs, train_targets, train_masks = tokenize(docs, uchars)
 
-# precompile
-step_fn(state_dict, opt_state, train_inputs[0], train_targets[0], train_masks[0], torch.tensor(0, dtype=torch.float64))
+step_ids = tuple(torch.tensor(step, dtype=torch.float64) for step in range(NUM_STEPS))
+initial_state = state_dict, opt_state
 
-step_times = []
-for step in range(NUM_STEPS):
-    t0 = time.perf_counter()
-    loss, state_dict, opt_state = step_fn(state_dict, opt_state, train_inputs[step], train_targets[step], train_masks[step], torch.tensor(step, dtype=torch.float64))
-    step_times.append(time.perf_counter() - t0)
-    print(f"step {step + 1:4d} / {NUM_STEPS:4d} | loss {loss.item():.4f}", end="\r")
 
-assert_weights_match({k: [[float(v) for v in row] for row in mat] for k, mat in state_dict.items()})
+def reset() -> None:
+    global state_dict, opt_state
+    state_dict, opt_state = initial_state
+
+
+def train() -> None:
+    global state_dict, opt_state
+    for step, step_id in enumerate(step_ids):
+        _, state_dict, opt_state = step_fn(state_dict, opt_state, train_inputs[step], train_targets[step], train_masks[step], step_id)
+
+
+def weights() -> dict[str, list[list[float]]]:
+    return {k: mat.tolist() for k, mat in state_dict.items()}
+
+
+if __name__ == "__main__":
+    train()
+    assert_weights_match(weights())

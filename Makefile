@@ -40,11 +40,9 @@ leaderboard:
 	uv run python microgpt/utils.py
 
 .PHONY: benchmark
-benchmark:
-	uv run python microgpt/original_impl.py
-	uv run python microgpt/plain_impl.py
-	uv run python microgpt/numpy_impl.py
-	uv run python microgpt/torch_impl.py
-	uv run python microgpt/jax_impl.py
-	uv run python microgpt/exojit_impl.py
+benchmark: benchmark-microgpt
 	uv run python microgpt/kernels/run.py
+
+.PHONY: benchmark-microgpt
+benchmark-microgpt:
+	uv run --locked python microgpt/benchmark.py

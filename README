@@ -33,6 +33,7 @@ I also reimplemented microGPT with every kernel written
 in Exo and benchmarked it against NumPy, PyTorch, JAX,
 and karpathy's original scalar autograd.
 
+Archived timings (mixed per-step and whole-loop measurements):
 
      name      mean μs  ±σ     min    max     speedup 
     ──────────────────────────────────────────────────
@@ -42,6 +43,22 @@ and karpathy's original scalar autograd.
      jax       503      0      503    503     132     
      plain     7042     720    6670   18530   9       
      original  66601    20604  20522  179583  1       
+
+
+For comparable run-level samples, run:
+
+    $ uv run --locked python microgpt/benchmark.py --output results.json
+
+The runner uses a separate process per backend and runs them sequentially on
+the CPU. The default is one untimed 1,000-step warm-up followed by five timed
+1,000-step runs per backend. It resets model and optimizer state before each
+run. Input preparation, warm-up (including JIT compilation), and reference
+weight checks are outside the timed region. The original Python warm-up
+generates the reference for all runs. All backends use Adam betas 0.85 and 0.99.
+
+The output records total nanoseconds for each run and median microseconds per
+step, plus hardware, package versions, and hashes of the model inputs and
+reference weights. It does not replace the archived microgpt/times CSVs.
 
 
 There's also an incomplete Apple Metal prototype.

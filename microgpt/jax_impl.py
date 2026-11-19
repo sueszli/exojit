@@ -1,5 +1,4 @@
 import random
-import time
 from pathlib import Path
 
 import jax
@@ -99,10 +98,24 @@ opt_state = optimizer.init(state_dict)
 
 train_inputs, train_targets, train_masks = tokenize(docs, uchars)
 
-t0 = time.perf_counter()
-state_dict, losses = train_fn(state_dict, opt_state, train_inputs, train_targets, train_masks)
-jax.block_until_ready(losses)
-total_time = time.perf_counter() - t0
-step_times = [total_time / NUM_STEPS] * NUM_STEPS  # we cant measure individual steps, everything is jitted at once
+initial_params = state_dict
 
-assert_weights_match({k: [[float(v) for v in row] for row in mat.tolist()] for k, mat in state_dict.items()})
+
+def reset() -> None:
+    global state_dict
+    state_dict = initial_params
+
+
+def train() -> None:
+    global state_dict
+    state_dict, losses = train_fn(state_dict, opt_state, train_inputs, train_targets, train_masks)
+    jax.block_until_ready((state_dict, losses))
+
+
+def weights() -> dict[str, list[list[float]]]:
+    return {k: mat.tolist() for k, mat in state_dict.items()}
+
+
+if __name__ == "__main__":
+    train()
+    assert_weights_match(weights())

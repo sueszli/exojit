@@ -1,5 +1,4 @@
 import random
-import time
 from collections import namedtuple
 from pathlib import Path
 
@@ -231,11 +230,25 @@ opt_state = {
 
 tokenized = [tokenize(doc, uchars) for doc in docs]
 
-step_times = []
-for step in range(NUM_STEPS):
-    t0 = time.perf_counter()
-    input_ids, target_ids, loss_mask = tokenized[step % len(tokenized)]
-    loss, state_dict, opt_state = step_fn(state_dict, opt_state, grads, input_ids, target_ids, loss_mask, step)
-    step_times.append(time.perf_counter() - t0)
+initial_params = flat_params.copy()
 
-assert_weights_match({k: [[float(v) for v in row] for row in mat] for k, mat in state_dict.items()})
+
+def reset() -> None:
+    flat_params[:] = initial_params
+    for name in ("flat_m", "flat_v", "buf", "tmp"):
+        opt_state[name].fill(0.0)
+
+
+def train() -> None:
+    for step in range(NUM_STEPS):
+        input_ids, target_ids, loss_mask = tokenized[step % len(tokenized)]
+        step_fn(state_dict, opt_state, grads, input_ids, target_ids, loss_mask, step)
+
+
+def weights() -> dict[str, list[list[float]]]:
+    return {k: mat.tolist() for k, mat in state_dict.items()}
+
+
+if __name__ == "__main__":
+    train()
+    assert_weights_match(weights())
