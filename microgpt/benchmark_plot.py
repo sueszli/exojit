@@ -131,3 +131,9 @@ def save_median_plot(medians: dict[str, float], path: Path) -> None:
         ax.text(348 / width, row, elapsed, transform=row_text, ha="right", va="center")
 
     save_figure(fig, path, "MicroGPT training time", "Horizontal bars show median runtime per training step on a logarithmic scale. Each bar starts at the smallest labeled tick, not zero. Shorter is faster.")
+
+
+if __name__ == "__main__":
+    import tyro
+
+    tyro.cli(save_archived_plot)

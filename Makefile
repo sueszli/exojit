@@ -46,7 +46,7 @@ benchmark:
 .PHONY: benchmark-archived
 # match the renderer used for the original chart
 benchmark-archived:
-	uv run --no-project --with matplotlib==3.11.2 python microgpt/benchmark.py --archived-plot microgpt/assets/benchmark-archived.svg
+	uv run --no-project --with matplotlib==3.11.2 --with tyro==1.0.16 python microgpt/benchmark_plot.py --path microgpt/assets/benchmark-archived.svg
 
 .PHONY: benchmark-kernels
 benchmark-kernels:
