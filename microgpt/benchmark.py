@@ -1,7 +1,6 @@
 import os
 import subprocess
 import sys
-from contextlib import redirect_stdout
 from importlib import import_module
 from pathlib import Path
 from time import perf_counter_ns
@@ -24,7 +23,6 @@ def measure(backend: str) -> pl.DataFrame:
     impl.reset()
     impl.train()
     impl.check()
-    print(f"{backend}: warm-up passed", flush=True)
 
     rows = []
     for run in range(1, RUNS + 1):
@@ -34,7 +32,6 @@ def measure(backend: str) -> pl.DataFrame:
         elapsed = perf_counter_ns() - start
         impl.check()
         rows.append((backend, run, STEPS, elapsed))
-        print(f"{backend}: run {run}/{RUNS}, {elapsed / 1e9:.3f} s", flush=True)
     return pl.DataFrame(rows, schema=SCHEMA, orient="row")
 
 
@@ -61,36 +58,23 @@ def medians_in_us(runs: pl.DataFrame) -> dict[str, float]:
     return dict(runs.group_by("backend").agg(pl.col("elapsed_ns").median() / (STEPS * 1000)).iter_rows())
 
 
-def format_table(medians: dict[str, float]) -> str:
-    header = f"{'name':<8}  {'median us':<9}  speedup"
-    baseline = medians["original"]
-    rows = [f"{name:<8}  {medians[name]:<9.0f}  {baseline / medians[name]:.0f}x" for name in sorted(medians, key=medians.get)]
-    return "\n".join((header, "─" * len(header), *rows))
-
-
-def main(output: Path | None = None, table_from: Path | None = None, plot: Path | None = None, worker: str | None = None) -> None:
+def main(output: Path | None = None, from_csv: Path | None = None, plot: Path = ASSETS / "benchmark.svg", worker: str | None = None) -> None:
     """Benchmark warmed 1,000-step MicroGPT runs and save the CSV and chart in assets/."""
     if worker is not None:
-        # keep backend diagnostics out of the timing csv
-        with redirect_stdout(sys.stderr):
-            runs = measure(worker)
-        runs.write_csv(sys.stdout)
+        measure(worker).write_csv(sys.stdout)
         return
 
-    if table_from is None:
+    if from_csv is None:
         output = output or ASSETS / "benchmark.csv"
-        plot = plot or ASSETS / "benchmark.svg"
         runs = collect_runs()
     else:
-        runs = read_runs(table_from)
+        runs = read_runs(from_csv)
     medians = medians_in_us(runs)
     if output is not None:
         runs.write_csv(output)
-    print(format_table(medians))
-    if plot is not None:
-        from benchmark_plot import save_benchmark_plot
+    from benchmark_plot import save_benchmark_plot
 
-        save_benchmark_plot(medians, plot)
+    save_benchmark_plot(medians, plot)
 
 
 if __name__ == "__main__":

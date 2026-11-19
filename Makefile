@@ -41,7 +41,7 @@ leaderboard:
 
 .PHONY: benchmark
 benchmark:
-	uv run --locked python microgpt/benchmark.py
+	@uv run --locked python microgpt/benchmark.py
 
 .PHONY: benchmark-kernels
 benchmark-kernels:
