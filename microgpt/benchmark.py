@@ -8,73 +8,72 @@ from time import perf_counter_ns
 import polars as pl
 import tyro
 
-ASSETS = Path(__file__).resolve().parent / "assets"
-BACKENDS = ("original", "plain", "numpy", "torch", "jax", "exojit")
-RUNS = 5
-STEPS = 1000
-SCHEMA = {"backend": pl.String, "run": pl.Int64, "steps": pl.Int64, "elapsed_ns": pl.Int64}
-CPU_ENV = dict.fromkeys(("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"), "1") | {"JAX_PLATFORMS": "cpu"}
 
-
-def measure(backend: str) -> pl.DataFrame:
-    assert backend in BACKENDS
+def measure(backend: str, runs: int, steps: int) -> pl.DataFrame:
     impl = import_module(f"{backend}_impl")
-    assert impl.NUM_STEPS == STEPS
+    assert impl.NUM_STEPS == steps
     impl.reset()
     impl.train()
     impl.check()
 
-    rows = []
-    for run in range(1, RUNS + 1):
+    timings = []
+    for _ in range(runs):
         impl.reset()
         start = perf_counter_ns()
         impl.train()
         elapsed = perf_counter_ns() - start
         impl.check()
-        rows.append((backend, run, STEPS, elapsed))
-    return pl.DataFrame(rows, schema=SCHEMA, orient="row")
+        timings.append(elapsed)
+    return pl.DataFrame({"backend": backend, "run": range(1, runs + 1), "steps": steps, "elapsed_ns": timings})
 
 
 def read_runs(source: Path | bytes) -> pl.DataFrame:
+    schema = {"backend": pl.String, "run": pl.Int64, "steps": pl.Int64, "elapsed_ns": pl.Int64}
     runs = pl.read_csv(source, infer_schema=False, raise_if_empty=False, glob=False)
-    assert runs.columns == list(SCHEMA), "invalid timing csv header"
-    return runs.cast(SCHEMA, strict=False)
+    assert runs.columns == list(schema), "invalid timing csv header"
+    return runs.cast(schema, strict=False)
 
 
-def collect_runs() -> pl.DataFrame:
-    runs = []
-    for backend in BACKENDS:
-        cmd = [sys.executable, __file__, "--worker", backend]
-        result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, env=os.environ | CPU_ENV)
+def collect_runs(backends: tuple[str, ...], runs: int) -> pl.DataFrame:
+    env = os.environ | dict.fromkeys(("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"), "1") | {"JAX_PLATFORMS": "cpu"}
+    samples = []
+    for backend in backends:
+        cmd = [sys.executable, __file__, "--worker", backend, "--runs", str(runs)]
+        result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, env=env)
         assert result.returncode == 0, f"{backend}: benchmark failed"
-        runs.append(read_runs(result.stdout))
-    return pl.concat(runs)
+        samples.append(read_runs(result.stdout))
+    return pl.concat(samples)
 
 
-def medians_in_us(runs: pl.DataFrame) -> dict[str, float]:
-    assert set(runs["backend"]) == set(BACKENDS), "unexpected backends"
-    assert runs.height == runs.n_unique(["backend", "run"]) == len(BACKENDS) * RUNS, "expected five runs per backend"
-    assert runs.filter(pl.col("run").is_between(1, RUNS), pl.col("steps") == STEPS, pl.col("elapsed_ns") > 0).height == runs.height, "invalid timing sample"
-    return dict(runs.group_by("backend").agg(pl.col("elapsed_ns").median() / (STEPS * 1000)).iter_rows())
+def medians_in_us(samples: pl.DataFrame, backends: tuple[str, ...], runs: int, steps: int) -> dict[str, float]:
+    assert set(samples["backend"]) == set(backends), "unexpected backends"
+    assert samples.height == samples.n_unique(["backend", "run"]) == len(backends) * runs, f"expected {runs} runs per backend"
+    assert samples.filter(pl.col("run").is_between(1, runs), pl.col("steps") == steps, pl.col("elapsed_ns") > 0).height == samples.height, "invalid timing sample"
+    return dict(samples.group_by("backend").agg(pl.col("elapsed_ns").median() / (steps * 1000)).iter_rows())
 
 
-def main(output: Path | None = None, from_csv: Path | None = None, plot: Path = ASSETS / "benchmark.svg", worker: str | None = None) -> None:
+def main(output: Path | None = None, from_csv: Path | None = None, plot: Path | None = None, worker: str | None = None, runs: int = 5) -> None:
     """Benchmark warmed 1,000-step MicroGPT runs and save the CSV and chart in assets/."""
+    backends = ("original", "plain", "numpy", "torch", "jax", "exojit")
+    steps = 1000
+    assert runs > 0, "expected at least one timed run"
     if worker is not None:
-        measure(worker).write_csv(sys.stdout)
+        assert worker in backends
+        measure(worker, runs, steps).write_csv(sys.stdout)
         return
 
+    assets = Path(__file__).resolve().parent / "assets"
     if from_csv is None:
-        output = output or ASSETS / "benchmark.csv"
-        runs = collect_runs()
+        output = output or assets / "benchmark.csv"
+        samples = collect_runs(backends, runs)
     else:
-        runs = read_runs(from_csv)
-    medians = medians_in_us(runs)
+        samples = read_runs(from_csv)
+    medians = medians_in_us(samples, backends, runs, steps)
     if output is not None:
-        runs.write_csv(output)
+        samples.write_csv(output)
     from benchmark_plot import save_benchmark_plot
 
-    save_benchmark_plot(medians, plot)
+    save_benchmark_plot(medians, plot or assets / "benchmark.svg")
 
 
 if __name__ == "__main__":

@@ -11,11 +11,6 @@ from matmul_exo import _matmul
 
 from exojit import jit
 
-SIZE = 32
-CALLS = 10_000
-ROUNDS = 9
-OUTPUT = Path(__file__).resolve().parents[1] / "assets" / "matmul-scheduling.csv"
-
 
 def optimize_matmul(p: Procedure) -> Procedure:
     p = divide_loop(p, "i", 2, ["io", "ii"], perfect=True)
@@ -26,31 +21,34 @@ def optimize_matmul(p: Procedure) -> Procedure:
     return simplify(unroll_loop(p, "ii #1"))
 
 
-def main() -> None:
+def main(calls: int = 10_000, rounds: int = 9, output: Path | None = None) -> None:
+    assert calls > 0 and rounds > 0
+    output = output or Path(__file__).resolve().parents[1] / "assets" / "matmul-scheduling.csv"
+    size = 32
     rng = np.random.default_rng(41)
-    a, b = (rng.uniform(-1, 1, (SIZE, SIZE)).astype(np.float32) for _ in range(2))
+    a, b = (rng.uniform(-1, 1, (size, size)).astype(np.float32) for _ in range(2))
     expected = a @ b
-    kernel = _matmul.partial_eval(M=SIZE, K=SIZE, N=SIZE)
+    kernel = _matmul.partial_eval(M=size, K=size, N=size)
     out = np.empty_like(a)
     timers = {}
     for name, schedule in (("unscheduled", None), ("scheduled", optimize_matmul)):
         out.fill(np.nan)
         call = partial(jit(kernel, optimize=schedule, raw=True), out.ctypes.data, a.ctypes.data, b.ctypes.data)
         timer = Timer(call)
-        timer.timeit(number=CALLS)
+        timer.timeit(number=calls)
         np.testing.assert_allclose(out, expected, rtol=1e-5, atol=1e-5)
         timers[name] = timer
 
     times = {name: [] for name in timers}
     order = tuple(timers)
     # alternate order so either schedule can run first
-    for i in range(ROUNDS):
+    for i in range(rounds):
         for name in order if i % 2 == 0 else order[::-1]:
-            times[name].append(timers[name].timeit(number=CALLS) * 1e6 / CALLS)
+            times[name].append(timers[name].timeit(number=calls) * 1e6 / calls)
 
     medians = {name: median(samples) for name, samples in times.items()}
-    rows = [(SIZE, str(a.dtype), name, us, medians["unscheduled"] / us) for name, us in medians.items()]
-    pl.DataFrame(rows, schema=["size", "dtype", "schedule", "median_us_per_call", "speedup"], orient="row").write_csv(OUTPUT, float_precision=2)
+    rows = [(size, str(a.dtype), name, us, medians["unscheduled"] / us) for name, us in medians.items()]
+    pl.DataFrame(rows, schema=["size", "dtype", "schedule", "median_us_per_call", "speedup"], orient="row").write_csv(output, float_precision=2)
 
 
 if __name__ == "__main__":
