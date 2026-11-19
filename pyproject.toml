@@ -8,31 +8,39 @@ dependencies = [
     "xdsl @ git+https://github.com/xdslproject/xdsl.git@ad4fb9c277a65993a1c988dfeea2b30c52b66db9",
     "tyro",
     "cffi",
+    "numpy",
+    "llvmlite",
+    "pyobjc-framework-Metal; sys_platform == 'darwin'",
+]
+
+[dependency-groups]
+dev = [
     "lit",
     "filecheck",
-    "numpy",
     "pytest",
     "pytest-xdist",
-    "pytest-forked",
-    "llvmlite",
     "plotnine",
     "polars",
     "pyarrow",
     "tqdm",
     "jax",
+    "optax",
     "numba",
     "torch",
+    "ruff",
+    "vulture",
+    "pyright",
 ]
 
 [build-system]
-requires = ["uv_build>=0.12.5,<0.13"]
-build-backend = "uv_build"
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
 
-[tool.uv]
-build-backend = { module-root = "", namespace = true }
+[tool.setuptools]
+py-modules = ["exojit", "backend_metal"]
 
 [tool.pytest.ini_options]
-addopts = "-n auto --forked -v"
+addopts = "-n auto -v"
 
 [project.scripts]
 exojit = "exojit:cli"

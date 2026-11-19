@@ -610,6 +610,7 @@ class JITRuntime:
                 assert isinstance(value, numbers.Real), f"argument {index + 1}: expected scalar numeric data, got {type(value).__name__}"
                 flat.append(value)
             assert len(flat) == numel, f"argument {index + 1}: expected {numel} values, got {len(flat)}"
+            assert len(leaves) == len({(id(target), idx) for target, idx in leaves})
             buf = ffi.new(f"{c_type}[{numel}]", flat)
             keepalive.append(buf)
             if writable:
@@ -688,7 +689,9 @@ def jit(proc=None, *, raw: bool = False, optimize: Callable[[Procedure], Procedu
     if optimize:
         proc = optimize(proc)
     if backend == "metal":
-        assert False, "metal backend is not implemented"
+        import backend_metal  # lazy
+
+        return backend_metal.compile(proc, raw=raw)
     return JITRuntime.compile(proc, raw=raw)
 
 
