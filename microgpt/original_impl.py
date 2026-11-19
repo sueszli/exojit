@@ -282,10 +282,7 @@ def check() -> None:
     assert_weights_match({k: [[v.data for v in row] for row in mat] for k, mat in state_dict.items()})
 
 
-if __name__ == "__main__":
-    train()
-    check()
-
+def inference() -> None:
     print("\ninference:")
     temperature = 0.5
     for sample_idx in range(20):
@@ -302,3 +299,9 @@ if __name__ == "__main__":
                 break
             sample.append(uchars[token_id])
         print(f"sample {sample_idx + 1:2d}: {''.join(sample)}")
+
+
+if __name__ == "__main__":
+    train()
+    check()
+    inference()

@@ -88,9 +88,9 @@ def main(output: Path | None = None, table_from: Path | None = None, plot: Path 
         runs.write_csv(output)
     print(format_table(medians))
     if plot is not None:
-        from benchmark_plot import save_median_plot
+        from benchmark_plot import save_benchmark_plot
 
-        save_median_plot(medians, plot)
+        save_benchmark_plot(medians, plot)
 
 
 if __name__ == "__main__":
