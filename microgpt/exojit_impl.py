@@ -22,7 +22,7 @@ BLOCK_SIZE = 16
 N_HEAD = 4
 NUM_STEPS = 1000
 
-# The standalone parity check uses the Adam settings that produced weights.json.
+# the standalone parity check uses the adam settings that produced weights.json
 if __name__ == "__main__":
     BETA1, BETA2, MIX1, MIX2 = 0.9, 0.999, 0.1, 0.001
 else:

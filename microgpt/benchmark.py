@@ -103,7 +103,7 @@ def save_archived_plot(samples: dict[str, list[float]], path: Path) -> None:
         step_rows = []
         for row, name in enumerate(order):
             if name in whole_loop:
-                # The archived CSV repeats one whole-loop mean, not individual samples.
+                # the archived csv repeats one whole-loop mean, not individual samples
                 if len(set(samples[name])) != 1:
                     raise ValueError(f"{name}: expected a repeated whole-loop mean")
                 ax.scatter([centers[name]], [row], s=11, facecolors="none", edgecolors=PLOT_BLUE, linewidths=0.63, zorder=3)

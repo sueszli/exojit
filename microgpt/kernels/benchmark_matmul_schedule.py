@@ -40,7 +40,7 @@ def main() -> None:
 
     times = {name: [] for name in timers}
     order = tuple(timers)
-    # Alternate order so either schedule can run first.
+    # alternate order so either schedule can run first
     for i in range(ROUNDS):
         for name in order if i % 2 == 0 else order[::-1]:
             times[name].append(timers[name].timeit(number=CALLS) * 1e6 / CALLS)
