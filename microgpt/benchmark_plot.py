@@ -25,10 +25,10 @@ def save_benchmark_plot(medians: dict[str, float], path: Path) -> None:
         ax.set_xscale("log")
         ax.barh(range(len(order)), [time - left for time in times], left=left, height=0.48, color=bar_color)
         ax.set_xlim(left, ticks[-1])
-        ax.set_xticks(ticks, [f"{tick / 1000:g} ms" if tick >= 1000 else "$" + rf"{tick:g}\,\mu\mathrm{{s}}" + "$" for tick in ticks])
+        ax.set_xticks(ticks, [f"{tick / 1000:g} s" if tick >= 1000 else f"{tick:g} ms" for tick in ticks])
         ax.set_yticks(range(len(order)), [labels[name] for name in order])
         ax.set_ylim(len(order) - 0.45, -0.55)
-        ax.set_xlabel("median time per training step (log scale, lower is better)", fontsize=7, labelpad=6)
+        ax.set_xlabel("median time per training run (log scale, lower is better)", fontsize=7, labelpad=6)
         ax.tick_params(axis="both", which="both", length=0, pad=4)
         ax.set_axisbelow(True)
         ax.grid(axis="x", which="major", color=grid_color, linewidth=0.3)
@@ -37,11 +37,11 @@ def save_benchmark_plot(medians: dict[str, float], path: Path) -> None:
 
         row_text = blended_transform_factory(fig.transFigure, ax.transData)
         fig.text(348 / width, 1 - 10.5 / height, "median", ha="right", va="center")
-        for row, us in enumerate(times):
-            elapsed = "$" + (rf"{us:.0f}\,\mu\mathrm{{s}}" if us < 1000 else rf"{us / 1000:.1f}\,\mathrm{{ms}}") + "$"
+        for row, ms in enumerate(times):
+            elapsed = f"{ms:.0f} ms" if ms < 1000 else f"{ms / 1000:.1f} s"
             ax.text(348 / width, row, elapsed, transform=row_text, ha="right", va="center")
 
-        description = "Horizontal bars show median runtime per training step on a logarithmic scale. Each bar starts at the smallest labeled tick, not zero. Shorter is faster."
+        description = "Horizontal bars show median runtime per training run on a logarithmic scale. Each bar starts at the smallest labeled tick, not zero. Shorter is faster."
         path.parent.mkdir(parents=True, exist_ok=True)
         svg_output = path.suffix.lower() == ".svg"
         fig.savefig(path, dpi=216, transparent=svg_output, metadata={"Title": "MicroGPT training time", "Description": description, "Date": None})
