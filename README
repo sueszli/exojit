@@ -32,7 +32,8 @@ LLVM and compiles it at import time via llvmlite MCJIT.
 I also reimplemented microGPT with every kernel written
 in Exo and benchmarked it against NumPy, PyTorch, JAX,
 and karpathy's original scalar autograd.
-The table shows the median of five 1,000-step training runs after one warm-up.
+The table shows the median of five 1,000-step training runs
+after one warm-up.
 
 
     name      median ms  speedup
