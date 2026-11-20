@@ -46,11 +46,11 @@ def collect_runs(backends: tuple[str, ...]) -> pl.DataFrame:
     return pl.concat(samples)
 
 
-def medians_in_us(samples: pl.DataFrame, backends: tuple[str, ...], runs: int, steps: int) -> dict[str, float]:
+def median_run_times_ms(samples: pl.DataFrame, backends: tuple[str, ...], runs: int, steps: int) -> dict[str, float]:
     assert set(samples["backend"]) == set(backends), "unexpected backends"
     assert samples.height == samples.n_unique(["backend", "run"]) == len(backends) * runs, f"expected {runs} runs per backend"
     assert samples.filter(pl.col("run").is_between(1, runs), pl.col("steps") == steps, pl.col("elapsed_ns") > 0).height == samples.height, "invalid timing sample"
-    return dict(samples.group_by("backend").agg(pl.col("elapsed_ns").median() / (steps * 1000)).iter_rows())
+    return dict(samples.group_by("backend").agg(pl.col("elapsed_ns").median() / 1_000_000).iter_rows())
 
 
 def main(output: Path | None = None, from_csv: Path | None = None, plot: Path | None = None, worker: str | None = None) -> None:
@@ -63,7 +63,7 @@ def main(output: Path | None = None, from_csv: Path | None = None, plot: Path | 
 
     assets = Path(__file__).resolve().parent / "assets"
     samples = collect_runs(backends) if from_csv is None else read_runs(from_csv)
-    medians = medians_in_us(samples, backends, runs, steps)
+    medians = median_run_times_ms(samples, backends, runs, steps)
     if from_csv is None or output is not None:
         samples.write_csv(output or assets / "benchmark.csv")
     save_benchmark_plot(medians, plot or assets / "benchmark.svg")
