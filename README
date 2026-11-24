@@ -17,6 +17,7 @@
 
 
 A Just-In-Time compiler for the Exo language.
+https://xdsl.dev/blog/2026/11/22/exojit/
 
 
 Exo's default backend emits C, requiring an offline
