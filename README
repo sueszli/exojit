@@ -50,13 +50,3 @@ after one warm-up.
 There's also an incomplete Apple Metal prototype.
 It may eventually make it into xDSL:
 https://github.com/xdslproject/xdsl/blob/main/xdsl/backend/mps/__init__.py
-
-
-References:
-
-- Exo: https://github.com/exo-lang/exo/commits/main/?author=sueszli
-- xDSL: https://github.com/xdslproject/xdsl/commits/main/?author=sueszli
-  this project serves as a prototype for pyjit:
-  https://github.com/xdslproject/xdsl/tree/main/tests/filecheck/projects/pyjit
-- llvmlite: https://github.com/numba/llvmlite
-- microGPT: https://karpathy.github.io/2026/02/12/microgpt/
