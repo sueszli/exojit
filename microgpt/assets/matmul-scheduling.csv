@@ -1,3 +1,0 @@
-size,dtype,schedule,median_us_per_call,speedup
-32,float32,unscheduled,3.70,1.00
-32,float32,scheduled,1.75,2.11

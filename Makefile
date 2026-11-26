@@ -9,17 +9,17 @@ precommit-hook:
 
 .PHONY: fmt
 fmt:
-	uv run ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016,PLC0206,SIM115 exojit.py backend_metal.py microgpt tests example.py
-	uv run ruff format --line-length 5000 --target-version py314 exojit.py backend_metal.py microgpt tests example.py
+	uv run ruff check --fix --line-length 5000 --target-version py314 --extend-select I --ignore F403,F405,F821,E731,E402,PLE0643,B008,UP040,RUF016,PLC0206,SIM115 exojit.py backend_metal.py bench_microgpt tests example.py
+	uv run ruff format --line-length 5000 --target-version py314 exojit.py backend_metal.py bench_microgpt tests example.py
 
 .PHONY: lint
 lint:
-	uv run vulture --min-confidence 80 exojit.py backend_metal.py microgpt tests example.py
+	uv run vulture --min-confidence 80 exojit.py backend_metal.py bench_microgpt tests example.py
 	uv run pyright exojit.py backend_metal.py
 
 .PHONY: microgpt
 microgpt:
-	uv run python microgpt/exojit_impl.py
+	uv run python bench_microgpt/exojit_impl.py
 
 .PHONY: tests
 tests:
@@ -37,16 +37,8 @@ precommit:
 
 .PHONY: leaderboard
 leaderboard:
-	uv run python microgpt/utils.py
+	uv run python bench_microgpt/utils.py
 
 .PHONY: benchmark
 benchmark:
-	@uv run --locked python microgpt/benchmark.py
-
-.PHONY: benchmark-kernels
-benchmark-kernels:
-	uv run --locked python microgpt/kernels/run.py
-
-.PHONY: benchmark-matmul
-benchmark-matmul:
-	@uv run --locked python microgpt/kernels/bench_matmul.py
+	@uv run --locked python bench_microgpt/benchmark.py

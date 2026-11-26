@@ -7,7 +7,7 @@ import polars as pl
 
 ROOT = Path(__file__).resolve().parent
 WEIGHTS_PATH = ROOT / "weights.json"
-TIMES_DIR = ROOT / "times"
+TIMES_DIR = ROOT / "assets" / "times"
 
 
 def assert_weights_match(state_dict: dict[str, list[list[float]]], atol: float = 1e-5) -> None:
