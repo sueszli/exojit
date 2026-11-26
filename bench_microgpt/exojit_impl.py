@@ -27,7 +27,7 @@ CAUSAL_MASK_VALUE = -1e10
 ATTN_SCALE = 1.0 / HEAD_DIM**0.5
 INV_N = 1.0 / N_EMBED
 
-TIMES_PATH = Path(__file__).resolve().parent / "times.csv"
+TIMES_PATH = Path(__file__).resolve().parent / "assets" / "times" / "exojit.csv"
 
 
 #
