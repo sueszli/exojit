@@ -77,7 +77,9 @@ Simplicity:
 - maximize code locality: a little duplication is okay. inline small functions (<5 LoC). add top-level helpers only when reused
 - use locals by default. inline one-offs. keep shared constants and long prompts global
 - prefer pure functions: pass inputs, return results, and isolate side effects
+- avoid OOP primitives like classes and inheritance where possible
 - use `itertools` and `functools` to fold deeply nested loops
+- minimum viable diff. no W&B, no rich logging, no schedulers, no early stopping, no eval-during-train, no dataclass configs. save final weights only
 - no shared utility modules. each standalone script duplicates its own boilerplate
 - use `tyro` for command line parsing. no subcommands or argument groups
 - comments are used sparsely and give non-obvious context that an LLM couldn't infer
@@ -101,21 +103,9 @@ Robustness:
 - maximize test coverage, without adding noise (except for standalone scripts)
 - prefer typed enums over strings for states
 - use match statements over multiple `isinstance` branches
+- store weights as safetensors `.safetensor`, not pickletensors `.pt`
 
 Performance:
 
 - use `@cache` where it makes sense
 - have mechanistic sympathy, design with data oriented programming best-practices
-
-exojit style:
-
-- `JITRuntime` in `exojit.py` uses a class as a namespace for `@staticmethod` functions.
-- Prefix private helpers with `_`, as in `_tensor_converter`.
-- Call static methods as `ClassName.method(...)`. `backend_metal.py` calls `JITRuntime.compile(proc, compiler=compiler)`.
-- Split files into sections with a title line between two banner comments. This section header appears in `backend_metal.py`.
-
-```python
-# ===----------------------------------------------------------------------=== #
-# metal runtime
-# ===----------------------------------------------------------------------=== #
-```
